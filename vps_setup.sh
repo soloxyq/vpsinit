@@ -13,16 +13,44 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# 系统检测 (简单检测是否为 Debian/Ubuntu)
+# 系统检测 (推荐 Debian 12+ / Ubuntu 22.04+)
+VERSION_WARNING=0
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     if [[ "$ID" != "debian" && "$ID" != "ubuntu" ]]; then
-        echo -e "${YELLOW}警告: 此脚本主要针对 Debian/Ubuntu 设计，检测到系统为 $ID，部分功能可能无法正常工作。${PLAIN}"
-        read -p "是否继续？(y/n): " confirm
-        [[ "$confirm" != "y" ]] && exit 1
+        echo -e "${YELLOW}警告: 此脚本主要针对 Debian/Ubuntu 设计，检测到系统为 $ID${PLAIN}"
+        VERSION_WARNING=1
+    else
+        # 检查版本号
+        if [[ "$ID" == "debian" ]]; then
+            # 提取 Debian 版本号 (如 12)
+            VERSION_ID_NUM=$(echo "$VERSION_ID" | cut -d. -f1)
+            if [[ "$VERSION_ID_NUM" -lt 12 ]]; then
+                echo -e "${YELLOW}警告: 此脚本推荐 Debian 12+ 版本，当前检测到 $VERSION_ID${PLAIN}"
+                echo -e "${YELLOW}部分功能可能无法正常工作，请确认是否继续。${PLAIN}"
+                VERSION_WARNING=1
+            fi
+        elif [[ "$ID" == "ubuntu" ]]; then
+            VERSION_ID_NUM=$(echo "$VERSION_ID" | cut -d. -f1)
+            if [[ "$VERSION_ID_NUM" -lt 22 ]]; then
+                echo -e "${YELLOW}警告: 此脚本推荐 Ubuntu 22.04+ 版本，当前检测到 $VERSION_ID${PLAIN}"
+                echo -e "${YELLOW}部分功能可能无法正常工作，请确认是否继续。${PLAIN}"
+                VERSION_WARNING=1
+            fi
+        fi
+        
+        if [[ "$VERSION_WARNING" -eq 0 ]]; then
+            echo -e "${GREEN}检测到系统: $PRETTY_NAME (版本兼容)${PLAIN}"
+        fi
     fi
 else
-    echo -e "${YELLOW}无法检测操作系统，建议在 Debian/Ubuntu 下使用。${PLAIN}"
+    echo -e "${YELLOW}无法检测操作系统版本，请确保使用 Debian 12+ 或 Ubuntu 22.04+${PLAIN}"
+    VERSION_WARNING=1
+fi
+
+if [[ "$VERSION_WARNING" -eq 1 ]]; then
+    read -p "是否继续运行脚本? [y/n]: " confirm
+    [[ "$confirm" != "y" ]] && exit 1
 fi
 
 # 1. 配置 Root 密钥登录
@@ -278,11 +306,65 @@ install_nexttrace() {
     curl nxtrace.org/nt | bash
 }
 
+# 13. 安装哪吒探针 Agent
+install_nezha() {
+    echo -e "${SKYBLUE}正在准备安装哪吒探针 (Nezha Agent)...${PLAIN}"
+    
+    # 默认配置
+    DEFAULT_SERVER="dashboard.7879710.xyz:443"
+    DEFAULT_SECRET="24naSa4QDIS7kaEEtYntEKc7K84Yb31b"
+    DEFAULT_TLS="true"
+    
+    echo -e "请选择安装模式:"
+    echo -e "1) 使用默认配置 (${YELLOW}$DEFAULT_SERVER${PLAIN})"
+    echo -e "2) 自定义配置 (手动输入服务器地址和密钥)"
+    read -p "请输入 [1-2] (默认 1): " choice
+    choice=${choice:-1}
+    
+    local server
+    local secret
+    local tls
+
+    if [[ "$choice" == "1" ]]; then
+        server="$DEFAULT_SERVER"
+        secret="$DEFAULT_SECRET"
+        tls="$DEFAULT_TLS"
+    else
+        read -p "请输入面板服务器地址 (例如 dashboard.example.com:443): " server
+        read -p "请输入 Agent 密钥 (Secret): " secret
+        read -p "是否启用 TLS? [y/n] (默认 y): " tls_input
+        if [[ "$tls_input" == "n" ]]; then
+            tls="false"
+        else
+            tls="true"
+        fi
+        
+        if [[ -z "$server" || -z "$secret" ]]; then
+            echo -e "${RED}服务器地址或密钥不能为空！${PLAIN}"
+            return
+        fi
+    fi
+    
+    echo -e "${GREEN}正在安装 Agent...${PLAIN}"
+    echo -e "Server: $server"
+    echo -e "TLS: $tls"
+    
+    curl -L https://raw.githubusercontent.com/nezhahq/scripts/main/agent/install.sh -o /tmp/nezha_install.sh && chmod +x /tmp/nezha_install.sh
+    if [ $? -eq 0 ]; then
+        # 执行安装
+        env NZ_SERVER="$server" NZ_TLS="$tls" NZ_CLIENT_SECRET="$secret" bash /tmp/nezha_install.sh
+        rm -f /tmp/nezha_install.sh
+    else
+         echo -e "${RED}下载哪吒探针安装脚本失败，请检查网络连接。${PLAIN}"
+    fi
+}
+
 # 菜单函数
 show_menu() {
     echo -e "
 ${GREEN}============================================
-       VPS 初始化脚本 (Debian/Ubuntu)
+       VPS 初始化脚本 (Debian 12+ / Ubuntu 22.04+)
+         仅支持 Debian 12 及以上版本
 ============================================${PLAIN}
 ${GREEN}1.${PLAIN} 配置 Root 密钥登录 (默认端口与公钥)
 ${GREEN}2.${PLAIN} 安装 UFW 防火墙 (预设端口开放)
@@ -296,6 +378,7 @@ ${GREEN}9.${PLAIN} 安装 Docker 环境
 ${GREEN}10.${PLAIN} DNS 净化与安全加固 (Google/CF DNS)
 ${GREEN}11.${PLAIN} 安装 1Panel 服务器面板
 ${GREEN}12.${PLAIN} 安装 NextTrace 路由追踪
+${GREEN}13.${PLAIN} 安装哪吒探针 Agent (默认/自定义)
 ${GREEN}0.${PLAIN} 退出脚本
 "
 }
@@ -337,7 +420,7 @@ setup_alias
 
 while true; do
     show_menu
-    read -p "请输入数字选择 [0-12]: " num
+    read -p "请输入数字选择 [0-13]: " num
     case "$num" in
         1) setup_ssh_key ;;
         2) install_ufw ;;
@@ -351,8 +434,9 @@ while true; do
         10) purify_dns ;;
         11) install_1panel ;;
         12) install_nexttrace ;;
+        13) install_nezha ;;
         0) exit 0 ;;
-        *) echo -e "${RED}请输入正确的数字 [0-12]${PLAIN}" ;;
+        *) echo -e "${RED}请输入正确的数字 [0-13]${PLAIN}" ;;
     esac
     
     echo -e ""

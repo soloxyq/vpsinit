@@ -32,13 +32,31 @@ setup_ssh_key() {
     # 确保 .ssh 目录存在
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
+    
+    # 交互式询问 SSH 端口
+    read -p "请输入 SSH 端口 (默认 22): " ssh_port_input
+    ssh_port=${ssh_port_input:-22}
+    
+    # 修改 sshd_config 中的端口配置
+    if grep -q "^Port" /etc/ssh/sshd_config; then
+        sed -i "s/^Port.*/Port $ssh_port/g" /etc/ssh/sshd_config
+    else
+        # 如果配置文件里没有 Port 这一行，则添加
+        echo "Port $ssh_port" >> /etc/ssh/sshd_config
+    fi
+    echo -e "${GREEN}SSH 端口已配置为: $ssh_port${PLAIN}"
 
-    echo -e "${YELLOW}请输入您的 SSH 公钥 (以 ssh-rsa, ssh-ed25519 等开头):${PLAIN}"
-    read -r ssh_key
+    # 默认公钥
+    default_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCp3ORPYIfDP7xXP/brTqXf2RKyJ21u+fH1ffqbTEmBXvbPjIXTOlNH9c/FrPydG04D4RtbVXcL1C22ZUNWTuMcyKU8RBersn6tmzVGrG224ML9rg9uvt56gnAbenxt7haHqebBdWDsco+Er4Zie4KqviWk91C78l2Ovm4dqCwSXzI0+091DTxvRmn49gVijQV9uLACHxwFVNTGsy6nRkNO67dp3jY+4NW8+QvHE5hoxnj2pxOoPi5D5xSjoLG9+fhC1spCwAJ5bQ06SURN+beeNwUCpbm5bSRX6j6nVPNgNEaXd30+JfMxOyXwc99wLoy8jIBfqwBgAGRGnI+26qMkvaBd2XzYpv1U4pQUN2ed2gksRElSPpnJKNXfQzSsEfq4q4mK0DAtPTl+yBEdi9psOYuFCLQ9IYzgY13MRJgVgxcfbjV2So4+7zJmiLDyyrzu1kC3SvQUe1qaBLT3hxMNQ9iePn6i44LZo75EPXY42H/YZD6aduWL34qzpD2+Q3yHiCT7ADQrADg7k2yywtEduWbfOK6mc1TqftNszSKSSYlQyW2ieFex9EJvI+kRWS/cV4IuXas6JN46OIhOg+TBH1vtvUge+dE1pa+2YuCAUuhLvB9NsuVRu4qQZGZC4ZeBG3yAUmYyJczLhAWSmtdIHxLZb9wDeULK6u5wWwunMQ== soloxyq@foxmail.com"
 
-    if [[ -z "$ssh_key" ]]; then
-        echo -e "${RED}未输入公钥，跳过配置。${PLAIN}"
-        return
+    echo -e "${YELLOW}请输入您的 SSH 公钥 (直接回车将使用默认预置公钥):${PLAIN}"
+    read -r ssh_key_input
+
+    if [[ -z "$ssh_key_input" ]]; then
+        ssh_key="$default_key"
+        echo -e "${GREEN}使用预置默认公钥。${PLAIN}"
+    else
+        ssh_key="$ssh_key_input"
     fi
 
     # 写入 authorized_keys
@@ -60,7 +78,9 @@ setup_ssh_key() {
         systemctl restart sshd
         echo -e "${GREEN}密码登录已禁用，SSH 服务已重启。请确保您可以使用密钥登录！${PLAIN}"
     else
-        echo -e "${YELLOW}保留密码登录。${PLAIN}"
+        echo -e "${YELLOW}保留密码登录。SSH 服务重启以应用端口变更...${PLAIN}"
+        systemctl restart ssh
+        systemctl restart sshd
     fi
 }
 
@@ -70,14 +90,21 @@ install_ufw() {
     apt update
     apt install ufw -y
 
-    read -p "请输入您的 SSH 端口 (默认 22): " ssh_port
-    ssh_port=${ssh_port:-22}
+    # 尝试从 sshd_config 获取当前 SSH 端口，默认为 22
+    ssh_port_current=$(grep "^Port" /etc/ssh/sshd_config | head -n 1 | awk '{print $2}')
+    ssh_port=${ssh_port_current:-22}
+    
+    echo -e "${YELLOW}检测到 SSH 端口为: $ssh_port (若检测失败则默认为 22)${PLAIN}"
+    read -p "请输入要放行的 SSH 端口 (默认 $ssh_port): " ufw_ssh_port
+    ufw_ssh_port=${ufw_ssh_port:-$ssh_port}
 
-    ufw allow "$ssh_port"/tcp
+    ufw allow "$ufw_ssh_port"/tcp
     ufw allow 80/tcp
     ufw allow 443/tcp
+    ufw allow 16790:16799/tcp
+    ufw allow 16790:16799/udp
     
-    echo -e "${YELLOW}已预设放行端口: $ssh_port (SSH), 80 (HTTP), 443 (HTTPS)${PLAIN}"
+    echo -e "${YELLOW}已预设放行端口: $ufw_ssh_port (SSH), 80, 443, 16790-16799 (TCP/UDP)${PLAIN}"
     
     read -p "是否启用 UFW? (这可能会断开当前的 SSH 连接，如果端口配置错误) [y/n]: " enable_ufw
     if [[ "$enable_ufw" == "y" ]]; then
@@ -142,25 +169,113 @@ setup_swap() {
     free -h
 }
 
-# 5. BBR 优化
+# 5. BBR 优化 (高级脚本)
 enable_bbr() {
-    echo -e "${SKYBLUE}正在开启 BBR 优化...${PLAIN}"
+    echo -e "${SKYBLUE}正在启动高级 TCP/BBR 调优脚本 (Eric86777)...${PLAIN}"
+    echo -e "${YELLOW}提示: 该脚本可能包含独立的菜单。${PLAIN}"
+    bash <(curl -fsSL "https://raw.githubusercontent.com/Eric86777/vps-tcp-tune/main/install-alias.sh?$(date +%s)")
+}
+
+# 6. NodeQuality 系统测试
+run_nq_test() {
+    echo -e "${SKYBLUE}正在运行 NodeQuality 系统综合测试...${PLAIN}"
+    bash <(curl -sL https://run.NodeQuality.com)
+}
+
+# 7. 安装 VLESS 代理服务
+install_vless() {
+    echo -e "${SKYBLUE}正在下载并运行 VLESS All-in-One 脚本...${PLAIN}"
+    # 下载到临时目录或当前目录均可，这里为了保持干净下载到 /tmp 并执行
+    wget -O /tmp/vless-server.sh https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh
+    if [ $? -eq 0 ]; then
+        chmod +x /tmp/vless-server.sh
+        bash /tmp/vless-server.sh
+    else
+        echo -e "${RED}下载 VLESS 脚本失败，请检查网络连接。${PLAIN}"
+    fi
+}
+
+# 8. 设置时区
+setup_timezone() {
+    echo -e "${SKYBLUE}正在设置时区为 Asia/Shanghai...${PLAIN}"
+    timedatectl set-timezone Asia/Shanghai
+    echo -e "${GREEN}当前时间: $(date -R)${PLAIN}"
+}
+
+# 9. 安装 Docker
+install_docker() {
+    echo -e "${SKYBLUE}正在安装 Docker...${PLAIN}"
+    if command -v docker >/dev/null 2>&1; then
+        echo -e "${YELLOW}Docker 已安装。${PLAIN}"
+    else
+        curl -fsSL https://get.docker.com | bash
+        systemctl start docker
+        systemctl enable docker
+        echo -e "${GREEN}Docker 安装完成。${PLAIN}"
+    fi
+}
+
+# 10. DNS 净化与安全加固
+purify_dns() {
+    echo -e "${SKYBLUE}正在执行 DNS 净化与安全加固...${PLAIN}"
     
-    # 备份 sysctl.conf
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak
+    # 目标 DNS
+    TARGET_DNS="8.8.8.8#dns.google 1.1.1.1#cloudflare-dns.com"
+    SECURE_RESOLVED_CONFIG="[Resolve]
+DNS=${TARGET_DNS}
+LLMNR=no
+MulticastDNS=no
+DNSSEC=allow-downgrade
+DNSOverTLS=yes/opportunistic
+"
 
-    # 移除旧的配置
-    sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
-    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
-
-    # 添加新配置
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-
-    sysctl -p
+    # 1. 净化 dhclient
+    local dhclient_conf="/etc/dhcp/dhclient.conf"
+    if [[ -f "$dhclient_conf" ]]; then
+        if ! grep -q "ignore domain-name-servers;" "$dhclient_conf"; then
+            echo "" >> "$dhclient_conf"
+            echo "ignore domain-name-servers;" >> "$dhclient_conf"
+            echo "ignore domain-search;" >> "$dhclient_conf"
+            echo -e "${GREEN}已修正 dhclient 配置。${PLAIN}"
+        fi
+    fi
     
-    echo -e "${GREEN}BBR 优化配置已应用。验证如下:${PLAIN}"
-    sysctl net.ipv4.tcp_congestion_control
+    # 2. 移除 if-up.d 冲突脚本
+    local ifup_script="/etc/network/if-up.d/resolved"
+    if [[ -f "$ifup_script" ]] && [[ -x "$ifup_script" ]]; then
+        chmod -x "$ifup_script"
+        echo -e "${GREEN}已禁用冲突的 if-up.d/resolved 脚本。${PLAIN}"
+    fi
+
+    # 3. 净化 /etc/network/interfaces
+    local interfaces_file="/etc/network/interfaces"
+    if [[ -f "$interfaces_file" ]]; then
+        sed -i -E 's/^[[:space:]]*(dns-(nameservers|search|domain).*)/# \1/' "$interfaces_file"
+    fi
+
+    # 4. 配置 systemd-resolved
+    apt-get install -y systemd-resolved > /dev/null 2>&1
+    systemctl enable systemd-resolved
+    systemctl start systemd-resolved
+    
+    echo -e "$SECURE_RESOLVED_CONFIG" > /etc/systemd/resolved.conf
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    systemctl restart systemd-resolved
+    
+    echo -e "${GREEN}DNS 净化完成。当前状态：${PLAIN}"
+    resolvectl status | grep "DNS Servers"
+}
+
+# 11. 安装 1Panel 面板
+install_1panel() {
+    echo -e "${SKYBLUE}正在安装 1Panel 面板...${PLAIN}"
+    curl -sSL https://resource.1panel.pro/quick_start.sh -o quick_start.sh && bash quick_start.sh
+}
+
+# 12. 安装 NextTrace
+install_nexttrace() {
+    echo -e "${SKYBLUE}正在安装 NextTrace...${PLAIN}"
+    curl nxtrace.org/nt | bash
 }
 
 # 菜单函数
@@ -169,11 +284,18 @@ show_menu() {
 ${GREEN}============================================
        VPS 初始化脚本 (Debian/Ubuntu)
 ============================================${PLAIN}
-${GREEN}1.${PLAIN} 配置 Root 密钥登录 (并可选禁用密码)
-${GREEN}2.${PLAIN} 安装 UFW 防火墙 (基本安全设置)
+${GREEN}1.${PLAIN} 配置 Root 密钥登录 (默认端口与公钥)
+${GREEN}2.${PLAIN} 安装 UFW 防火墙 (预设端口开放)
 ${GREEN}3.${PLAIN} 安装 Fail2ban (防暴力破解)
 ${GREEN}4.${PLAIN} 设置 Swap 内存
-${GREEN}5.${PLAIN} 开启 BBR 拥塞控制
+${GREEN}5.${PLAIN} TCP/BBR 网络调优 (高级脚本)
+${GREEN}6.${PLAIN} 系统综合测试 (NodeQuality)
+${GREEN}7.${PLAIN} 安装 VLESS 代理服务
+${GREEN}8.${PLAIN} 设置时区 (Asia/Shanghai)
+${GREEN}9.${PLAIN} 安装 Docker 环境
+${GREEN}10.${PLAIN} DNS 净化与安全加固 (Google/CF DNS)
+${GREEN}11.${PLAIN} 安装 1Panel 服务器面板
+${GREEN}12.${PLAIN} 安装 NextTrace 路由追踪
 ${GREEN}0.${PLAIN} 退出脚本
 "
 }
@@ -215,15 +337,22 @@ setup_alias
 
 while true; do
     show_menu
-    read -p "请输入数字选择 [0-5]: " num
+    read -p "请输入数字选择 [0-12]: " num
     case "$num" in
         1) setup_ssh_key ;;
         2) install_ufw ;;
         3) install_fail2ban ;;
         4) setup_swap ;;
         5) enable_bbr ;;
+        6) run_nq_test ;;
+        7) install_vless ;;
+        8) setup_timezone ;;
+        9) install_docker ;;
+        10) purify_dns ;;
+        11) install_1panel ;;
+        12) install_nexttrace ;;
         0) exit 0 ;;
-        *) echo -e "${RED}请输入正确的数字 [0-5]${PLAIN}" ;;
+        *) echo -e "${RED}请输入正确的数字 [0-12]${PLAIN}" ;;
     esac
     
     echo -e ""

@@ -27,7 +27,9 @@ git -c "http.proxy=$XQ_BOOTSTRAP_PROXY" clone https://github.com/soloxyq/vpsinit
 
 从其他机器复制时，复制在 Linux 中得到的完整克隆；Windows 版 Git 可能把换行改为 CRLF，导致校验失败。
 
-`WSL_TUN` 中的控制器是 2026-11-14 的本地 DNS 接管版本，见 [配套脚本说明](scripts/xq-proxy/README.md)。不要改用 `WIKI-WSL-replay-2026-11-13.tar.gz` 迁移包或其他旧副本：旧控制器 ON 时改写 `/etc/resolv.conf`，WSL 重建该文件后，DNS 会被它自己的防直连规则拒绝。
+`WSL_TUN` 中的控制器是本地 DNS 接管版本的 2026-11-15 修订，见 [配套脚本说明](scripts/xq-proxy/README.md)。这次修订改了两处：从干净的 OFF 开启时先预检、后改网络；只有迁移旧版 TUN resolver 时才依赖原 DNS 备份。它通过了离线测试、无特权网络命名空间中的演练和 root 下的隔离命名空间测试，还没有部署到原机器，也没有在任何宿主上做过 ON/OFF 验收；原机器验收过的是 2026-11-14 版本。按本指南安装的就是这份修订版，第 8、9 节的验收不能省略。
+
+不要改用 `WIKI-WSL-replay-2026-11-13.tar.gz` 迁移包或其他旧副本：旧控制器 ON 时改写 `/etc/resolv.conf`，WSL 重建该文件后，DNS 会被它自己的防直连规则拒绝。
 
 不要覆盖目标机器上已有的同名目录，先备份或换目录。仓库只含文档和程序副本；不要复制原机器的 `/var/lib/xq-proxy`、`/run` 标记、现成 DNS 备份、`.credentials.json`、`auth.json`、完整私人 Codex 配置或整个用户主目录。
 
@@ -274,6 +276,14 @@ curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
 
 记下 resolver 的链接和 `nameserver`。它由 WSL 管理，ON 和 OFF 都不应把它改成 `172.30.255.2`。
 
+开启前确认 Windows 上的 Karing 正在运行。从干净的 OFF 开启时，控制器先做只读检查，确认 resolver 可读且有 IPv4 nameserver，以 `xq-proxy` 用户对 Windows 网关的 4066 端口做 SOCKS5 握手，并让 `sing-box check` 校验生成的配置，全部通过后才改动网络。Karing 没有运行、端口不通，或 4066 上应答的不是无认证 SOCKS5 时，`xq_proxyon` 返回 1，报错以 `；未改变网络` 结尾，例如（网关地址因机器而异）：
+
+```text
+xq-proxy: Karing 172.21.32.1:4066 SOCKS5 握手失败：ConnectionRefusedError: [Errno 111] Connection refused；未改变网络
+```
+
+此时仍是 OFF：没有写入 ON 标记，没有安装防直连规则，普通网络照常可用，不需要执行 OFF；`xq_proxystatus` 显示 `已关闭（恢复原网络）`。排除原因（按第 2 节检查 Karing 的端口和共享设置）后重新执行 `xq_proxyon` 即可。
+
 开启并验证：
 
 ```bash
@@ -368,8 +378,12 @@ sudo journalctl -t xq-proxyctl -n 80 --no-pager
 - `ON，但配置异常`：按每行 `检查异常：` 的具体项目检查，例如核心、本地 DNS TCP/UDP 1053 监听、接管规则摘要、路由或恢复备份；手动 `xq_proxyon` 可重新应用所选模式，需要时会重启核心。
 - `配置完整，但默认 DNS 探测失败`：规则和路由完整，但向默认 resolver 发出的探测查询（经本地入口和 Karing 的 DoH，最多 4 秒）没有得到成功答案。先检查 Karing 节点和全代理端口，再看 `xq-proxy.service` 日志；此时状态返回 1，`xq_proxyon` 不显示公网出口。
 - 代理不可用：保持 ON 时，防直连规则会阻止回落，DNS 也不会回落到 WSL 原 DNS；需要普通网络时明确执行 OFF。
+- OFF 时执行 `xq_proxyon` 被拒绝，报错以 `；未改变网络` 结尾：这是从干净的 OFF 开启时的预检，网络、ON 标记和状态都没有改动，不需要执行 OFF。按报错原因处理：`Karing <网关>:4066 SOCKS5 握手失败` 检查 Karing 是否运行、全代理端口和共享设置；`默认 resolver 缺少 IPv4 DNS` 或 `DNS 配置不可读取` 先恢复 OFF 下可用的 `/etc/resolv.conf`；`代理核心配置未通过 sing-box check` 核对 sing-box 是否为第 6 节安装的 1.14.4。
+- 已经是 ON（或 OFF 中途失败留下残留）时执行 `xq_proxyon`，Karing 不可用：顺序仍是先装回防直连规则再握手，报 `Karing <网关>:4066 SOCKS5 握手失败：…`，并提示 `未自动回退直连。恢复原网络请执行 sudo xq-proxyctl off。`。防直连规则和 ON 标记保留，不会因为这次失败而撤除；Karing 恢复后再执行 `xq_proxyon`，或执行 OFF 回到普通网络。
 - WSL 改写或重建 `/etc/resolv.conf` 不再影响 ON：控制器不写这个文件，也不把 WSL 默认 resolver 报告为异常。原机器 2026-11-14 的断网，正是旧控制器在 resolver 被改回 WSL 默认值后拒绝该 DNS 所致。只有 resolver 没有 IPv4 DNS，或残留旧版 TUN resolver（`172.30.255.2` 或旧管理标记）时才报告；后者在下一次 `xq_proxyon` 时迁移回原 DNS。
 - ON 被拒绝，并提示 conntrack、DNS 端口 1053 或 conntrack zone/mark：这些检查都在改动网络之前。缺少 conntrack 时按第 4 节安装；端口、zone 或 mark 被其他程序使用时，先找出使用者，不要删除它们来强行开启。
+- 报错 `原 DNS 备份无效，且无法核实 WSL 原 DNS；保留保护规则，拒绝误恢复 TUN DNS`：只会在 `/etc/resolv.conf` 仍是旧版 TUN resolver（`172.30.255.2` 或旧管理标记）、而保存的原 DNS 和 `/mnt/wsl/resolv.conf` 都无法核实时出现，此时控制器不恢复错误的 DNS，防直连规则保留。先手动把 `/etc/resolv.conf` 改成 OFF 下实际可用的 DNS 配置（不含 `172.30.255.2` 和旧管理标记），再执行 ON 或 OFF。resolver 不是旧版残留时，旧备份失效不影响 ON、OFF 和启动复位，状态也不报告它。
+- `xq_proxystatus` 报告 `防直连：缺失` 和 `检查异常：防直连规则表缺失`：`inet xq_proxy` 表被删除，原因可能是有人执行了 `nft flush ruleset`，或启动、重载、重启、停止了会清空规则集的 `nftables.service`（Ubuntu 默认的 `/etc/nftables.conf` 含 `flush ruleset`）。此时 DNS 接管已经消失；resolver 是 WSL 本地地址时查询回到 WSL/Windows 的 DNS 路径，其余 IPv4 流量在核心存活期间仍进入 TUN，核心一旦停止就会直连。执行 `xq_proxyon`，它通过只读检查后先装回防直连规则，再做其他步骤；或执行 OFF。没有定时检查，清空后不会自动发现；说明这些后果不等于清空是安全的，ON 期间不要做这些操作。详见 [配套脚本说明](scripts/xq-proxy/README.md) 的“nftables 规则集被整体清空”。
 - OFF 中途报错：状态可能显示 `OFF，但存在残留配置`，防直连规则可能仍在。排除报错原因后再次执行 OFF，会继续清理本功能资源。ON 期间不要卸载 conntrack；OFF 需要它清理本功能的 DNS 映射。
 - 不用 `ping` 单独证明远端连接或代理出口；以 DNS、HTTPS 服务端出口、路由和 UDP 实测为准。
 

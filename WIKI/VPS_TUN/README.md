@@ -4,18 +4,18 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [另一台 VPS：用户级 TUN 一键部署](VPS-用户级TUN一键部署.md) | 提供代理 IP 和端口，为当前普通用户首次安装；自动获取 UID/GID，不绑定 Mico-system |
-| [便携用户级 TUN 安装包](scripts/xq-user-tun/README.md) | 新机器使用的安装入口、参数、部署包与验证范围 |
-| [TUN 固定值与访问权限审计](VPS-TUN固定值与访问权限审计.md) | 动态本机信息、保留的配置常量、owner 专属入口、root/其他 UID 拒绝测试与管理员权限边界 |
+| [另一台 VPS：用户级 TUN 一键部署](VPS-用户级TUN一键部署.md) | 提供代理 IP 和端口，为当前普通用户首次安装；自动获取 UID/GID，不绑定 Mico-system。含各类 DNS 的实际路径、关闭失败后的继续、status/check 退出码和 nftables 被清空时的边界（2026-11-15 版本，待部署） |
+| [便携用户级 TUN 安装包](scripts/xq-user-tun/README.md) | 新机器使用的安装入口、参数、部署包与验证范围；离线生命周期测试和隔离测试的运行方式 |
+| [TUN 固定值与访问权限审计](VPS-TUN固定值与访问权限审计.md) | 动态本机信息、保留的配置常量、owner 专属入口、root/其他 UID 拒绝测试与管理员权限边界；2026-11-15 补充便携包的新固定值和 DNS 入口归属 |
 | [用户级 TUN 修复后验收](VPS-用户级TUN验收记录.md) | 已完成不停服验收；原 shell 保留、新会话继承、其他 UID 检查和无定时回滚 |
-| [用户级 TUN 代理说明](scripts/xq-user-proxy/README.md) | 当前 xq_proxyon/off/proxystatus：xuqian 全部宿主会话开关、局域网直连、公网代理、DNS 与 ping 行为 |
+| [用户级 TUN 代理说明](scripts/xq-user-proxy/README.md) | Mico-system 已部署版本的 xq_proxyon/off/proxystatus：xuqian 全部宿主会话开关、局域网直连、公网代理、DNS 与 ping 行为。2026-11-15 起为冻结归档，不再维护，已确认的缺陷列在其开头 |
 | [TUN 流量链路图解](VPS-TUN图解/index.html) | 浏览器打开的入门图解：流量怎么分拣和改道、一次请求的往返、DNS 改送、conntrack zone、核心停止时不漏、换 IP 与 `xq_tun run` 模式 |
 | [TUN 改动文件清单](VPS-TUN图解/files.html) | 浏览器打开：本方案在本机新增、改过、运行时生成和特意没动的文件，改动时间线与备份位置，以及仍写着 16791 的个人文件 |
 | [用户级代理断网诊断与恢复](2026-11-14-用户代理断网诊断.md) | 2026-11-14 恢复记录；直接停核心留下黑洞保护的原因、正确 on/off 命令，以及源码与安装版入口差异 |
 | [当天操作记录](2026-11-13-操作记录.md) | 今天实际执行的主要命令、最终配置、验证结果、备份位置和排错记录 |
 | [再次复查报告](2026-11-13-复查报告.md) | 已解决的问题、当前网络出口、仍可完善的启动方式及互操作检查标准更正 |
-| [WSL 全流量代理部署记录](WSL-全流量代理部署记录.md) | WSL 全流量 TUN、2026-11-14 DNS 覆盖修复、开关与启动默认 OFF、验收状态与恢复方法 |
-| [WSL 全流量代理脚本说明](scripts/xq-proxy/README.md) | 本机 WSL 控制器、DNS 透明接管、conntrack 清理、依赖与隔离测试入口；新 WSL 安装以 [WSL_TUN 脚本](../WSL_TUN/scripts/xq-proxy/README.md) 和 [从零复现指南](../WSL_TUN/WSL-从零复现指南.md) 为准 |
+| [WSL 全流量代理部署记录](WSL-全流量代理部署记录.md) | WSL 全流量 TUN、2026-11-14 DNS 覆盖修复、开关与启动默认 OFF、验收状态与恢复方法；2026-11-15 仓库修订（待部署）与已部署版本的差异，以及 nftables 规则集被清空时的保证范围 |
+| [WSL 全流量代理脚本说明](scripts/xq-proxy/README.md) | 本机已部署的是 2026-11-14 版控制器，此目录镜像的是 2026-11-15 仓库修订（待部署）；DNS 透明接管、conntrack 清理、依赖与隔离测试入口；新 WSL 安装以 [WSL_TUN 脚本](../WSL_TUN/scripts/xq-proxy/README.md) 和 [从零复现指南](../WSL_TUN/WSL-从零复现指南.md) 为准 |
 | [WSL 全流量代理方案](WSL-全流量代理方案.md) | 部署前方案和前置检查记录；当前状态以部署记录为准 |
 | [VPS 复现指南](VPS-复现指南.md) | 在另一台 Ubuntu/Debian VPS 上按顺序复现；已经排除 WSL 专用步骤 |
 | [Mico-system TUN 部署记录](VPS-TUN部署记录.md) | 独立命名空间的历史部署记录；当前快捷函数已升级为 xuqian 全部宿主会话开关 |
@@ -23,7 +23,7 @@
 | [Mico-system TUN 安装包](scripts/xq-tun/README.md) | 已部署版本的安装器、控制器、自动验收及日常操作；开机自启未开启 |
 | [WSL 代理函数最终版](scripts/xq-proxy-wsl.bash) | 当前由 `.bashrc` 加载的 TUN 开关；需配套 Linux 控制脚本与服务，见部署记录 |
 
-在另一台 VPS 上安装用户级 TUN，请先阅读 **用户级 TUN 一键部署**。复现其余开发环境时阅读 **VPS 复现指南**；需要复现 Codex、Context7 配置时，再参照当天操作记录。`scripts/xq-user-proxy` 和 `scripts/xq-tun` 保留本机历史部署，不是新机器的一键安装入口。
+在另一台 VPS 上安装用户级 TUN，请先阅读 **用户级 TUN 一键部署**。复现其余开发环境时阅读 **VPS 复现指南**；需要复现 Codex、Context7 配置时，再参照当天操作记录。`scripts/xq-user-proxy` 和 `scripts/xq-tun` 保留本机历史部署，不是新机器的一键安装入口；其中 `scripts/xq-user-proxy` 自 2026-11-15 起停止维护，Mico-system 在重新部署之前仍带有其说明中列出的缺陷。
 
 记录没有包含密码、API Key、登录令牌或完整认证文件。示例中的占位符需要在新机器上自行填写；本机配置备份可能包含密钥，不要把这些备份直接作为 Wiki 附件传播。
 

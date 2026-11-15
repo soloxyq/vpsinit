@@ -3,9 +3,13 @@
 
 The fake kernel answers only the exact commands the controller is expected to
 issue and runs no process. Sockets, subprocesses and syslog are replaced too, so
-no test reaches the network, the journal or the host configuration.
+no test reaches the network, the journal or the host configuration. The SOCKS5
+handshake probe, which the controller hands to runuser as Python source, is run
+in this process against a simulated Karing port.
 """
+import ast
 import base64
+import builtins
 import contextlib
 import copy
 import hashlib
@@ -22,6 +26,7 @@ import sys
 import syslog
 import tempfile
 import time
+import traceback
 from types import SimpleNamespace
 import unittest
 
@@ -39,6 +44,14 @@ DNS_TAKEOVER = 'DNS 接管：应用 IPv4 TCP/UDP 53 → 127.0.0.1:1053 → 代�
 CHECK_OK = '配置检查：DNS 入口、接管规则、路由和运行版本正常'
 NOT_PROBED = '默认 DNS 连通性：未探测（先修复配置异常）'
 NEED_CONNTRACK = '需要安装 conntrack，才能精确清理本功能的 DNS 映射；未改变网络'
+UNCHANGED = '；未改变网络'
+KARING_FAILED = 'Karing 172.21.32.1:4066 SOCKS5 握手失败：'
+REFUSED = 'ConnectionRefusedError: [Errno 111] Connection refused'
+OFF_HINT = '未自动回退直连。恢复原网络请执行 sudo xq-proxyctl off。'
+BAD_BASELINE = '原 DNS 备份无效，且无法核实 WSL 原 DNS；保留保护规则，拒绝误恢复 TUN DNS'
+# Read-only probes by which ON decides whether it starts from a clean OFF.
+RESIDUE_PROBES = [('systemctl','is-active','--quiet','xq-proxy.service'), ('nft','list','table','inet','xq_proxy'),
+                  ('ip','-j','-4','rule','show'), ('ip','-j','-6','rule','show')]
 
 
 def sha256(data):
@@ -158,6 +171,17 @@ class FakeKernel:
         self.main_pid = '4242'
         self.on_restart = None          # systemd ExecStartPost=+xq-proxyctl attach
         self.on_stop = None
+        self.main_routes = [{'dst':'default','gateway':'172.21.32.1','dev':'eth0'},
+                            {'dst':'172.21.32.0/20','dev':'eth0'}]
+        # The Windows Karing SOCKS5 port, as the controller's handshake probe sees it.
+        self.karing_connect_error = None    # raised by connect(), e.g. ConnectionRefusedError
+        self.karing_reply = b'\x05\x00'     # reply to the greeting, or an exception raised by recv()
+        self.runuser_error = None       # (returncode, stderr): runuser fails before the probe runs
+        self.handshakes = []            # one record per executed probe
+        self.on_handshake = None
+        self.core_check_error = None    # stderr of a failing sing-box check
+        self.checked = []               # (path, text) of every configuration given to sing-box check
+        self.on_core_check = None
         self.rules4 = [
             {'priority': 0, 'table': 'local'},
             {'priority': 18400, 'iif': 'xq-tun', 'table': 'main'},
@@ -197,6 +221,60 @@ class FakeKernel:
             return []
         state = 'LISTEN 0      4096  ' if transport == '-t' else 'UNCONN 0      0     '
         return [f'{state} {self.dns_bind} 0.0.0.0:*']
+
+    def socks_probe(self, source):
+        """Execute the controller's handshake probe against the simulated Karing port.
+
+        The probe is the Python source the controller hands to runuser. It runs here in
+        this process with stand-ins for its only two imports, so no socket is opened.
+        """
+        attempt = {}
+        self.handshakes.append(attempt)
+        kernel = self
+
+        class Connection:
+            def settimeout(self, value):
+                attempt['timeout'] = value
+
+            def sendall(self, data):
+                attempt['greeting'] = data
+
+            def recv(self, size):
+                if isinstance(kernel.karing_reply, BaseException):
+                    raise kernel.karing_reply
+                return kernel.karing_reply[:size]
+
+            def close(self):
+                attempt['closed'] = True
+
+        def create_connection(address, timeout=None):
+            attempt.update(address=address, connect_timeout=timeout)
+            if kernel.karing_connect_error:
+                raise kernel.karing_connect_error
+            return Connection()
+
+        stderr = io.StringIO()
+        modules = {'socket': SimpleNamespace(create_connection=create_connection),
+                   'sys': SimpleNamespace(stderr=stderr, exit=sys.exit)}
+
+        def importer(name, *args, **kwargs):
+            if name not in modules:
+                raise AssertionError('handshake probe imported ' + name)
+            return modules[name]
+
+        scope = {'__name__': '__main__', '__builtins__': {**vars(builtins), '__import__': importer}}
+        try:
+            exec(compile(source, '<string>', 'exec'), scope)
+        except SystemExit as exit_request:
+            status = exit_request.code
+            if status is None or isinstance(status, int):
+                return status or 0, stderr.getvalue()
+            return 1, stderr.getvalue() + str(status) + '\n'
+        except Exception as exc:
+            # What "python3 -c" prints for an uncaught exception, then exit status 1.
+            return 1, stderr.getvalue() + ''.join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__.tb_next))
+        return 0, stderr.getvalue()
 
     def run(self, args, *, check=True, data=None):
         a = tuple(args)
@@ -279,8 +357,9 @@ class FakeKernel:
             routes = self.routes4 if a[1] == '-4' else self.routes6
             stdout = 'default dev xq-tun' if routes else ''
         elif a == ('ip','-j','-4','route','show','table','main'):
-            stdout = json.dumps([{'dst':'default','gateway':'172.21.32.1','dev':'eth0'},
-                                 {'dst':'172.21.32.0/20','dev':'eth0'}])
+            stdout = json.dumps(self.main_routes)
+        elif a == ('ip','-j','-4','route','show','table','main','default'):
+            stdout = json.dumps([route for route in self.main_routes if route.get('dst') == 'default'])
         elif a == ('ip','-j','link','show','xq-tun'):
             stdout = json.dumps([{'flags':['UP']}]) if self.link_up else '[]'
         elif a == ('ip','link','show','xq-tun'):
@@ -298,8 +377,16 @@ class FakeKernel:
         elif a in (('ip','-4','rule','add','pref','18402','lookup','20260'),
                    ('ip','-6','rule','add','pref','18402','lookup','20260')):
             (self.rules4 if a[1] == '-4' else self.rules6).append({'priority':18402,'table':20260})
-        elif a[:3] == (self.core_path,'check','-c'):
-            pass
+        elif a[:3] == (self.core_path,'check','-c') and len(a) == 4:
+            self.checked.append((a[3], Path(a[3]).read_text()))
+            if self.on_core_check:
+                self.on_core_check()
+            if self.core_check_error:
+                code, stderr = 1, self.core_check_error.format(a[3])
+        elif a[:6] == ('runuser','-u','xq-proxy','--','/usr/bin/python3','-c') and len(a) == 7:
+            if self.on_handshake:
+                self.on_handshake()
+            code, stderr = self.runuser_error or self.socks_probe(a[6])
         else:
             raise AssertionError('Unexpected simulated command; no process was run: '+repr(a))
         if check and code:
@@ -315,7 +402,7 @@ class ControllerTests(unittest.TestCase):
         mod = runpy.run_path(str(CONTROLLER), run_name='offline_controller_test')
         self.g = mod['on'].__globals__
         # Unpatched functions: run directly or restored by reset().
-        self.original = {name: mod[name] for name in ('attach', 'dns_probe', 'status')}
+        self.original = {name: mod[name] for name in ('attach', 'dns_probe', 'status', 'gateway', 'preflight')}
         self.state_dir = self.root/'state'
         self.state_dir.mkdir()
         self.resolv = self.root/'etc'/'resolv.conf'
@@ -339,6 +426,7 @@ class ControllerTests(unittest.TestCase):
         for path in (self.resolv, self.enabled, self.runtime, self.statefile, self.config):
             if os.path.lexists(path):
                 path.unlink()
+        self.config.parent.mkdir(exist_ok=True)
         self.wsl.write_text('nameserver 10.255.255.254\n')
         # WSL owns resolv.conf: a link to its generated file (DNS tunneling address on lo).
         self.resolv.symlink_to(self.wsl)
@@ -354,13 +442,15 @@ class ControllerTests(unittest.TestCase):
         def mapped_path(value):
             p = Path(value)
             return self.runtime if str(p) == '/run/xq-proxy-enabled' else p
+        # gateway() and the SOCKS5 preflight are the controller's own: the fake kernel
+        # answers their commands and runs the handshake probe against a simulated port.
         self.g.update(STATE=self.state_dir, ENABLED=self.enabled, STATEFILE=self.statefile,
                       RESOLV=self.resolv, WSL_RESOLV=self.wsl, CONF=self.config,
                       CORE=self.core_binary, CONNTRACK=str(self.conntrack),
                       Path=mapped_path, run=self.kernel.run,
-                      gateway=lambda: ('172.21.32.1','eth0'),
+                      gateway=self.original['gateway'], preflight=self.original['preflight'],
                       pwd=SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_uid=999)),
-                      preflight=lambda _:None, remove_routes=self.kernel.remove_routes,
+                      remove_routes=self.kernel.remove_routes,
                       status=self.original['status'], dns_probe=self.fake_probe, syslog=self.syslog,
                       time=SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=self.sleeps.append),
                       socket=NoHostAccess('socket'), subprocess=NoHostAccess('subprocess'))
@@ -396,9 +486,12 @@ class ControllerTests(unittest.TestCase):
         self.resolv.chmod(mode)
 
     def resolver_identity(self):
+        if not os.path.lexists(self.resolv):
+            return None
         info = os.lstat(self.resolv)
         content = os.readlink(self.resolv) if stat.S_ISLNK(info.st_mode) else self.resolv.read_bytes()
-        return info.st_ino, info.st_mtime_ns, info.st_mode, content, self.wsl.read_bytes()
+        return (info.st_ino, info.st_mtime_ns, info.st_mode, content,
+                self.wsl.read_bytes() if self.wsl.exists() else None)
 
     def fake_probe(self, timeout=4):
         self.probes.append(timeout)
@@ -417,16 +510,90 @@ class ControllerTests(unittest.TestCase):
         return result, out.getvalue()
 
     def make_off(self):
+        """A clean OFF, as a completed OFF leaves it: nothing of this feature remains."""
         self.enabled.unlink(missing_ok=True)
         self.runtime.unlink(missing_ok=True)
         self.kernel.clear()
         self.state.update(phase='off', dns_active=False)
         self.save(self.state)
 
+    def fresh_install(self):
+        """A clean OFF as the installer leaves it: no saved state, no generated configuration."""
+        self.make_off()
+        self.statefile.unlink()
+        self.config.unlink()
+
+    def obsolete_baseline(self, baseline=None, fallback=None):
+        """A valid, unmanaged resolver beside a saved baseline and a WSL fallback that are unusable."""
+        self.set_resolver(b'# static resolver kept by the user\nnameserver 10.255.255.254\n')
+        self.patch_state(resolver_before=baseline or {'kind':'symlink','target':str(self.wsl)})
+        if fallback is None:
+            self.wsl.unlink()       # WSL no longer generates /mnt/wsl/resolv.conf
+        else:
+            self.wsl.write_bytes(fallback)
+
+    def switch_state(self):
+        """What ON and OFF manage: markers, state, guard, core, routes, configuration, resolver."""
+        return (self.resolver_identity(),
+                self.statefile.read_bytes() if self.statefile.exists() else None,
+                self.enabled.exists(), self.runtime.exists(),
+                self.kernel.guard, self.kernel.table, self.kernel.core, self.kernel.link_up,
+                copy.deepcopy(self.kernel.rules4), copy.deepcopy(self.kernel.rules6),
+                copy.deepcopy(self.kernel.routes4), copy.deepcopy(self.kernel.routes6),
+                self.config.read_bytes() if self.config.exists() else None)
+
     def world(self):
-        return (self.resolver_identity(), self.statefile.read_bytes(), self.enabled.exists(),
-                self.runtime.exists(), self.kernel.guard, self.kernel.table, self.kernel.core,
-                copy.deepcopy(self.kernel.rules4), copy.deepcopy(self.kernel.rules6))
+        """switch_state plus every file of the sandbox, so stray temporary files show up too."""
+        return (self.switch_state(),
+                sorted(str(path.relative_to(self.root)) for path in self.root.rglob('*')))
+
+    def mutations(self):
+        """Simulated commands that change kernel or service state; queries and dry runs do not."""
+        def read_only(call):
+            head, rest = call[0], call[1:]
+            if head == 'ip':
+                return 'show' in rest
+            if head == 'nft':
+                return rest in (('list','table','inet','xq_proxy'), ('--stateless','list','table','inet','xq_proxy'),
+                                ('-j','list','ruleset'), ('--check','-f','-'))
+            if head == 'systemctl':
+                return rest[0] in ('is-active', 'show')
+            if head == str(self.conntrack):
+                return rest[0] == '-L'
+            if head == str(self.core_binary):
+                return rest[0] == 'check'
+            # runuser only ever carries the SOCKS5 handshake probe (see FakeKernel.run).
+            return head in ('ss', 'runuser')
+        return [call for call in self.kernel.calls if not read_only(call)]
+
+    def call_index(self, matches):
+        """Position of the first simulated command accepted by matches."""
+        return next(index for index, call in enumerate(self.kernel.calls) if matches(call))
+
+    def handshake_index(self):
+        return self.call_index(lambda call: call[0] == 'runuser')
+
+    def core_check_index(self):
+        return self.call_index(lambda call: call[:2] == (str(self.core_binary), 'check'))
+
+    def run_entry(self, action):
+        """Run the controller's own __main__ block with main() reduced to one action.
+
+        main() needs root and the real lock file. Everything around it is the
+        controller's real code, executed here in the patched module namespace: the
+        printed message, the recovery hint, the journal record and the exit status.
+        """
+        tree = ast.parse(CONTROLLER.read_text(), filename=str(CONTROLLER))
+        blocks = [node for node in tree.body
+                  if isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"]
+        self.assertEqual(len(blocks), 1)
+        entry = compile(ast.Module(body=blocks[0].body, type_ignores=[]), str(CONTROLLER), 'exec')
+        self.g['main'] = lambda: self.g[action]()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as caught:
+            exec(entry, self.g)
+        return caught.exception.code, out.getvalue(), err.getvalue()
 
     def assert_on_refused(self, message):
         """ON must fail with this message before changing anything."""
@@ -438,6 +605,24 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(self.syslog.records), events)
         self.assertFalse([call for call in self.kernel.calls
                           if call[:2] in (('systemctl','restart'), ('systemctl','stop'))])
+
+    def assert_clean_on_refused(self, cause):
+        """A clean OFF is exactly as before; the entry point names the cause and gives no OFF hint."""
+        before = self.world()
+        code, out, err = self.run_entry('on')
+        self.assertFalse(self.enabled.exists(), 'a refused first ON left the ON marker behind')
+        self.assertFalse(self.kernel.guard, 'a refused first ON left the direct-traffic guard installed')
+        self.assertFalse(self.runtime.exists(), 'a refused first ON left the runtime marker behind')
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.world(), before)
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(err, 'xq-proxy: ' + cause + UNCHANGED + '\n')
+        self.assertEqual(self.syslog.records, [(syslog.LOG_ERR, 'controller failed: ' + cause + UNCHANGED)])
+        # What was left alone is still a clean OFF.
+        result, output = self.capture('status')
+        self.assertEqual(result, 0, output)
+        self.assertIn('代理状态：已关闭（恢复原网络）', output)
+        self.assertNotIn('检查异常', output)
 
     def real_probe(self, resolver, answers, timeout=4):
         self.set_resolver(resolver)
@@ -746,7 +931,8 @@ class ControllerTests(unittest.TestCase):
                 self.make_off()
                 remove()
                 self.assert_on_refused(NEED_CONNTRACK)
-                self.assertEqual(self.kernel.calls, [])
+                # Only the read-only classification of the OFF state preceded the refusal.
+                self.assertEqual(self.kernel.calls, RESIDUE_PROBES)
 
     def test_on_without_local_dns_listener_fails_closed(self):
         self.make_off()
@@ -754,8 +940,11 @@ class ControllerTests(unittest.TestCase):
         self.kernel.listening['-u'] = False
         # ON only sees systemd's generic job failure; attach's 1053 message is covered by
         # test_attach_waits_briefly_for_both_local_dns_listeners.
-        with self.assertRaisesRegex(RuntimeError, re.escape('systemctl restart xq-proxy.service: Job for xq-proxy.service failed')):
+        job_failed = 'systemctl restart xq-proxy.service: Job for xq-proxy.service failed'
+        with self.assertRaisesRegex(RuntimeError, re.escape(job_failed)) as caught:
             self.capture('on')
+        # Past the proof of a clean ON the network has changed, and the message does not say otherwise.
+        self.assertNotIn('未改变网络', str(caught.exception))
         # DNS stays translated to the dead local entry: no fallback to the WSL resolver.
         self.assertIn('dns_nat_output', chains(self.kernel.table))
         self.assertTrue(self.enabled.exists())
@@ -769,6 +958,242 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(self.enabled.exists())
         self.assertEqual(self.syslog.records[-1],
                          (syslog.LOG_WARNING, 'on completed: health check failed; direct-traffic guard retained'))
+
+    # Clean OFF → ON: Karing and the configuration are proven before the first change.
+
+    def test_clean_on_with_unreachable_karing_changes_nothing(self):
+        cases = (('port closed', {'karing_connect_error': ConnectionRefusedError(111, 'Connection refused')}, REFUSED),
+                 ('no answer to connect', {'karing_connect_error': TimeoutError('timed out')}, 'TimeoutError: timed out'),
+                 ('silent after connect', {'karing_reply': TimeoutError('timed out')}, 'TimeoutError: timed out'),
+                 ('not a SOCKS5 server', {'karing_reply': b'HT'}, 'unexpected SOCKS5 reply 4854'),
+                 ('no acceptable method', {'karing_reply': b'\x05\xff'}, 'unexpected SOCKS5 reply 05ff'),
+                 ('closed without reply', {'karing_reply': b''}, 'unexpected SOCKS5 reply (connection closed)'))
+        for prepare in (self.make_off, self.fresh_install):
+            for label, upstream, reason in cases:
+                with self.subTest(prepare=prepare.__name__, upstream=label):
+                    self.reset()
+                    prepare()
+                    vars(self.kernel).update(upstream)
+                    self.assert_clean_on_refused(KARING_FAILED + reason)
+                    (attempt,) = self.kernel.handshakes
+                    self.assertEqual((attempt['address'], attempt['connect_timeout']), (('172.21.32.1', 4066), 4))
+                    # Karing refused first: no configuration was generated or checked.
+                    self.assertEqual(self.kernel.checked, [])
+
+    def test_clean_on_with_rejected_core_config_changes_nothing(self):
+        # As sing-box 1.14.4 prints it: colored even on a pipe, naming the file it was given.
+        detail = 'decode config at {}: outbounds[0].server_port: json: cannot unmarshal number 70000'
+        def no_config_directory():
+            self.fresh_install()
+            self.config.parent.rmdir()
+            # The candidate then goes to the default temporary directory; keep that inside the sandbox.
+            scratch = self.root/'tmp'
+            scratch.mkdir(exist_ok=True)
+            self.addCleanup(setattr, tempfile, 'tempdir', tempfile.tempdir)
+            tempfile.tempdir = str(scratch)
+        for prepare in (self.make_off, self.fresh_install, no_config_directory):
+            with self.subTest(prepare=prepare.__name__):
+                self.reset()
+                prepare()
+                candidates = self.config.parent if self.config.parent.is_dir() else self.root/'tmp'
+                self.kernel.core_check_error = '\x1b[31mFATAL\x1b[0m[0000] ' + detail + '\n'
+                self.assert_clean_on_refused('代理核心配置未通过 sing-box check：FATAL[0000] '
+                                             + detail.format('<待安装的 sing-box.json>'))
+                # Karing answered first. Then the core judged, as a candidate that never replaced
+                # the installed file, exactly the configuration this ON would have installed.
+                self.assertEqual(len(self.kernel.handshakes), 1)
+                self.assertLess(self.handshake_index(), self.core_check_index())
+                ((path, text),) = self.kernel.checked
+                self.assertEqual(Path(path).parent, candidates)
+                self.assertNotEqual(Path(path), self.config)
+                self.assertFalse(os.path.lexists(path))
+                self.assertEqual(json.loads(text), self.g['config']({'host':'172.21.32.1','interface':'eth0'}))
+
+    def test_clean_on_with_unusable_resolver_changes_nothing(self):
+        no_ipv4 = '默认 resolver 缺少 IPv4 DNS（IPv6 仍按策略阻断）'
+        def dangling():
+            self.resolv.unlink()
+            self.resolv.symlink_to(self.root/'wsl'/'missing.conf')
+        cases = (('IPv6 only', lambda: self.set_resolver(b'nameserver fd00::53\n'), no_ipv4),
+                 ('no nameserver', lambda: self.set_resolver(b'# no DNS servers\nsearch example.test\n'), no_ipv4),
+                 ('unparsable nameserver', lambda: self.set_resolver(b'nameserver not-an-ip\n'), 'DNS 配置不可读取'),
+                 ('dangling WSL link', dangling, 'DNS 配置不可读取'),
+                 ('no resolv.conf', lambda: self.resolv.unlink(), 'DNS 配置不可读取'))
+        for label, change, cause in cases:
+            with self.subTest(label):
+                self.reset()
+                self.make_off()
+                change()
+                self.assert_clean_on_refused(cause)
+                # Refused on local evidence: Karing was not contacted and nothing was generated.
+                self.assertEqual(self.kernel.handshakes, [])
+                self.assertEqual(self.kernel.checked, [])
+
+    def test_clean_on_conflicts_change_nothing_and_say_so(self):
+        def no_account(name):
+            raise KeyError(f"getpwnam(): name not found: '{name}'")
+        foreign_zone = {'rule': {'family': 'ip', 'table': 'mangle', 'chain': 'output',
+                                 'expr': [{'mangle': {'key': {'ct': {'key': 'zone'}}, 'value': 7}}]}}
+        cases = (
+            ('routing table in use', lambda: self.kernel.routes4.append({'dst':'default','dev':'eth9'}),
+             'Reserved routing table is already in use'),
+            ('TUN subnet routed elsewhere', lambda: self.kernel.main_routes.append({'dst':'172.30.0.0/16','dev':'eth1'}),
+             'TUN subnet overlaps an existing route'),
+            ('no physical default gateway', lambda: self.kernel.main_routes.pop(0), 'No physical IPv4 default gateway'),
+            ('service account missing', lambda: self.g.update(pwd=SimpleNamespace(getpwnam=no_account)),
+             '专用账号 xq-proxy 不存在'),
+            ('probe cannot run as the service account',
+             lambda: setattr(self.kernel, 'runuser_error', (1, 'runuser: cannot set groups: Operation not permitted\n')),
+             '无法以 xq-proxy 身份执行 Karing 握手检查：runuser: cannot set groups: Operation not permitted'),
+            ('foreign DNS listener',
+             lambda: self.kernel.foreign_listeners.append('udp UNCONN 0 0 0.0.0.0:1053 0.0.0.0:* users:(("dnsmasq",pid=777,fd=4))'),
+             'DNS 端口 1053 已被其他进程占用，拒绝启用'),
+            ('foreign conntrack zone rule', lambda: self.kernel.foreign_rules.append(foreign_zone),
+             '其他 nft 表使用 conntrack mark/zone，无法确认 DNS zone 20262 和标记 0x02000000 无冲突；拒绝覆盖'),
+            # This message has always ended with the statement; it is not appended twice.
+            ('conntrack missing', lambda: self.conntrack.unlink(), NEED_CONNTRACK[:-len(UNCHANGED)]),
+        )
+        for label, conflict, cause in cases:
+            with self.subTest(label):
+                self.reset()
+                self.make_off()
+                conflict()
+                self.assert_clean_on_refused(cause)
+                self.assertEqual(self.kernel.checked, [])
+
+    def test_clean_on_proves_karing_and_config_before_first_change(self):
+        for prepare in (self.make_off, self.fresh_install):
+            with self.subTest(prepare=prepare.__name__):
+                self.reset()
+                prepare()
+                untouched, seen = self.switch_state(), {}
+                self.kernel.on_handshake = lambda: seen.setdefault('handshake', self.switch_state())
+                self.kernel.on_core_check = lambda: seen.setdefault('core check', self.switch_state())
+                result, output = self.capture('on')
+                self.assertEqual(result, 0, output)
+                # No marker, state, guard, route or configuration had been written when Karing
+                # and the core were consulted.
+                self.assertEqual(seen, {'handshake': untouched, 'core check': untouched})
+                calls = self.kernel.calls
+                first_change = calls.index(self.mutations()[0])
+                self.assertEqual(calls[first_change], ('nft','-f','-'))
+                # Read-only conflict checks, then Karing, then the core, then the first guard load.
+                for check in (('nft','-j','list','ruleset'), (str(self.conntrack),'-L','-f','ipv4','--zone','20262'),
+                              ('ss','-H','-l','-n','-t','-u','-p','sport','=',':1053'),
+                              ('ip','-j','-4','route','show','table','main')):
+                    self.assertLess(calls.index(check), self.handshake_index())
+                self.assertLess(self.handshake_index(), self.core_check_index())
+                self.assertLess(self.core_check_index(), calls.index(('nft','--check','-f','-')))
+                self.assertLess(calls.index(('nft','--check','-f','-')), first_change)
+                # One handshake as the service account, with bounded waits.
+                (attempt,) = self.kernel.handshakes
+                self.assertEqual(attempt, {'address': ('172.21.32.1', 4066), 'connect_timeout': 4, 'timeout': 4,
+                                           'greeting': b'\x05\x01\x00', 'closed': True})
+                # One check: the candidate the core approved is what was installed afterwards.
+                ((path, text),) = self.kernel.checked
+                self.assertNotEqual(Path(path), self.config)
+                self.assertFalse(os.path.lexists(path))
+                self.assertEqual(text, self.config.read_text())
+                self.assertTrue(self.enabled.exists())
+                self.assertTrue(self.runtime.exists())
+                self.assertIn('dns_nat_output', chains(self.kernel.table))
+                self.assertEqual(self.load_state()['phase'], 'active')
+
+    # ON with an ON marker or with residue: guard first, as before; a failure removes nothing.
+
+    def test_repeated_on_with_unreachable_karing_keeps_guard(self):
+        self.kernel.karing_connect_error = ConnectionRefusedError(111, 'Connection refused')
+        installed = self.kernel.table
+        code, out, err = self.run_entry('on')
+        self.assertEqual((code, out), (1, ''))
+        # Both guard loads of a repeated ON (the saved guard first, then the one for the
+        # re-detected endpoint) precede the handshake, and the guard stays.
+        loads = [index for index, call in enumerate(self.kernel.calls) if call == ('nft','-f','-')]
+        self.assertEqual(len(loads), 2)
+        self.assertLess(loads[-1], self.handshake_index())
+        self.assertTrue(self.kernel.guard)
+        self.assertEqual(self.kernel.table, installed)
+        self.assertTrue(self.enabled.exists())
+        self.assertTrue(self.runtime.exists())
+        # The working core and its routes were not touched: the guard loads were the only changes.
+        self.assertTrue(self.kernel.core)
+        self.assertEqual(self.g['route_issues'](self.load_state()), [])
+        self.assertEqual(self.mutations(), [('nft','-f','-')] * 2)
+        # The cause is named without a traceback; the recovery hint is still given.
+        self.assertEqual(err, 'xq-proxy: ' + KARING_FAILED + REFUSED + '\n' + OFF_HINT + '\n')
+        self.assertEqual(self.syslog.records, [(syslog.LOG_ERR, 'controller failed: ' + KARING_FAILED + REFUSED)])
+        # Once Karing answers again, the same command completes with the same core process.
+        self.kernel.karing_connect_error = None
+        self.kernel.calls.clear()
+        code, out, err = self.run_entry('on')
+        self.assertEqual((code, err), (0, ''))
+        self.assertIn('代理状态：已开启（WSL 全流量）', out)
+        self.assertNotIn(('systemctl','restart','xq-proxy.service'), self.kernel.calls)
+
+    def test_on_over_residue_stays_guard_first(self):
+        def guard_left():       # e.g. an OFF that failed after stopping the core
+            self.kernel.guard, self.kernel.table = True, self.g['guard_text'](self.state, dns_active=False)
+            self.patch_state(phase='disabling')
+        def core_left():
+            self.kernel.core = self.kernel.link_up = True
+        cases = (('guard table', guard_left), ('running core', core_left),
+                 ('legacy TUN resolver', lambda: self.set_resolver(self.managed)))
+        for label, residue in cases:
+            for karing_up in (False, True):
+                with self.subTest(residue=label, karing_up=karing_up):
+                    self.reset()
+                    self.make_off()
+                    residue()
+                    # status and ON share one definition of residue.
+                    result, output = self.capture('status')
+                    self.assertEqual(result, 1)
+                    self.assertIn('检查异常：OFF 状态仍有代理核心、防火墙或 TUN DNS 残留', output)
+                    core, resolver = self.kernel.core, self.resolver_identity()
+                    seen = []
+                    self.kernel.on_handshake = lambda: seen.append(
+                        (self.enabled.exists(), self.kernel.guard, 'dns_nat_output' in chains(self.kernel.table)))
+                    if karing_up:
+                        result, output = self.capture('on')
+                        self.assertEqual(result, 0, output)
+                    else:
+                        self.kernel.karing_connect_error = ConnectionRefusedError(111, 'Connection refused')
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.capture('on')
+                        self.assertNotIn('未改变网络', str(caught.exception))
+                        # Whatever was left keeps running or stays as it was.
+                        self.assertEqual(self.kernel.core, core)
+                        self.assertEqual(self.resolver_identity(), resolver)
+                        self.assertFalse([call for call in self.kernel.calls if call[:2] in (
+                            ('systemctl','restart'), ('systemctl','stop'), ('nft','delete'))])
+                    # Marker and guard were in place before Karing was consulted, and remain.
+                    self.assertEqual(seen, [(True, True, True)])
+                    self.assertTrue(self.enabled.exists())
+                    self.assertTrue(self.runtime.exists())
+                    self.assertIn('dns_nat_output', chains(self.kernel.table))
+
+    def test_on_over_route_residue_is_refused_without_touching_protection(self):
+        for family in ('rules4', 'rules6'):
+            for guarded in (False, True):
+                with self.subTest(family=family, guarded=guarded):
+                    self.reset()
+                    self.make_off()
+                    getattr(self.kernel, family).append({'priority': 18402, 'table': 20260})
+                    if guarded:     # an OFF that failed before removing routes and guard
+                        self.kernel.guard, self.kernel.table = True, self.g['guard_text'](self.state, dns_active=False)
+                        self.patch_state(phase='disabling')
+                    result, output = self.capture('status')
+                    self.assertEqual(result, 1)
+                    self.assertIn(f'检查异常：OFF 状态仍有 -{family[-1]} 策略路由残留', output)
+                    self.kernel.calls.clear()
+                    self.kernel.karing_connect_error = ConnectionRefusedError(111, 'Connection refused')
+                    before = self.world()
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.capture('on')
+                    # The conflict refusal as it always was, word for word: this is not the clean-OFF path.
+                    self.assertEqual(str(caught.exception), 'Reserved policy routing priority is already in use')
+                    self.assertEqual(self.world(), before)
+                    self.assertEqual(self.mutations(), [])
+                    self.assertEqual(self.kernel.handshakes, [])
 
     # attach (ExecStartPost of xq-proxy.service).
 
@@ -804,6 +1229,17 @@ class ControllerTests(unittest.TestCase):
                 self.assertEqual(self.sleeps, [0.1] * 30)
                 self.assertTrue(self.kernel.guard)
                 self.assertNotIn('running_config_digest', self.load_state())
+        self.assertEqual(self.syslog.records, [])
+
+    def test_attach_refuses_to_route_without_guard_table(self):
+        # A core restarted by systemd after "nft flush ruleset" must not re-attach unguarded routes.
+        self.kernel.guard, self.kernel.table = False, ''
+        self.kernel.remove_routes()
+        self.kernel.calls.clear()
+        with self.assertRaisesRegex(RuntimeError, re.escape('nft list table inet xq_proxy')):
+            self.original['attach']()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual((self.kernel.rules4, self.kernel.routes4), ([{'priority': 0, 'table': 'local'}], []))
         self.assertEqual(self.syslog.records, [])
 
     # OFF and boot-off.
@@ -898,8 +1334,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.resolver_identity(), before)
 
     def test_off_without_conntrack_refuses_before_any_change(self):
-        before = self.world()
         self.conntrack.unlink()
+        before = self.world()
         with self.assertRaisesRegex(RuntimeError, re.escape(NEED_CONNTRACK)):
             self.capture('off')
         self.assertEqual(self.kernel.calls, [('nft','list','table','inet','xq_proxy')])
@@ -958,6 +1394,138 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result, 0, output)
         self.assertEqual(self.conntrack_calls(), [])
 
+    # Resolver baseline: only a real migration of the legacy TUN resolver depends on it.
+
+    def obsolete_cases(self):
+        return (('WSL no longer generates its resolver', None, None),
+                ('both written by the old controller', self.file_snapshot(self.managed), self.managed),
+                ('malformed baseline, WSL file without nameserver', {'kind': 'lost'}, b'# no DNS servers\n'))
+
+    def unrecoverable_legacy_resolver(self):
+        """resolv.conf still is the old TUN resolver and nothing verifiable can replace it."""
+        self.set_resolver(self.managed)
+        self.patch_state(resolver_before=self.file_snapshot(self.managed))
+        self.wsl.write_bytes(self.managed)
+
+    def test_off_and_boot_off_ignore_obsolete_baseline_of_unmanaged_resolver(self):
+        for label, baseline, fallback in self.obsolete_cases():
+            for from_boot in (False, True):
+                with self.subTest(label, boot=from_boot):
+                    self.reset()
+                    self.obsolete_baseline(baseline, fallback)
+                    before = self.resolver_identity()
+                    result, output = self.capture('off', from_boot=from_boot)
+                    self.assertEqual(result, 0, output)
+                    self.assertIn('代理状态：已关闭（恢复原网络）', output)
+                    # The resolver in use was not ours to restore and is left alone.
+                    self.assertEqual(self.resolver_identity(), before)
+                    self.assertFalse(self.kernel.guard)
+                    self.assertFalse(self.kernel.core)
+                    self.assertFalse(self.enabled.exists())
+                    self.assertEqual(self.load_state()['phase'], 'off')
+
+    def test_boot_off_after_terminated_on_session_ignores_obsolete_baseline(self):
+        # wsl --terminate while ON: flag and state persist, kernel state is gone.
+        self.obsolete_baseline()
+        self.kernel.clear()
+        before = self.resolver_identity()
+        result, output = self.capture('off', from_boot=True)
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.resolver_identity(), before)
+        self.assertFalse(self.enabled.exists())
+        self.assertEqual(self.load_state()['phase'], 'off')
+        self.assertEqual(self.syslog.records[-1],
+                         (syslog.LOG_INFO, 'boot-off completed: owned DNS mappings, routes and guard removed'))
+
+    def test_repeated_on_ignores_obsolete_baseline_of_unmanaged_resolver(self):
+        for label, baseline, fallback in self.obsolete_cases():
+            with self.subTest(label):
+                self.reset()
+                self.obsolete_baseline(baseline, fallback)
+                before = self.resolver_identity()
+                result, output = self.capture('on')
+                self.assertEqual(result, 0, output)
+                self.assertNotIn('检查异常', output)
+                self.assertEqual(self.resolver_identity(), before)
+                self.assertTrue(self.kernel.guard)
+                self.assertNotIn(('systemctl','restart','xq-proxy.service'), self.kernel.calls)
+                # The dead baseline is replaced by the resolver actually in use.
+                saved = self.load_state()['resolver_before']
+                self.assertEqual(saved, self.g['resolver_snapshot']())
+                self.assertTrue(self.g['safe_snapshot'](saved))
+
+    def test_repeated_on_repairs_baseline_from_verified_wsl_file_as_before(self):
+        # Unchanged order of preference: a usable saved baseline, else WSL's verified file.
+        self.set_resolver(b'# regenerated as a regular file\nnameserver 10.255.255.254\n')
+        self.patch_state(resolver_before={'kind': 'lost'})
+        result, output = self.capture('on')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.load_state()['resolver_before'], self.good)
+        self.assertFalse(self.resolv.is_symlink())
+
+    def test_repeated_on_leaves_baseline_alone_when_nothing_usable_exists(self):
+        # No baseline, no WSL file and an unreadable resolver: reported as what it is,
+        # an unreadable resolver, while the ON itself is not held hostage by the baseline.
+        self.patch_state(resolver_before={'kind': 'lost'})
+        self.resolv.unlink()
+        self.resolv.symlink_to(self.root/'wsl'/'missing.conf')
+        self.wsl.unlink()
+        result, output = self.capture('on')
+        self.assertEqual(result, 1, output)
+        self.assertEqual([line for line in output.splitlines() if line.startswith('检查异常：')],
+                         ['检查异常：DNS 配置不可读取'])
+        self.assertTrue(self.kernel.guard)
+        self.assertTrue(self.enabled.exists())
+        self.assertEqual(self.load_state()['resolver_before'], {'kind': 'lost'})
+
+    def test_first_on_ignores_obsolete_baseline_of_unmanaged_resolver(self):
+        for label, baseline, fallback in self.obsolete_cases():
+            with self.subTest(label):
+                self.reset()
+                self.make_off()
+                self.obsolete_baseline(baseline, fallback)
+                before = self.resolver_identity()
+                result, output = self.capture('on')
+                self.assertEqual(result, 0, output)
+                self.assertEqual(self.resolver_identity(), before)
+                self.assertEqual(self.load_state()['resolver_before'], self.g['resolver_snapshot']())
+
+    def test_legacy_resolver_without_safe_baseline_is_never_replaced(self):
+        with self.subTest('repeated ON keeps the guard it re-applied first'):
+            self.unrecoverable_legacy_resolver()
+            with self.assertRaisesRegex(RuntimeError, re.escape(BAD_BASELINE)):
+                self.capture('on')
+            self.assertEqual(self.resolv.read_bytes(), self.managed)
+            self.assertEqual(self.mutations(), [('nft','-f','-')])
+            self.assertIn('dns_nat_output', chains(self.kernel.table))
+            self.assertTrue(self.enabled.exists())
+            self.assertTrue(self.kernel.core)
+            self.assertEqual(self.kernel.handshakes, [])
+        for from_boot in (False, True):
+            with self.subTest('OFF refuses before any change', boot=from_boot):
+                self.reset()
+                self.unrecoverable_legacy_resolver()
+                before = self.world()
+                with self.assertRaisesRegex(RuntimeError, re.escape(BAD_BASELINE)):
+                    self.capture('off', from_boot=from_boot)
+                self.assertEqual(self.world(), before)
+                self.assertEqual(self.mutations(), [])
+                self.assertEqual(self.syslog.records, [])
+
+    def test_legacy_resolver_migrates_through_verified_wsl_fallback(self):
+        # The saved baseline is unusable, but WSL's own file can be verified: migration still works.
+        for label, action, arguments in (('repeated ON', 'on', {}), ('OFF', 'off', {}),
+                                         ('boot-off', 'off', {'from_boot': True})):
+            with self.subTest(label):
+                self.reset()
+                self.set_resolver(self.managed)
+                self.patch_state(resolver_before=self.file_snapshot(self.managed))
+                result, output = self.capture(action, **arguments)
+                self.assertEqual(result, 0, output)
+                self.assertEqual(os.readlink(self.resolv), str(self.wsl))
+                self.assertEqual(self.load_state()['resolver_before'], self.good)
+                self.assertEqual(self.enabled.exists(), action == 'on')
+
     # status.
 
     def test_healthy_status_returns_zero_without_mutation(self):
@@ -975,6 +1543,65 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.kernel.loads,[])
         self.assertEqual((self.resolver_identity(), self.statefile.read_bytes()),before)
         self.assertEqual(self.syslog.records,[])
+
+    def test_status_reports_baseline_only_with_legacy_resolver(self):
+        def issues(output):
+            return [line for line in output.splitlines() if line.startswith('检查异常：')]
+        for label, baseline, fallback in self.obsolete_cases():
+            with self.subTest('ON, unmanaged resolver', baseline=label):
+                self.reset()
+                self.obsolete_baseline(baseline, fallback)
+                result, output = self.capture('status')
+                self.assertEqual(result, 0, output)
+                self.assertEqual(issues(output), [])
+                self.assertIn(CHECK_OK, output)
+                self.assertEqual(self.probes, [4])
+        legacy = '检查异常：仍残留旧版 TUN resolver；需要迁移回原 DNS'
+        for label, baseline, expected in (('unusable', self.file_snapshot(self.managed), [legacy, '检查异常：原 DNS 恢复备份不可用']),
+                                          ('usable', self.good, [legacy])):
+            with self.subTest('ON, legacy resolver', baseline=label):
+                self.reset()
+                self.set_resolver(self.managed)
+                self.patch_state(resolver_before=baseline)
+                result, output = self.capture('status')
+                self.assertEqual(result, 1)
+                self.assertIn('代理状态：ON，但配置异常', output)
+                self.assertEqual(issues(output), expected)
+                self.assertIn(NOT_PROBED, output)
+        with self.subTest('OFF, unmanaged resolver, obsolete baseline'):
+            self.reset()
+            self.make_off()
+            self.obsolete_baseline()
+            result, output = self.capture('status')
+            self.assertEqual(result, 0, output)
+            self.assertIn('代理状态：已关闭（恢复原网络）', output)
+            self.assertEqual(issues(output), [])
+
+    def test_flushed_ruleset_is_reported_and_repeated_on_restores_guard_first(self):
+        # "nft flush ruleset" (or nftables.service loading a file that flushes) removed inet xq_proxy while ON.
+        self.kernel.guard, self.kernel.table = False, ''
+        result, output = self.capture('status')
+        self.assertEqual(result, 1)
+        self.assertIn('代理状态：ON，但配置异常', output)
+        self.assertIn('防直连：缺失', output)
+        self.assertEqual([line for line in output.splitlines() if line.startswith('检查异常：')],
+                         ['检查异常：防直连规则表缺失'])
+        self.assertIn('建议执行：xq_proxyon 重新应用配置，或 xq_proxyoff 恢复普通网络', output)
+        self.assertIn(NOT_PROBED, output)
+        # status only reports; the table stays missing until ON or OFF is run.
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(self.kernel.guard)
+        self.kernel.calls.clear()
+        result, output = self.capture('on')
+        self.assertEqual(result, 0, output)
+        # Re-loading the guard is all ON changes, and its first change: before the gateway
+        # lookup and before Karing is consulted. The running core is kept.
+        calls = self.kernel.calls
+        self.assertEqual(self.mutations(), [('nft','-f','-')] * 2)
+        self.assertLess(calls.index(('nft','-f','-')), calls.index(('ip','-j','-4','route','show','table','main','default')))
+        self.assertLess(calls.index(('nft','-f','-')), self.handshake_index())
+        self.assertIn('dns_nat_output', chains(self.kernel.table))
+        self.assertEqual(self.load_state()['guard_digest'], sha256(self.kernel.table))
 
     def test_wsl_rewritten_resolver_is_not_flagged(self):
         # WSL may regenerate or relink resolv.conf while ON (the 2026-11-14 outage).
@@ -1042,8 +1669,6 @@ class ControllerTests(unittest.TestCase):
             ('core not reloaded', lambda: self.patch_state(running_config_digest='0'*64), '当前核心尚未加载最新配置'),
             ('core binary replaced', lambda: self.core_binary.write_bytes(b'other\n'), '代理核心二进制已变化，需要重启加载'),
             ('core config missing', lambda: self.config.unlink(), '代理核心配置或二进制不可检查'),
-            ('recovery baseline unusable', lambda: self.patch_state(resolver_before=self.file_snapshot(self.managed)),
-             '原 DNS 恢复备份不可用'),
         )
         for label, change, issue in cases:
             with self.subTest(label):
@@ -1195,6 +1820,17 @@ class ControllerTests(unittest.TestCase):
         result, network = self.real_probe(b'nameserver 10.255.255.254\n', {'10.255.255.254': dns_answer()}, timeout=0)
         self.assertEqual(result, (False, '默认 DNS 探测超时'))
         self.assertEqual(network.sent, [])
+
+    # First-time installer: it executes this controller's source to render its kernel probes.
+
+    def test_installer_renders_both_guards_from_this_controller(self):
+        installer = runpy.run_path(str(Path(__file__).with_name('install.py')), run_name='offline_installer_test')
+        probes = installer['guard_probes'](CONTROLLER.read_bytes(), '172.21.32.1', 'xq_install_probe_1')
+        expected = [self.g['guard_text']({'uid': 0, 'host': '172.21.32.1'}, dns_active=active)
+                    for active in (True, False)]
+        self.assertEqual(probes, [text.replace('table inet xq_proxy {', 'table inet xq_install_probe_1 {', 1)
+                                  for text in expected])
+        self.assertTrue(all(probe.startswith('table inet xq_install_probe_1 {\n') for probe in probes))
 
 
 if __name__ == '__main__':

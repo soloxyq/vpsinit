@@ -4,6 +4,8 @@
 
 2026-11-14 20:01 DNS 修复已部署，隔离测试和宿主 DNS、HTTPS、重复开关、核心停止、resolver 重建模拟验收通过，最终保持 ON。实际新建 WSL 会话及完整发行版重启尚未执行，详见[部署记录](../../WSL-全流量代理部署记录.md)。本次以已安装的新版 `/usr/local/sbin/xq-proxyctl` 为基线同步归档，保留现场已有的 DNS 恢复校验、完整状态检查和每次 WSL 启动默认 OFF 的行为。
 
+2026-11-15：本目录的 `xq-proxyctl` 与 [WSL_TUN/scripts/xq-proxy](../../../WSL_TUN/scripts/xq-proxy/README.md) 中的副本逐字节相同，现在是**待部署**的 2026-11-15 修订（SHA256 `73c988924fb669fa28512e2b0153d7e996c5a3708105dbc4311ae8ace282e1f3`）；本机已安装的仍是 2026-11-14 版本（`6bf4c30a0fd4e5bb42d519aa7ddf586a09ebd1fe2ed65eec55d8b6a136880708`）。修订有两处：从干净的 OFF 开启时，先完成只读检查、resolver 预检、Karing 握手和核心配置校验，失败不改动网络，已是 ON 或有残留时仍先装防直连规则；只有迁移旧版 TUN resolver 时才依赖原 DNS 备份。防直连和 DNS 接管规则没有变化，`tests/netns-check.py` 不变。这一版本通过了离线测试、无特权网络命名空间中的演练和 root 下的 `tests/netns-check.py`（2026-11-15，5 组 PASS），没有在本机宿主执行过 ON/OFF。ON/OFF 的完整顺序，以及 nftables 规则集被整体清空时的后果、检测和恢复，见 WSL_TUN 的脚本说明。
+
 新 WSL 的安装入口在 [WSL_TUN/scripts/xq-proxy](../../../WSL_TUN/scripts/xq-proxy/README.md)：那里的首次安装器 `install.py` 按 [WSL 从零复现指南](../../../WSL_TUN/WSL-从零复现指南.md) 安装同一版本控制器、两个 unit 和 `proxy.bash`。本目录保留相同的控制器与隔离测试，供 VPS_TUN 文档引用，不单独作为安装入口。
 
 ## 使用
@@ -53,4 +55,4 @@ sudo nft list table inet xq_proxy
 sudo unshare --net python3 -I tests/netns-check.py
 ```
 
-不要通过放开非 TUN DNS、全局清空 nftables 或清空全机 conntrack 来解决异常。OFF 清理范围仅为本功能拥有的资源。
+不要通过放开非 TUN DNS、全局清空 nftables 或清空全机 conntrack 来解决异常。OFF 清理范围仅为本功能拥有的资源。清空整个 nftables 规则集（`nft flush ruleset`，或启动、重载、重启、停止会清空规则集的 `nftables.service`）会同时删除防直连和 DNS 接管：状态命令返回 1 并报告 `检查异常：防直连规则表缺失`，执行 `xq_proxyon` 会先装回防直连规则。

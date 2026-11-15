@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TUN 流量链路图解</title>
+<meta name="description" content="Mico-system 上 xuqian 用户级 TUN 的流量链路与转发细节，按 2026-11-14 的实测配置和抓包绘制。">
+<style>
+/* Layout: a transit map read top to bottom. Each chapter is one large map plate
+   and one sentence; technical names ride beside the stations in mono.
+   Line colour = path type, identical in every plate. */
+:root {
+  --paper: #F2F4F7;
+  --panel: #FFFFFF;
+  --band: #E3E8EE;
+  --ink: #16202B;
+  --muted: #5B6876;
+  --rule: #D2D9E1;
+  --proxy: #1E62D0;
+  --proxy-soft: #E2ECFB;
+  --plain: #8792A0;
+  --lan: #1F8F55;
+  --dns: #C27C00;
+  --dns-soft: #FBF0D9;
+  --stop: #D23A3A;
+  --stop-soft: #FBE6E6;
+  --sans: "Inter", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
+  color-scheme: light;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0D131A; --panel: #141C25; --band: #1E2833; --ink: #E4EAF0; --muted: #94A1AE; --rule: #2A3542;
+    --proxy: #5C9BFF; --proxy-soft: #172947; --plain: #7E8A97; --lan: #43BE7E;
+    --dns: #EDB13F; --dns-soft: #3A2E12; --stop: #FF6B6B; --stop-soft: #3B1D22;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0D131A; --panel: #141C25; --band: #1E2833; --ink: #E4EAF0; --muted: #94A1AE; --rule: #2A3542;
+  --proxy: #5C9BFF; --proxy-soft: #172947; --plain: #7E8A97; --lan: #43BE7E;
+  --dns: #EDB13F; --dns-soft: #3A2E12; --stop: #FF6B6B; --stop-soft: #3B1D22;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.65 var(--sans); }
+
+.page {
+  max-width: 1080px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 72px;
+  display: grid; gap: 64px;
+}
+
+/* ---------- header ---------- */
+.top { display: grid; gap: 16px; }
+.eyebrow { margin: 0; font: 600 13px/1.4 var(--mono); letter-spacing: .04em; color: var(--muted); }
+h1 { margin: 0; font-size: clamp(32px, 6vw, 56px); line-height: 1.12; font-weight: 800; letter-spacing: -.01em; text-wrap: balance; }
+.lede { margin: 0; max-width: 36em; font-size: clamp(16px, 2.1vw, 19px); color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 0; padding: 0; list-style: none; font-size: 14px; }
+.legend li { display: inline-flex; align-items: center; gap: 9px; }
+.sw { width: 30px; height: 7px; border-radius: 4px; background: var(--c); flex: none; }
+.sw.dash { background: repeating-linear-gradient(90deg, var(--proxy) 0 9px, transparent 9px 15px); }
+
+/* ---------- page tabs (shared with files.html) ---------- */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.tabs a {
+  font: 600 14px/1 var(--sans); color: var(--ink); text-decoration: none;
+  padding: 9px 14px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel);
+}
+.tabs a:hover { border-color: var(--ink); }
+.tabs a[aria-current="page"] { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+.tabs a:focus-visible { outline: 3px solid var(--proxy); outline-offset: 2px; }
+
+/* ---------- chapters & plates ---------- */
+.chapter { display: grid; gap: 16px; min-width: 0; }
+.chapter h2 { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.25; font-weight: 800; text-wrap: balance; }
+.intro { margin: -6px 0 0; max-width: 44em; color: var(--muted); }
+figure.plate {
+  margin: 0; min-width: 0; display: grid; gap: 14px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 18px; padding: 18px;
+}
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scroll svg { display: block; width: 100%; height: auto; min-width: 760px; }
+figcaption { font-size: 15.5px; line-height: 1.6; color: var(--muted); max-width: 46em; }
+.intro code, figcaption code, .ref code {
+  font-family: var(--mono); font-size: .9em; color: var(--ink);
+  background: var(--band); padding: .05em .35em; border-radius: 5px;
+}
+
+/* ---------- SVG vocabulary ---------- */
+svg text { font-family: var(--sans); }
+.s-label { font-size: 16px; font-weight: 700; fill: var(--ink); }
+.s-text { font-size: 15px; fill: var(--ink); }
+.s-bold { font-weight: 700; }
+.s-note { font-size: 13px; fill: var(--muted); }
+.s-mono { font-family: var(--mono); font-size: 12.5px; fill: var(--muted); }
+.s-mono-ink { font-family: var(--mono); font-size: 13px; font-weight: 600; fill: var(--ink); }
+.s-mono-strong { font-family: var(--mono); font-size: 15px; font-weight: 800; fill: var(--ink); }
+.s-proxy { fill: var(--proxy); }
+.s-stop { fill: var(--stop); }
+.s-muted { fill: var(--muted); }
+.s-inv { fill: var(--panel); }
+
+.ln { fill: none; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+.ln.thin { stroke-width: 4; }
+.c-proxy { stroke: var(--proxy); }
+.c-plain { stroke: var(--plain); }
+.c-lan { stroke: var(--lan); }
+.c-dns { stroke: var(--dns); }
+.c-stop { stroke: var(--stop); }
+.c-ink { stroke: var(--ink); }
+.tunnel { stroke-dasharray: 12 9; stroke-linecap: butt; }
+
+.f-proxy { fill: var(--proxy); }
+.f-plain { fill: var(--plain); }
+.f-lan { fill: var(--lan); }
+.f-dns { fill: var(--dns); }
+.f-stop { fill: var(--stop); }
+.f-ink { fill: var(--ink); }
+.f-panel { fill: var(--panel); }
+.f-soft { fill: var(--proxy-soft); }
+.f-band { fill: var(--band); }
+.f-dnssoft { fill: var(--dns-soft); }
+.f-stopsoft { fill: var(--stop-soft); }
+
+.host { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
+.box { fill: var(--panel); stroke: var(--ink); stroke-width: 2; }
+.box-soft { fill: var(--panel); stroke: var(--rule); stroke-width: 2; }
+.box-proxy { fill: var(--panel); stroke: var(--proxy); stroke-width: 3; }
+.box-dns { fill: var(--panel); stroke: var(--dns); stroke-width: 2.5; }
+.band { fill: var(--band); }
+.tun { fill: var(--proxy-soft); stroke: var(--proxy); stroke-width: 3; }
+.room { fill: var(--proxy-soft); stroke: var(--proxy); stroke-width: 2; stroke-dasharray: 8 6; }
+.zone-dash { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 6; }
+.inner { fill: var(--paper); stroke: var(--rule); stroke-width: 1.5; }
+.pill { fill: var(--panel); stroke-width: 2.5; }
+.gone { fill: none; stroke: var(--rule); stroke-width: 2; stroke-dasharray: 6 5; }
+.strike { stroke: var(--stop); stroke-width: 2.5; }
+.spine { stroke: var(--rule); stroke-width: 3; }
+.spine-dns { stroke: var(--dns); }
+.ruleline { stroke: var(--rule); stroke-width: 1; }
+
+@keyframes march { to { stroke-dashoffset: -42; } }
+.march { animation: march 1.6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .march { animation: none; } }
+
+/* ---------- metro: one request, station by station ---------- */
+.metro { display: grid; }
+.zone { position: relative; padding: 12px 14px 14px 0; border-radius: 14px; }
+.zone::before { content: ""; position: absolute; left: 31px; top: 0; bottom: 0; width: 6px; background: var(--proxy); }
+.zone:first-child::before { top: 64px; border-radius: 3px 3px 0 0; }
+.zone:last-child::before { bottom: 40px; border-radius: 0 0 3px 3px; }
+.zone.kernel { background: var(--band); }
+.zone.core { background: var(--proxy-soft); }
+.zone-tag { margin: 0 0 8px 72px; font: 600 12.5px/1.5 var(--mono); letter-spacing: .03em; color: var(--muted); }
+.zone ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.st { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; }
+.dot {
+  justify-self: center; position: relative; z-index: 1;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--panel); border: 3.5px solid var(--proxy);
+  display: grid; place-items: center; font: 800 14px/1 var(--mono); color: var(--ink);
+}
+.st b, .ret-row b { display: block; font-size: 17px; line-height: 1.35; }
+.st code, .ret-row code { display: block; font: 13px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.ret-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; padding: 14px 14px 4px 0; border-top: 1px dashed var(--rule); }
+.ret {
+  justify-self: center; width: 36px; height: 36px; border-radius: 50%;
+  border: 3px dashed var(--proxy); display: grid; place-items: center;
+  color: var(--proxy); font: 800 16px/1 var(--mono);
+}
+
+/* ---------- gates: hook order ---------- */
+.gates {
+  list-style: none; margin: 0; padding: 2px 2px 10px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(124px, 1fr); gap: 14px;
+  overflow-x: auto;
+}
+.gates li {
+  position: relative; min-width: 0; display: grid; align-content: start; gap: 8px;
+  padding: 14px 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 12px;
+}
+.gates li:not(:last-child)::after { content: "→"; position: absolute; right: -13px; top: 30px; font-size: 13px; color: var(--muted); }
+.gates li.kernel-own { border-style: dashed; }
+.gates li.guard { border-color: var(--proxy); background: var(--proxy-soft); }
+.prio { font: 800 26px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.hook { justify-self: start; font: 600 11.5px/1 var(--mono); padding: 5px 7px; border-radius: 6px; background: var(--band); color: var(--muted); }
+.gates li.guard .hook { background: var(--panel); }
+.gates b { font-size: 15px; line-height: 1.4; }
+.gates code { font: 11.5px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* ---------- reference ---------- */
+.ref { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 0; border-top: 1px solid var(--rule); }
+.ref dt, .ref dd { margin: 0; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+.ref dt { padding-right: 28px; font-weight: 700; white-space: nowrap; }
+.ref dd { font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .ref { grid-template-columns: minmax(0, 1fr); }
+  .ref dt { border-bottom: 0; padding-bottom: 0; }
+}
+
+footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--rule); padding-top: 18px; }
+footer code { font-family: var(--mono); font-size: .92em; }
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="top">
+    <nav class="tabs" aria-label="图解页面">
+      <a href="index.html" aria-current="page">流量链路</a>
+      <a href="files.html">动了哪些文件</a>
+    </nav>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 实测</p>
+    <h1>你的流量走另一条路</h1>
+    <p class="lede">同一台机器、同一张网卡。内核只把你（xuqian，UID 1006）发往公网的连接改道，交给 Windows 上的代理；别人一切照常。</p>
+    <ul class="legend" aria-label="线路颜色">
+      <li><span class="sw" style="--c: var(--proxy)"></span>你的代理流量</li>
+      <li><span class="sw dash"></span>打包后的隧道（SOCKS5）</li>
+      <li><span class="sw" style="--c: var(--plain)"></span>其他用户</li>
+      <li><span class="sw" style="--c: var(--lan)"></span>局域网直连</li>
+      <li><span class="sw" style="--c: var(--dns)"></span>DNS 改送</li>
+      <li><span class="sw" style="--c: var(--stop)"></span>拦下</li>
+    </ul>
+  </header>
+
+  <!-- 1. two roads -->
+  <section class="chapter" aria-labelledby="c-roads">
+    <h2 id="c-roads">两条路</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 460" role="img" aria-label="你的公网连接被内核改道进虚拟网卡 xq-utun，由 sing-box 打包成 SOCKS5，经网卡 ens160 交给局域网里 192.168.5.34:4066 的 Windows 代理出网；其他用户的连接原样经网关 192.168.5.2 出网。">
+          <defs>
+            <marker id="h-ah-proxy" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="f-proxy"/></marker>
+            <marker id="h-ah-plain" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="f-plain"/></marker>
+          </defs>
+
+          <rect x="16" y="40" width="540" height="400" rx="24" class="host"/>
+          <text x="40" y="76" class="s-label">本机 Mico-system</text>
+          <text x="40" y="98" class="s-mono">192.168.5.173 · 多人共用</text>
+
+          <rect x="146" y="118" width="72" height="282" rx="14" class="band"/>
+          <text x="182" y="142" text-anchor="middle" class="s-note">内核分拣</text>
+
+          <!-- lines -->
+          <path d="M106 170 H252" class="ln c-proxy"/>
+          <path d="M316 170 H346" class="ln c-proxy"/>
+          <path d="M516 170 H522 Q532 170 532 180 V234 Q532 244 542 244" class="ln c-proxy tunnel march"/>
+          <path d="M106 340 H508 Q528 340 528 320 V288 Q528 268 548 268" class="ln c-plain"/>
+          <path d="M572 244 H684" class="ln c-proxy tunnel march"/>
+          <path d="M572 268 H596 Q612 268 612 284 V336 Q612 352 628 352 H684" class="ln c-plain"/>
+          <path d="M824 244 H858" class="ln c-proxy" marker-end="url(#h-ah-proxy)"/>
+          <path d="M824 352 H858" class="ln c-plain" marker-end="url(#h-ah-plain)"/>
+
+          <text x="235" y="160" text-anchor="middle" class="s-note s-proxy">改道</text>
+          <text x="300" y="330" text-anchor="middle" class="s-note">原样</text>
+
+          <!-- you -->
+          <circle cx="80" cy="170" r="26" class="f-proxy"/>
+          <circle cx="80" cy="162" r="7.5" class="f-panel"/>
+          <path d="M67 185 a13 10 0 0 1 26 0 Z" class="f-panel"/>
+          <text x="80" y="222" text-anchor="middle" class="s-text">你的程序</text>
+          <text x="80" y="241" text-anchor="middle" class="s-mono">UID 1006</text>
+
+          <!-- others -->
+          <circle cx="80" cy="340" r="26" class="f-plain"/>
+          <circle cx="80" cy="332" r="7.5" class="f-panel"/>
+          <path d="M67 355 a13 10 0 0 1 26 0 Z" class="f-panel"/>
+          <text x="80" y="392" text-anchor="middle" class="s-text">其他用户</text>
+          <text x="80" y="411" text-anchor="middle" class="s-mono">其他 UID · root</text>
+
+          <!-- TUN -->
+          <text x="284" y="134" text-anchor="middle" class="s-text">虚拟网卡</text>
+          <rect x="252" y="146" width="64" height="48" rx="10" class="tun"/>
+          <text x="284" y="176" text-anchor="middle" class="s-mono-strong s-proxy">TUN</text>
+          <text x="284" y="214" text-anchor="middle" class="s-mono">xq-utun</text>
+
+          <!-- sing-box -->
+          <rect x="346" y="136" width="170" height="68" rx="12" class="box"/>
+          <text x="431" y="164" text-anchor="middle" class="s-label">sing-box</text>
+          <text x="431" y="188" text-anchor="middle" class="s-note">接住连接，转交代理</text>
+
+          <!-- NIC -->
+          <rect x="540" y="222" width="32" height="68" rx="6" class="f-ink"/>
+          <text x="580" y="200" class="s-note">网卡</text>
+          <text x="580" y="216" class="s-mono">ens160</text>
+          <text x="628" y="234" text-anchor="middle" class="s-mono s-proxy">SOCKS5</text>
+
+          <!-- LAN -->
+          <text x="676" y="140" class="s-note">局域网</text>
+          <text x="722" y="140" class="s-mono">192.168.5.0/24</text>
+          <rect x="664" y="150" width="180" height="270" rx="18" class="zone-dash"/>
+          <rect x="684" y="212" width="140" height="64" rx="12" class="box-proxy"/>
+          <text x="754" y="240" text-anchor="middle" class="s-text s-bold">Windows 代理</text>
+          <text x="754" y="261" text-anchor="middle" class="s-mono">.34 : 4066</text>
+          <rect x="684" y="320" width="140" height="64" rx="12" class="box"/>
+          <text x="754" y="348" text-anchor="middle" class="s-text s-bold">网关</text>
+          <text x="754" y="369" text-anchor="middle" class="s-mono">192.168.5.2</text>
+
+          <!-- internet -->
+          <rect x="866" y="180" width="124" height="200" rx="40" class="box"/>
+          <text x="928" y="232" text-anchor="middle" class="s-label">互联网</text>
+          <text x="928" y="266" text-anchor="middle" class="s-note">你的出口</text>
+          <text x="928" y="285" text-anchor="middle" class="s-mono s-proxy">179.255.139.228</text>
+          <text x="928" y="322" text-anchor="middle" class="s-note">别人的出口</text>
+          <text x="928" y="341" text-anchor="middle" class="s-note">网关直连</text>
+        </svg>
+      </div>
+      <figcaption>只有你发往公网的连接被改道：进虚拟网卡，由 sing-box 打包，经局域网交给 Windows 上的代理（4066）。别人的连接原样走网关。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 2. sorting -->
+  <section class="chapter" aria-labelledby="c-sort">
+    <h2 id="c-sort">分拣：先看是谁，再看去哪</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 430" role="img" aria-label="每个新连接依次判断：不是 UID 1006 照常走；是你且查询的不是局域网 DNS（包括 127.0.0.53 和公网 DNS），改送 127.0.0.1:1053；去局域网或本机则直连；公网 TCP 打标记进 TUN 交给代理；公网 UDP、ping 和 IPv6 被拦下。">
+          <!-- spine -->
+          <path d="M68 220 H120 M260 220 H300 M440 220 H480" class="ln thin c-ink"/>
+          <path d="M550 250 V284 Q550 300 566 300 H590" class="ln thin c-ink"/>
+          <!-- branches -->
+          <path d="M190 190 V76 Q190 60 206 60 H760" class="ln c-plain"/>
+          <path d="M370 190 V156 Q370 140 386 140 H760" class="ln c-dns"/>
+          <path d="M620 220 H760" class="ln c-lan"/>
+          <path d="M730 300 H760" class="ln c-proxy"/>
+          <path d="M660 330 V364 Q660 380 676 380 H760" class="ln c-stop"/>
+
+          <circle cx="56" cy="220" r="12" class="f-ink"/>
+          <text x="56" y="256" text-anchor="middle" class="s-note">新连接</text>
+
+          <text x="178" y="134" text-anchor="end" class="s-note">不是你</text>
+          <text x="382" y="176" class="s-note">是</text>
+          <text x="280" y="209" text-anchor="middle" class="s-note">是你</text>
+          <text x="460" y="209" text-anchor="middle" class="s-note">不是</text>
+          <text x="690" y="209" text-anchor="middle" class="s-note">局域网 / 本机</text>
+          <text x="540" y="280" text-anchor="end" class="s-note">公网</text>
+          <text x="745" y="290" text-anchor="middle" class="s-mono">TCP</text>
+          <text x="648" y="362" text-anchor="end" class="s-note">UDP · ping · IPv6</text>
+
+          <!-- questions -->
+          <rect x="120" y="190" width="140" height="60" rx="30" class="box"/>
+          <text x="190" y="216" text-anchor="middle" class="s-text s-bold">谁发的？</text>
+          <text x="190" y="236" text-anchor="middle" class="s-mono">meta skuid</text>
+
+          <rect x="300" y="190" width="140" height="60" rx="30" class="box"/>
+          <text x="370" y="216" text-anchor="middle" class="s-text s-bold">是 DNS 吗？</text>
+          <text x="370" y="236" text-anchor="middle" class="s-mono">53 · 非局域网</text>
+
+          <rect x="480" y="190" width="140" height="60" rx="30" class="box"/>
+          <text x="550" y="216" text-anchor="middle" class="s-text s-bold">去哪里？</text>
+          <text x="550" y="236" text-anchor="middle" class="s-mono">@lan_v4 · lo</text>
+
+          <rect x="590" y="270" width="140" height="60" rx="30" class="box"/>
+          <text x="660" y="296" text-anchor="middle" class="s-text s-bold">什么协议？</text>
+          <text x="660" y="316" text-anchor="middle" class="s-mono">tcp · udp · icmp</text>
+
+          <!-- outcomes -->
+          <rect x="760" y="34" width="230" height="52" rx="26" class="pill c-plain"/>
+          <circle cx="786" cy="60" r="8" class="f-plain"/>
+          <text x="804" y="57" class="s-text s-bold">照常走</text>
+          <text x="804" y="75" class="s-note">不改动</text>
+
+          <rect x="760" y="114" width="230" height="52" rx="26" class="pill c-dns"/>
+          <circle cx="786" cy="140" r="8" class="f-dns"/>
+          <text x="804" y="137" class="s-text s-bold">改送本机 DNS</text>
+          <text x="804" y="155" class="s-mono">127.0.0.1:1053</text>
+
+          <rect x="760" y="194" width="230" height="52" rx="26" class="pill c-lan"/>
+          <circle cx="786" cy="220" r="8" class="f-lan"/>
+          <text x="804" y="217" class="s-text s-bold">直连</text>
+          <text x="804" y="235" class="s-note">私网 · 本机 · 组播</text>
+
+          <rect x="760" y="274" width="230" height="52" rx="26" class="pill c-proxy"/>
+          <circle cx="786" cy="300" r="8" class="f-proxy"/>
+          <text x="804" y="297" class="s-text s-bold">进 TUN，交给代理</text>
+          <text x="804" y="315" class="s-mono">标记 0x40000000</text>
+
+          <rect x="760" y="354" width="230" height="52" rx="26" class="pill c-stop"/>
+          <circle cx="786" cy="380" r="8" class="f-stop"/>
+          <text x="804" y="377" class="s-text s-bold">拦下</text>
+          <text x="804" y="395" class="s-note">sing-box 拒绝 · IPv6 无路由</text>
+        </svg>
+      </div>
+      <figcaption>规则只看“谁发的”和“去哪”，从不看本机 IP。公网 UDP 和 ping 也会进 TUN，但 sing-box 只转发 TCP，其余当场拒绝。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 3. one request -->
+  <section class="chapter" aria-labelledby="c-trip">
+    <h2 id="c-trip">一次 HTTPS 请求的往返</h2>
+    <p class="intro">以访问 example.com（<code>104.16.9.34</code>）为例。地址和 mss 取自本机 <code>xq-utun</code> 上的一次抓包。</p>
+    <figure class="plate">
+      <div class="metro">
+        <div class="zone">
+          <p class="zone-tag">你的程序</p>
+          <ol>
+            <li class="st"><span class="dot">1</span><div><b>发起连接</b><code>connect → 104.16.9.34:443 · 源地址 192.168.5.173</code></div></li>
+          </ol>
+        </div>
+        <div class="zone kernel">
+          <p class="zone-tag">内核</p>
+          <ol start="2">
+            <li class="st"><span class="dot">2</span><div><b>记账，认出是你</b><code>conntrack 建条目 · ct mark |= 0x10000000</code></div></li>
+            <li class="st"><span class="dot">3</span><div><b>贴上改道标记</b><code>meta mark |= 0x40000000</code></div></li>
+            <li class="st"><span class="dot">4</span><div><b>按标记重查路由</b><code>rule 18410 → 表 20261 → dev xq-utun</code></div></li>
+            <li class="st"><span class="dot">5</span><div><b>出门检查</b><code>进 TUN 只许 UID 1006（private_tun_access）</code></div></li>
+          </ol>
+        </div>
+        <div class="zone core">
+          <p class="zone-tag">sing-box（root）</p>
+          <ol start="6">
+            <li class="st"><span class="dot">6</span><div><b>进入虚拟网卡</b><code>xq-utun · MTU 1280 · 包里的源地址仍是 192.168.5.173</code></div></li>
+            <li class="st"><span class="dot">7</span><div><b>替对方接电话</b><code>gVisor 用户态 TCP 回 SYN-ACK（mss 1240）</code></div></li>
+            <li class="st"><span class="dot">8</span><div><b>打包交给代理</b><code>SOCKS5 → 192.168.5.34:4066 · 经 ens160</code></div></li>
+          </ol>
+        </div>
+        <div class="zone">
+          <p class="zone-tag">局域网与互联网</p>
+          <ol start="9">
+            <li class="st"><span class="dot">9</span><div><b>代理替你出网</b><code>Windows · Karing 全代理端口 · 出口 179.255.139.228</code></div></li>
+          </ol>
+        </div>
+      </div>
+      <div class="ret-row">
+        <span class="ret" aria-hidden="true">↑</span>
+        <div><b>回程原路返回</b><code>代理 → sing-box → xq-utun → 你的程序 · rp_filter=2 允许回包从 TUN 进来</code></div>
+      </div>
+      <figcaption>第 8 站是 sing-box 自己新开的连接，属于 root，不属于你。改道规则只认你（UID 1006），所以这条连接不贴标记，按普通路由从 <code>ens160</code> 出去。要是它也被贴上标记，就会再进 TUN、回到 sing-box 手里，绕圈出不去。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4. DNS -->
+  <section class="chapter" aria-labelledby="c-dns">
+    <h2 id="c-dns">问路（DNS）也走代理</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 320" role="img" aria-label="你的程序向 127.0.0.53 发 DNS 查询，内核把它改送到 sing-box 的 127.0.0.1:1053，再经 SOCKS5 代理用加密 HTTPS 发给 Cloudflare 1.1.1.1；其他用户的查询原样交给 systemd-resolved，再发往 8.8.8.8。">
+          <rect x="214" y="36" width="76" height="258" rx="14" class="band"/>
+          <text x="252" y="60" text-anchor="middle" class="s-note">内核</text>
+
+          <!-- row: you -->
+          <path d="M94 110 H330" class="ln c-dns"/>
+          <path d="M500 110 H570" class="ln c-proxy tunnel march"/>
+          <path d="M710 110 H800" class="ln c-proxy tunnel march"/>
+          <text x="100" y="98" class="s-mono">问 127.0.0.53</text>
+          <text x="252" y="98" text-anchor="middle" class="s-note">改送</text>
+          <text x="535" y="98" text-anchor="middle" class="s-mono s-proxy">SOCKS5</text>
+          <text x="755" y="98" text-anchor="middle" class="s-note">HTTPS 加密</text>
+
+          <circle cx="70" cy="110" r="24" class="f-proxy"/>
+          <circle cx="70" cy="103" r="7" class="f-panel"/>
+          <path d="M58 124 a12 9 0 0 1 24 0 Z" class="f-panel"/>
+          <text x="70" y="156" text-anchor="middle" class="s-text">你的程序</text>
+
+          <rect x="330" y="80" width="170" height="60" rx="12" class="box"/>
+          <text x="415" y="106" text-anchor="middle" class="s-text s-bold">sing-box DNS</text>
+          <text x="415" y="126" text-anchor="middle" class="s-mono">127.0.0.1:1053</text>
+
+          <rect x="570" y="80" width="140" height="60" rx="12" class="box-proxy"/>
+          <text x="640" y="106" text-anchor="middle" class="s-text s-bold">Windows 代理</text>
+          <text x="640" y="126" text-anchor="middle" class="s-mono">.34 : 4066</text>
+
+          <rect x="800" y="80" width="180" height="60" rx="12" class="box"/>
+          <text x="890" y="106" text-anchor="middle" class="s-text s-bold">Cloudflare DoH</text>
+          <text x="890" y="126" text-anchor="middle" class="s-mono">1.1.1.1:443</text>
+
+          <!-- row: others -->
+          <path d="M94 240 H330" class="ln c-plain"/>
+          <path d="M500 240 H800" class="ln c-plain"/>
+          <text x="100" y="228" class="s-mono">问 127.0.0.53</text>
+          <text x="252" y="228" text-anchor="middle" class="s-note">不动</text>
+          <text x="650" y="228" text-anchor="middle" class="s-note">普通 DNS，直连</text>
+
+          <circle cx="70" cy="240" r="24" class="f-plain"/>
+          <circle cx="70" cy="233" r="7" class="f-panel"/>
+          <path d="M58 254 a12 9 0 0 1 24 0 Z" class="f-panel"/>
+          <text x="70" y="286" text-anchor="middle" class="s-text">其他用户</text>
+
+          <rect x="330" y="210" width="170" height="60" rx="12" class="box"/>
+          <text x="415" y="236" text-anchor="middle" class="s-text s-bold">系统解析器</text>
+          <text x="415" y="256" text-anchor="middle" class="s-mono">systemd-resolved</text>
+
+          <rect x="800" y="210" width="180" height="60" rx="12" class="box"/>
+          <text x="890" y="236" text-anchor="middle" class="s-text s-bold">8.8.8.8</text>
+          <text x="890" y="256" text-anchor="middle" class="s-mono">Google DNS</text>
+        </svg>
+      </div>
+      <figcaption>你的 DNS 查询在内核里被改送给 sing-box，再经代理加密发给 Cloudflare，答案原路返回。别人的查询照常交给系统解析器和 8.8.8.8。</figcaption>
+    </figure>
+
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 250" role="img" aria-label="全机只有一张连接表。你的 DNS 改写单独记在 zone 20261 这本账里，所以别人和你用到同一个源端口 40002 时，各记各的，互不干扰。">
+          <!-- ledger A -->
+          <rect x="40" y="24" width="430" height="180" rx="16" class="box-soft"/>
+          <line x1="66" y1="24" x2="66" y2="204" class="spine"/>
+          <text x="86" y="60" class="s-label">账本 0</text>
+          <text x="156" y="60" class="s-note">所有人共用</text>
+          <line x1="86" y1="114" x2="450" y2="114" class="ruleline"/>
+          <line x1="86" y1="152" x2="450" y2="152" class="ruleline"/>
+          <rect x="161" y="84" width="52" height="24" rx="5" class="f-dnssoft"/>
+          <circle cx="96" cy="96" r="6" class="f-plain"/>
+          <text x="110" y="101" class="s-text">别人</text>
+          <text x="166" y="101" class="s-mono-ink">40002</text>
+          <text x="220" y="101" class="s-mono-ink">→ 127.0.0.53:53</text>
+          <circle cx="96" cy="134" r="6" class="f-plain"/>
+          <text x="110" y="139" class="s-text">解析器</text>
+          <text x="166" y="139" class="s-mono-ink">51133</text>
+          <text x="220" y="139" class="s-mono-ink">→ 8.8.8.8:53</text>
+          <circle cx="96" cy="172" r="6" class="f-proxy"/>
+          <text x="110" y="177" class="s-text">你</text>
+          <text x="166" y="177" class="s-mono-ink">45684</text>
+          <text x="220" y="177" class="s-mono-ink">→ 104.16.9.34:443</text>
+
+          <!-- ledger B -->
+          <rect x="530" y="24" width="430" height="180" rx="16" class="box-dns"/>
+          <line x1="556" y1="24" x2="556" y2="204" class="spine spine-dns"/>
+          <text x="576" y="60" class="s-label">账本 20261</text>
+          <text x="686" y="60" class="s-note">只记你的 DNS 改写</text>
+          <line x1="576" y1="114" x2="940" y2="114" class="ruleline"/>
+          <line x1="576" y1="152" x2="940" y2="152" class="ruleline"/>
+          <rect x="651" y="84" width="52" height="24" rx="5" class="f-dnssoft"/>
+          <circle cx="586" cy="96" r="6" class="f-dns"/>
+          <text x="600" y="101" class="s-text">你</text>
+          <text x="656" y="101" class="s-mono-ink">40002</text>
+          <text x="710" y="101" class="s-mono-ink">→ 127.0.0.53:53 ⇒ 1053</text>
+          <circle cx="586" cy="134" r="6" class="f-dns"/>
+          <text x="600" y="139" class="s-text">你</text>
+          <text x="656" y="139" class="s-mono-ink">38841</text>
+          <text x="710" y="139" class="s-mono-ink">→ 1.1.1.1:53 ⇒ 1053</text>
+
+          <text x="500" y="236" text-anchor="middle" class="s-note">同一个源端口 40002，分记在两本账里，互不干扰</text>
+        </svg>
+      </div>
+      <figcaption>全机只有一张连接表。以前你的 DNS 改写也记在里面，别人碰巧用了同一个端口会被拒一次；现在单独记在 20261 号账本（11-14 修复）。你的普通连接仍记在账本 0，只带标记，不改地址。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5. hook order -->
+  <section class="chapter" aria-labelledby="c-gates">
+    <h2 id="c-gates">内核里的七道关卡</h2>
+    <p class="intro">包离开本机前，按数字从小到大依次过关。除了内核自带的 conntrack，其余都在 nftables 表 <code>inet xq_user_proxy</code> 里。</p>
+    <figure class="plate">
+      <ol class="gates">
+        <li><span class="prio">−300</span><span class="hook">raw</span><b>你的 DNS 单独记账</b><code>dns_zone_<wbr>output</code></li>
+        <li class="kernel-own"><span class="prio">−200</span><span class="hook">内核</span><b>连接记账</b><code>conntrack</code></li>
+        <li><span class="prio">−110</span><span class="hook">filter</span><b>认出你</b><code>classify_<wbr>output</code></li>
+        <li><span class="prio">−100</span><span class="hook">nat</span><b>DNS 改送 1053</b><code>dns_output</code></li>
+        <li><span class="prio">−90</span><span class="hook">route</span><b>贴标记，重查路由</b><code>route_output</code></li>
+        <li><span class="prio">−80</span><span class="hook">filter</span><b>1053 只许你用</b><code>private_dns_<wbr>output</code></li>
+        <li class="guard"><span class="prio">−10</span><span class="hook">postrouting</span><b>出门守卫</b><code>output</code></li>
+      </ol>
+      <figcaption>最后一道守卫：进 TUN 只许你；你的公网包想不经 TUN 直接出网，一律丢弃。过关后才从 <code>xq-utun</code>、<code>ens160</code> 或 <code>lo</code> 离开。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 6. fail closed -->
+  <section class="chapter" aria-labelledby="c-fail">
+    <h2 id="c-fail">坏了也不漏</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 290" role="img" aria-label="平时，路由表 20261 先用虚拟网卡，包交给 sing-box；核心停止后，虚拟网卡消失，包落进兜底的黑洞被丢弃，不会改走直连。">
+          <!-- normal -->
+          <rect x="16" y="16" width="472" height="258" rx="18" class="inner"/>
+          <circle cx="44" cy="47" r="6" class="f-lan"/>
+          <text x="58" y="53" class="s-label">平时</text>
+          <path d="M78 150 H154" class="ln c-proxy"/>
+          <path d="M326 138 H364" class="ln c-proxy"/>
+          <circle cx="60" cy="150" r="18" class="f-proxy"/>
+          <text x="60" y="194" text-anchor="middle" class="s-note">你的公网包</text>
+          <rect x="140" y="78" width="200" height="152" rx="12" class="box"/>
+          <text x="240" y="104" text-anchor="middle" class="s-mono-ink">路由表 20261</text>
+          <rect x="154" y="118" width="172" height="40" rx="8" class="f-soft"/>
+          <text x="166" y="143" class="s-text">① 虚拟网卡</text>
+          <text x="316" y="143" text-anchor="end" class="s-note">先用</text>
+          <rect x="154" y="170" width="172" height="40" rx="8" class="f-band"/>
+          <text x="166" y="195" class="s-text">② 黑洞</text>
+          <text x="316" y="195" text-anchor="end" class="s-note">兜底</text>
+          <rect x="364" y="112" width="108" height="52" rx="10" class="box-proxy"/>
+          <text x="418" y="136" text-anchor="middle" class="s-text s-bold">sing-box</text>
+          <text x="418" y="155" text-anchor="middle" class="s-note">→ 代理</text>
+
+          <!-- core stopped -->
+          <rect x="512" y="16" width="472" height="258" rx="18" class="inner"/>
+          <circle cx="540" cy="47" r="6" class="f-stop"/>
+          <text x="554" y="53" class="s-label">核心停了</text>
+          <path d="M574 150 H600 Q616 150 616 166 V174 Q616 190 632 190 H650" class="ln c-proxy"/>
+          <path d="M822 190 H866" class="ln c-stop"/>
+          <circle cx="556" cy="150" r="18" class="f-proxy"/>
+          <text x="556" y="194" text-anchor="middle" class="s-note">你的公网包</text>
+          <rect x="636" y="78" width="200" height="152" rx="12" class="box"/>
+          <text x="736" y="104" text-anchor="middle" class="s-mono-ink">路由表 20261</text>
+          <rect x="650" y="118" width="172" height="40" rx="8" class="gone"/>
+          <text x="662" y="143" class="s-text s-muted">① 虚拟网卡</text>
+          <line x1="660" y1="138" x2="752" y2="138" class="strike"/>
+          <text x="812" y="143" text-anchor="end" class="s-note s-stop">已消失</text>
+          <rect x="650" y="170" width="172" height="40" rx="8" class="f-stopsoft"/>
+          <text x="662" y="195" class="s-text">② 黑洞</text>
+          <text x="812" y="195" text-anchor="end" class="s-note">兜底</text>
+          <circle cx="912" cy="190" r="34" class="f-ink"/>
+          <text x="912" y="196" text-anchor="middle" class="s-label s-inv">丢弃</text>
+          <text x="912" y="250" text-anchor="middle" class="s-note">不会改走直连</text>
+        </svg>
+      </div>
+      <figcaption>核心一停，虚拟网卡随之消失，你的公网包落进黑洞（<code>metric 32760</code>），不会绕过代理直连。别人不受影响；执行 <code>xq_proxyon</code> 即可恢复。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 7. IP change -->
+  <section class="chapter" aria-labelledby="c-ip">
+    <h2 id="c-ip">换 IP 也照常</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 200" role="img" aria-label="本机 IP 从 192.168.5.173 换成 192.168.5.180 时，规则认的 UID 1006、标记 0x40000000、表 20261 和网卡 xq-utun 都不变，规则一条都不用改。">
+          <defs>
+            <marker id="i-ah" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.5" markerHeight="3.5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="f-ink"/></marker>
+          </defs>
+          <text x="40" y="44" class="s-note">本机 IP</text>
+          <rect x="40" y="60" width="190" height="50" rx="25" class="box"/>
+          <text x="135" y="91" text-anchor="middle" class="s-mono-ink">192.168.5.173</text>
+          <path d="M240 85 H282" class="ln thin c-ink" marker-end="url(#i-ah)"/>
+          <text x="261" y="72" text-anchor="middle" class="s-note">换成</text>
+          <rect x="300" y="60" width="190" height="50" rx="25" class="box"/>
+          <text x="395" y="91" text-anchor="middle" class="s-mono-ink">192.168.5.180</text>
+          <path d="M44 152 l7 7 l13 -14" class="ln thin c-lan"/>
+          <text x="74" y="160" class="s-text">规则一条都不用改</text>
+
+          <text x="560" y="44" class="s-note">规则认的是这些</text>
+          <rect x="560" y="60" width="190" height="44" rx="22" class="pill c-lan"/>
+          <path d="M576 82 l5 5 l10 -10" class="ln thin c-lan"/>
+          <text x="600" y="87" class="s-mono-ink">UID 1006</text>
+          <rect x="770" y="60" width="190" height="44" rx="22" class="pill c-lan"/>
+          <path d="M786 82 l5 5 l10 -10" class="ln thin c-lan"/>
+          <text x="810" y="87" class="s-mono-ink">标记 0x40000000</text>
+          <rect x="560" y="120" width="190" height="44" rx="22" class="pill c-lan"/>
+          <path d="M576 142 l5 5 l10 -10" class="ln thin c-lan"/>
+          <text x="600" y="147" class="s-mono-ink">表 20261</text>
+          <rect x="770" y="120" width="190" height="44" rx="22" class="pill c-lan"/>
+          <path d="M786 142 l5 5 l10 -10" class="ln thin c-lan"/>
+          <text x="810" y="147" class="s-mono-ink">网卡 xq-utun</text>
+        </svg>
+      </div>
+      <figcaption>规则只认人、标记和网卡名，不认本机 IP（已用本机同款规则模拟 .173 → .180 验证）。换 IP 的那一刻，已建立的连接（包括 SSH）会断，重连即可；紧接着的一次 DNS 查询可能丢失，之后自动恢复。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 8. namespace mode -->
+  <section class="chapter" aria-labelledby="c-room">
+    <h2 id="c-room">另一种：只给选中的程序</h2>
+    <figure class="plate">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 340" role="img" aria-label="xq_tun run 把程序放进独立的网络命名空间 xq-tun。房间里只有一张 TUN 网卡 xq-tun0，唯一的出口通向宿主上的 sing-box，再经网卡交给 192.168.5.34:4066 的代理；房间外的程序不受影响。">
+          <defs>
+            <marker id="r-ah" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto"><path d="M0 0 L10 5 L0 10 Z" class="f-proxy"/></marker>
+          </defs>
+          <rect x="16" y="24" width="690" height="296" rx="24" class="host"/>
+          <text x="40" y="58" class="s-label">本机</text>
+          <text x="84" y="58" class="s-note">宿主网络</text>
+
+          <circle cx="480" cy="110" r="14" class="f-plain"/>
+          <text x="504" y="115" class="s-note">房间外的程序照常走，不经过这里</text>
+
+          <rect x="40" y="84" width="360" height="212" rx="18" class="room"/>
+          <text x="62" y="114" class="s-label">密封房间</text>
+          <text x="62" y="134" class="s-mono">netns xq-tun</text>
+          <text x="380" y="114" text-anchor="end" class="s-note">自己的连接账本</text>
+
+          <path d="M164 206 H376" class="ln c-proxy"/>
+          <path d="M424 206 H480" class="ln c-proxy"/>
+          <path d="M640 206 H690" class="ln c-proxy tunnel march"/>
+          <path d="M722 206 H780" class="ln c-proxy tunnel march"/>
+          <path d="M920 206 H952" class="ln c-proxy" marker-end="url(#r-ah)"/>
+          <text x="270" y="196" text-anchor="middle" class="s-note s-proxy">唯一的门</text>
+
+          <circle cx="140" cy="206" r="24" class="f-proxy"/>
+          <circle cx="140" cy="199" r="7" class="f-panel"/>
+          <path d="M128 220 a12 9 0 0 1 24 0 Z" class="f-panel"/>
+          <text x="140" y="252" text-anchor="middle" class="s-note">xq_tun run 启动的程序</text>
+          <text x="62" y="282" class="s-note">问路 → 172.30.255.2（sing-box 接管）</text>
+
+          <text x="392" y="172" text-anchor="end" class="s-mono">xq-tun0</text>
+          <rect x="376" y="182" width="48" height="48" rx="10" class="tun"/>
+          <text x="400" y="211" text-anchor="middle" class="s-mono-strong s-proxy">TUN</text>
+          <text x="392" y="254" text-anchor="end" class="s-mono">172.30.255.1/30</text>
+
+          <rect x="480" y="176" width="160" height="60" rx="12" class="box"/>
+          <text x="560" y="202" text-anchor="middle" class="s-label">sing-box</text>
+          <text x="560" y="222" text-anchor="middle" class="s-mono">xq-tun.service</text>
+
+          <rect x="690" y="176" width="32" height="60" rx="6" class="f-ink"/>
+          <text x="730" y="256" class="s-mono">ens160</text>
+          <rect x="780" y="176" width="140" height="60" rx="12" class="box-proxy"/>
+          <text x="850" y="202" text-anchor="middle" class="s-text s-bold">Windows 代理</text>
+          <text x="850" y="222" text-anchor="middle" class="s-mono">.34 : 4066</text>
+          <text x="944" y="190" text-anchor="middle" class="s-note">互联网</text>
+        </svg>
+      </div>
+      <figcaption>只有用 <code>xq_tun run</code> 启动的程序住进这个房间。房间里只有 <code>lo</code> 和一张 TUN；连接账本、DNS 设置都是房间自己的，<code>xq_proxyoff</code> 也关不掉它。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 9. reference -->
+  <section class="chapter" aria-labelledby="c-ref">
+    <h2 id="c-ref">速查</h2>
+    <dl class="ref">
+      <dt>开关</dt><dd><code>xq_proxyon</code> 开 · <code>xq_proxyoff</code> 关 · <code>xq_proxystatus</code> 查；重启后默认关</dd>
+      <dt>虚拟网卡</dt><dd><code>xq-utun</code> · <code>172.30.254.1/32</code> · MTU 1280 · IPv6 关闭</dd>
+      <dt>核心</dt><dd>sing-box 1.14.4 · root · gVisor 用户态协议栈 · <code>xq-user-proxy.service</code></dd>
+      <dt>上游代理</dt><dd>SOCKS5 <code>192.168.5.34:4066</code>，只承载 TCP</dd>
+      <dt>你的 DNS</dt><dd><code>127.0.0.1:1053</code> → DoH <code>1.1.1.1:443</code>（cloudflare-dns.com），经上游；只解析 IPv4</dd>
+      <dt>别人的 DNS</dt><dd><code>127.0.0.53</code> → systemd-resolved → <code>8.8.8.8</code></dd>
+      <dt>标记位</dt><dd>本人 <code>0x10000000</code> · DNS <code>0x20000000</code> · 改道 <code>0x40000000</code></dd>
+      <dt>策略路由</dt><dd>规则 <code>18410</code> → 表 <code>20261</code>：TUN（metric 10）/ 黑洞（metric 32760）；IPv6 为 unreachable</dd>
+      <dt>连接账本</dt><dd>全机共用一张；你的 DNS 改写在 zone <code>20261</code></dd>
+      <dt>直连范围</dt><dd><code>10.0.0.0/8</code> <code>172.16.0.0/12</code> <code>192.168.0.0/16</code> <code>169.254.0.0/16</code> <code>224.0.0.0/4</code> <code>255.255.255.255</code> · <code>fc00::/7</code> <code>fe80::/10</code> <code>ff00::/8</code></dd>
+      <dt>回包检查</dt><dd><code>rp_filter=2</code>（宽松，允许回包从 TUN 进来）</dd>
+      <dt>房间模式</dt><dd>netns <code>xq-tun</code> · <code>xq-tun0 172.30.255.1/30</code> · 表 <code>2022</code> · DNS <code>172.30.255.2</code> · <code>xq-tun.service</code></dd>
+      <dt>控制器</dt><dd><code>/usr/local/sbin/xq-user-proxyctl</code> · 配置 <code>/etc/xq-user-proxy/sing-box.json</code></dd>
+    </dl>
+  </section>
+
+  <footer>依据本机 2026-11-14 的配置、路由表和一次抓包绘制。源码在 WIKI 的 <code>scripts/xq-user-proxy</code> 与 <code>scripts/xq-tun</code>。</footer>
+</main>
+</body>
+</html>

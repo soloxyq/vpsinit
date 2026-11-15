@@ -1,0 +1,18 @@
+[Unit]
+Description=Restore explicitly enabled XQ WSL proxy mode before user sessions
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network.target network-online.target systemd-user-sessions.service shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/xq-proxy/enabled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xq-proxyctl on
+RemainAfterExit=yes
+TimeoutStartSec=90
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

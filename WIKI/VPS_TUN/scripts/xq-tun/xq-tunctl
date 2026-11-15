@@ -1,0 +1,422 @@
+#!/usr/bin/python3 -I
+"""Manage the fixed xq-tun namespace; never change the host network.
+
+Install root-owned at /usr/local/sbin/xq-tunctl. Root commands use a fixed
+environment. Application arguments/environment are used only after setpriv.
+"""
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import resource
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+NS = 'xq-tun'
+TUN = 'xq-tun0'
+TABLE = 'xq_tun_guard'
+APP_UID = 1006
+OWNER_BIT = 0x10000000
+SERVICE = 'xq-tun.service'
+SETTINGS = Path('/etc/xq-tun/settings.json')
+DNSDIR = Path('/etc/netns/xq-tun')
+STATE = Path('/run/xq-tun')
+MARKER = STATE / 'namespace.json'
+NSPATH = Path('/run/netns/xq-tun')
+SELF = '/usr/local/sbin/xq-tunctl'
+SHELL_RC = Path('/usr/local/share/xq-tun/shell.rc')
+IP = '/usr/sbin/ip'
+NFT = '/usr/sbin/nft'
+SYSTEMCTL = '/usr/bin/systemctl'
+MOUNT = '/usr/bin/mount'
+SETPRIV = '/usr/bin/setpriv'
+ROOT_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
+SAFE_APP_KEYS = {'LANG', 'LANGUAGE', 'TERM', 'COLORTERM', 'TZ'}
+SAFE_APP_KEYS.update('LC_' + name for name in (
+    'ALL', 'CTYPE', 'NUMERIC', 'TIME', 'COLLATE', 'MONETARY', 'MESSAGES',
+    'PAPER', 'NAME', 'ADDRESS', 'TELEPHONE', 'MEASUREMENT', 'IDENTIFICATION'))
+
+
+def run(args, *, check=True, data=None, timeout=30):
+    result = subprocess.run(args, input=data, text=True, capture_output=True,
+                            timeout=timeout, env=ROOT_ENV, close_fds=True)
+    if check and result.returncode:
+        raise RuntimeError(' '.join(args) + ': ' + result.stderr.strip())
+    return result
+
+
+def nsrun(args, **kwargs):
+    return run([IP, 'netns', 'exec', NS, *args], **kwargs)
+
+
+def trusted(path, *, directory=False):
+    """Reject symlinks or user-writable control inputs, including ancestors."""
+    path = Path(path)
+    for candidate in (path, *path.parents):
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError(f'Untrusted root control path: {candidate}')
+    mode = path.stat().st_mode
+    if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+        raise RuntimeError(f'Unexpected control path type: {path}')
+
+
+def load_settings():
+    trusted(SETTINGS)
+    data = json.loads(SETTINGS.read_text())
+    account = pwd.getpwnam(data['user'])
+    if account.pw_uid == 0 or (account.pw_uid, account.pw_gid) != (data['uid'], data['gid']):
+        raise RuntimeError('Configured application UID/GID does not match passwd')
+    if (data['user'], data['uid'], data['gid']) != ('xuqian', 1006, 1006):
+        raise RuntimeError('This controller is scoped to xuqian (1006:1006)')
+    if (data['upstream_host'], data['upstream_port']) != ('192.168.5.34', 4066):
+        raise RuntimeError('Unexpected upstream in root settings')
+    caller = os.environ.get('SUDO_UID')
+    if caller is not None and caller not in ('0', str(account.pw_uid)):
+        raise RuntimeError('This entry point is restricted to the configured user')
+    return data, account
+
+
+def atomic_json(path, data):
+    fd, name = tempfile.mkstemp(prefix='.state-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(name, 0o600)
+        os.replace(name, path)
+    finally:
+        if os.path.lexists(name):
+            os.unlink(name)
+
+
+@contextlib.contextmanager
+def state_lock():
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    trusted(STATE, directory=True)
+    lock = STATE / 'lock'
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        trusted(lock)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def identity(path):
+    info = Path(path).stat()
+    return [info.st_dev, info.st_ino]
+
+
+def namespace_exists():
+    return os.path.exists(NSPATH)
+
+
+def owned_namespace():
+    trusted(MARKER)
+    data = json.loads(MARKER.read_text())
+    if data['boot_id'] != Path('/proc/sys/kernel/random/boot_id').read_text().strip():
+        raise RuntimeError('Namespace marker belongs to a different boot')
+    if identity(NSPATH) != data['identity']:
+        raise RuntimeError('Namespace ownership marker does not match; refusing to touch it')
+    if identity(NSPATH) == identity('/proc/1/ns/net'):
+        raise RuntimeError('Refusing to operate on the host network namespace')
+    return data
+
+
+def check_resolver_files(base):
+    resolv = base / 'resolv.conf'
+    nss = base / 'nsswitch.conf'
+    nameservers = [line.split()[1:] for line in resolv.read_text().splitlines()
+                   if line.split() and line.split()[0] == 'nameserver']
+    if nameservers != [['172.30.255.2']]:
+        raise RuntimeError(f'{resolv} must use only nameserver 172.30.255.2')
+    hosts = [line.split('#', 1)[0].split()[1:]
+             for line in nss.read_text().splitlines() if line.split() and line.split()[0] == 'hosts:']
+    if hosts != [['files', 'dns']]:
+        raise RuntimeError(f'{nss} must use hosts: files dns')
+
+
+def guard_source():
+    return f'''table inet {TABLE} {{
+  chain classify_output {{
+    type filter hook output priority -110; policy accept;
+    meta skuid {APP_UID} ct direction original ct mark set ct mark | {OWNER_BIT:#x}
+  }}
+  chain output {{
+    type filter hook output priority -10; policy drop;
+    oifname "lo" counter accept
+    meta nfproto ipv4 oifname "{TUN}" meta skuid {APP_UID} counter accept
+    oifname "{TUN}" meta skuid != {APP_UID} counter reject with icmpx type admin-prohibited
+    meta nfproto ipv4 oifname "{TUN}" ct mark & {OWNER_BIT:#x} != 0 counter accept
+    counter reject with icmpx type admin-prohibited
+  }}
+  chain forward {{
+    type filter hook forward priority -10; policy drop;
+    counter reject with icmpx type admin-prohibited
+  }}
+}}
+'''
+
+
+def guard_digest():
+    # --stateless omits packet/byte values, which change during normal traffic.
+    data = nsrun([NFT, '--stateless', 'list', 'table', 'inet', TABLE]).stdout
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def check_links():
+    links = json.loads(run([IP, '-n', NS, '-j', 'link', 'show']).stdout)
+    names = {link['ifname'] for link in links}
+    unexpected = names - {'lo', TUN}
+    if unexpected:
+        raise RuntimeError('Unexpected interfaces in isolated namespace: ' + ', '.join(sorted(unexpected)))
+    return names
+
+
+def setup():
+    for name in ('resolv.conf', 'nsswitch.conf'):
+        trusted(DNSDIR / name)
+    check_resolver_files(DNSDIR)
+    with state_lock():
+        if namespace_exists():
+            data = owned_namespace()
+        else:
+            # ip netns add must run in the host mount namespace so the core can
+            # see its bind mount. The oneshot service must not use PrivateMounts.
+            if identity('/proc/self/ns/mnt') != identity('/proc/1/ns/mnt'):
+                raise RuntimeError('setup must run in the host mount namespace')
+            run([IP, 'netns', 'add', NS])
+            data = {'identity': identity(NSPATH),
+                    'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+            atomic_json(MARKER, data)
+        check_links()
+        exists = nsrun([NFT, 'list', 'table', 'inet', TABLE], check=False).returncode == 0
+        rules = (f'delete table inet {TABLE}\n' if exists else '') + guard_source()
+        nsrun([NFT, '--check', '-f', '-'], data=rules)
+        nsrun([NFT, '-f', '-'], data=rules)
+        data['guard_digest'] = guard_digest()
+        atomic_json(MARKER, data)
+        # Guard exists before any interface is activated.
+        run([IP, '-n', NS, 'link', 'set', 'lo', 'up'])
+    print('xq-tun namespace and guard ready; host networking unchanged')
+
+
+def check_ready(*, require_active=True):
+    data = owned_namespace()
+    if require_active and run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode:
+        raise RuntimeError('Core is not active; run xq_tun start from the host shell')
+    if TUN not in check_links():
+        raise RuntimeError('TUN interface is absent; no host fallback will be used')
+    if guard_digest() != data.get('guard_digest'):
+        raise RuntimeError('Namespace guard has changed; refusing to launch an application')
+    for address in ('1.1.1.1', '172.30.255.2'):
+        routes = json.loads(run([IP, '-n', NS, '-j', '-4', 'route', 'get', address]).stdout)
+        if not routes or any(route.get('dev') != TUN for route in routes):
+            raise RuntimeError(f'{address} is not routed through {TUN}')
+    check_resolver_files(DNSDIR)
+
+
+def start():
+    # Do not hold the namespace lock while systemctl waits for setup.
+    run([SYSTEMCTL, 'start', SERVICE], timeout=60)
+    for attempt in range(30):
+        try:
+            check_ready()
+            print('xq-tun ready (IPv4 TCP and proxied DNS)')
+            return
+        except RuntimeError:
+            if attempt == 29:
+                raise
+            time.sleep(0.2)
+
+
+def stop():
+    run([SYSTEMCTL, 'stop', SERVICE], timeout=45)
+    print('Core stopped; namespace and guard retained. Existing isolated applications have no external network.')
+
+
+def teardown():
+    with state_lock():
+        if not namespace_exists():
+            MARKER.unlink(missing_ok=True)
+            return
+        owned_namespace()
+        core = run([SYSTEMCTL, 'show', SERVICE, '-p', 'ActiveState', '--value']).stdout.strip()
+        if core not in ('inactive', 'failed'):
+            raise RuntimeError('Stop xq-tun.service before removing the namespace')
+        pids = run([IP, 'netns', 'pids', NS]).stdout.split()
+        if pids:
+            raise RuntimeError('Namespace still has processes; exit them first. PIDs: ' + ', '.join(pids))
+        run([IP, 'netns', 'delete', NS])
+        MARKER.unlink(missing_ok=True)
+    print('xq-tun namespace removed; host networking unchanged')
+
+
+def status(settings):
+    print('Scope: xq-tun applications only; host network unchanged')
+    print(f'Application user: {settings["user"]} ({settings["uid"]}:{settings["gid"]})')
+    print(f'Upstream: SOCKS5 {settings["upstream_host"]}:{settings["upstream_port"]} (TCP only)')
+    print('Core: ' + run([SYSTEMCTL, 'is-active', SERVICE], check=False).stdout.strip())
+    print('Namespace: ' + ('present' if namespace_exists() else 'absent'))
+    if not namespace_exists():
+        return 1
+    owned_namespace()
+    try:
+        check_ready()
+        print('Readiness: ready (does not prove current upstream connectivity)')
+        code = 0
+    except RuntimeError as error:
+        print('Readiness: ' + str(error))
+        code = 1
+    for args in ([IP, '-n', NS, '-brief', 'address'],
+                 [IP, '-n', NS, '-4', 'route', 'show', 'table', 'all'],
+                 [IP, 'netns', 'pids', NS]):
+        result = run(args, check=False)
+        print(result.stdout.strip() or '(none)')
+    return code
+
+
+def app_environment(account, app_path, supplied=None):
+    source = os.environ if supplied is None else supplied
+    if not isinstance(source, dict) and supplied is not None:
+        raise RuntimeError('Invalid application environment')
+    env = {key: value for key, value in source.items()
+           if key in SAFE_APP_KEYS and isinstance(value, str) and len(value) <= 8192 and '\x00' not in value}
+    if not isinstance(app_path, str) or not app_path or len(app_path) > 32768 or '\x00' in app_path:
+        raise RuntimeError('Invalid application PATH')
+    env.update(HOME=account.pw_dir, USER=account.pw_name, LOGNAME=account.pw_name,
+               SHELL='/bin/bash', PATH=app_path, XQ_TUN_ACTIVE='1', XQ_TUN_NAMESPACE=NS)
+    env.setdefault('LANG', 'C.UTF-8')
+    return env
+
+
+def close_extra_fds():
+    # Preserve normal stdin/stdout/stderr only, not host sockets or namespace FDs.
+    limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    if limit == resource.RLIM_INFINITY:
+        limit = 1048576
+    os.closerange(3, limit)
+
+
+def launch(account, argv, app_path):
+    if not argv:
+        raise RuntimeError('run requires a command')
+    check_ready()
+    env = app_environment(account, app_path)
+    payload = json.dumps({'env': env, 'path': app_path})
+    close_extra_fds()
+    # ip netns exec also creates the private mount namespace for resolver files.
+    os.execve(IP, [IP, 'netns', 'exec', NS, SELF, '_enter', payload, *argv], ROOT_ENV)
+
+
+def mask_resolver_sockets():
+    # Called only after proving that this is an isolated mount namespace.
+    run([MOUNT, '--make-rprivate', '/'])
+    masked = set()
+    for directory in (Path('/run/nscd'), Path('/var/run/nscd')):
+        if directory.is_dir():
+            target = directory.resolve()
+            if target in masked:
+                continue
+            trusted(target, directory=True)
+            run([MOUNT, '-t', 'tmpfs', '-o', 'nosuid,nodev,noexec,mode=000,size=4096',
+                 'xq-tun-nscd-mask', str(target)])
+            masked.add(target)
+    legacy_socket = Path('/var/run/.nscd_socket')
+    if legacy_socket.exists():
+        if not stat.S_ISSOCK(legacy_socket.lstat().st_mode):
+            raise RuntimeError('Unexpected legacy nscd path type')
+        run([MOUNT, '--bind', '/dev/null', str(legacy_socket)])
+        run([MOUNT, '-o', 'remount,bind,ro', str(legacy_socket)])
+
+
+def enter(account, payload, argv):
+    data = owned_namespace()
+    if identity('/proc/self/ns/net') != data['identity']:
+        raise RuntimeError('Internal entry refused outside xq-tun namespace')
+    if identity('/proc/self/ns/mnt') == identity('/proc/1/ns/mnt'):
+        raise RuntimeError('Internal entry requires a private mount namespace')
+    # iproute2 can warn about a failed bind mount but still execute the program.
+    # Verify the effective views before permitting an application to start.
+    check_resolver_files(Path('/etc'))
+    for name in ('resolv.conf', 'nsswitch.conf'):
+        if identity(Path('/etc') / name) != identity(DNSDIR / name):
+            raise RuntimeError(f'Namespace bind mount for {name} was not applied')
+    mask_resolver_sockets()
+    request = json.loads(payload)
+    env = app_environment(account, request['path'], request['env'])
+    if not argv:
+        raise RuntimeError('Internal entry has no application command')
+    args = [SETPRIV, '--reuid', str(account.pw_uid), '--regid', str(account.pw_gid),
+            '--clear-groups', '--inh-caps=-all', '--ambient-caps=-all',
+            '--bounding-set=-all', '--no-new-privs', '--', '/usr/bin/python3', '-I', '-c',
+            'import json,os,sys; os.execvpe(sys.argv[2],sys.argv[2:],json.loads(sys.argv[1]))',
+            json.dumps(env), *argv]
+    os.umask(0o022)
+    close_extra_fds()
+    os.execve(SETPRIV, args, ROOT_ENV)
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        raise RuntimeError('Use xq_tun from the host shell; the controller requires sudo')
+    settings, account = load_settings()
+    app_path = f'{account.pw_dir}/.local/bin:/usr/local/bin:/usr/bin:/bin'
+    if argv[:1] == ['--app-path']:
+        if len(argv) < 3:
+            raise RuntimeError('--app-path requires a value and shell/run command')
+        app_path, argv = argv[1], argv[2:]
+        if argv[0] not in ('shell', 'run'):
+            raise RuntimeError('--app-path is only accepted for shell/run')
+    if not argv:
+        raise RuntimeError('Usage: xq_tun {start|stop|restart|status|shell|run COMMAND...}')
+    command, rest = argv[0], argv[1:]
+    if command in ('run', 'shell') and os.environ.get('SUDO_UID') != str(APP_UID):
+        raise RuntimeError('Application entry requires sudo from xuqian (UID 1006); root and other users cannot use it')
+    if command == '_enter':
+        if len(rest) < 2:
+            raise RuntimeError('Invalid internal entry')
+        enter(account, rest[0], rest[1:])
+    elif command == 'run':
+        launch(account, rest[1:] if rest[:1] == ['--'] else rest, app_path)
+    elif command == 'shell' and not rest:
+        trusted(SHELL_RC)
+        launch(account, ['/bin/bash', '--rcfile', str(SHELL_RC), '-i'], app_path)
+    elif rest:
+        raise RuntimeError('Unexpected command arguments')
+    elif command == 'setup':
+        setup()
+    elif command == 'teardown':
+        teardown()
+    elif command == 'start':
+        start()
+    elif command == 'stop':
+        stop()
+    elif command == 'restart':
+        stop()
+        start()
+    elif command == 'status':
+        return status(settings)
+    elif command == 'check':
+        check_ready()
+    else:
+        raise RuntimeError('Unknown command')
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print('xq-tun: ' + str(error), file=sys.stderr)
+        sys.exit(1)

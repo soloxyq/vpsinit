@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TUN 改动文件清单</title>
+<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14 的逐项核对整理。">
+<style>
+/* Same transit-map tokens as index.html, plus status colours for files:
+   blue = added by this solution, amber = existing file changed,
+   dashed = runtime only, grey = backup, green = deliberately untouched. */
+:root {
+  --paper: #F2F4F7;
+  --panel: #FFFFFF;
+  --band: #E3E8EE;
+  --ink: #16202B;
+  --muted: #5B6876;
+  --rule: #D2D9E1;
+  --proxy: #1E62D0;
+  --proxy-soft: #E2ECFB;
+  --proxy-ink: #174EA6;
+  --lan: #1F8F55;
+  --lan-soft: #DDF3E6;
+  --lan-ink: #17663D;
+  --dns: #C27C00;
+  --dns-soft: #FBF0D9;
+  --dns-ink: #8A5600;
+  --stop: #D23A3A;
+  --stop-soft: #FBE6E6;
+  --stop-ink: #A92B2B;
+  --sans: "Inter", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
+  color-scheme: light;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0D131A; --panel: #141C25; --band: #1E2833; --ink: #E4EAF0; --muted: #94A1AE; --rule: #2A3542;
+    --proxy: #5C9BFF; --proxy-soft: #172947; --proxy-ink: #8AB8FF;
+    --lan: #43BE7E; --lan-soft: #12301F; --lan-ink: #6FD39A;
+    --dns: #EDB13F; --dns-soft: #3A2E12; --dns-ink: #F2C060;
+    --stop: #FF6B6B; --stop-soft: #3B1D22; --stop-ink: #FF8C8C;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0D131A; --panel: #141C25; --band: #1E2833; --ink: #E4EAF0; --muted: #94A1AE; --rule: #2A3542;
+  --proxy: #5C9BFF; --proxy-soft: #172947; --proxy-ink: #8AB8FF;
+  --lan: #43BE7E; --lan-soft: #12301F; --lan-ink: #6FD39A;
+  --dns: #EDB13F; --dns-soft: #3A2E12; --dns-ink: #F2C060;
+  --stop: #FF6B6B; --stop-soft: #3B1D22; --stop-ink: #FF8C8C;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.65 var(--sans); }
+
+.page {
+  max-width: 1080px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 72px;
+  display: grid; gap: 64px;
+}
+
+/* ---------- page tabs (shared with index.html) ---------- */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.tabs a {
+  font: 600 14px/1 var(--sans); color: var(--ink); text-decoration: none;
+  padding: 9px 14px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel);
+}
+.tabs a:hover { border-color: var(--ink); }
+.tabs a[aria-current="page"] { background: var(--ink); border-color: var(--ink); color: var(--panel); }
+.tabs a:focus-visible { outline: 3px solid var(--proxy); outline-offset: 2px; }
+
+/* ---------- header ---------- */
+.top { display: grid; gap: 16px; }
+.eyebrow { margin: 0; font: 600 13px/1.4 var(--mono); letter-spacing: .04em; color: var(--muted); }
+h1 { margin: 0; font-size: clamp(32px, 6vw, 56px); line-height: 1.12; font-weight: 800; letter-spacing: -.01em; text-wrap: balance; }
+.lede { margin: 0; max-width: 36em; font-size: clamp(16px, 2.1vw, 19px); color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 0; padding: 0; list-style: none; font-size: 14px; }
+.legend li { display: inline-flex; align-items: center; gap: 9px; }
+
+/* ---------- chapters & plates ---------- */
+.chapter { display: grid; gap: 16px; min-width: 0; }
+.chapter h2 { margin: 0; font-size: clamp(22px, 3.2vw, 30px); line-height: 1.25; font-weight: 800; text-wrap: balance; }
+.intro { margin: -6px 0 0; max-width: 44em; color: var(--muted); }
+figure.plate {
+  margin: 0; min-width: 0; display: grid; gap: 14px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 18px; padding: 18px;
+}
+figcaption { font-size: 15.5px; line-height: 1.6; color: var(--muted); max-width: 46em; }
+.intro code, figcaption code, .ref code, .ev code.inline {
+  font-family: var(--mono); font-size: .9em; color: var(--ink);
+  background: var(--band); padding: .05em .35em; border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- status badges ---------- */
+.b {
+  display: inline-block; flex: none; white-space: nowrap;
+  font: 700 12px/1 var(--sans); padding: 4px 7px; border-radius: 6px;
+}
+.b.new  { background: var(--proxy-soft); color: var(--proxy-ink); }
+.b.mod  { background: var(--dns-soft); color: var(--dns-ink); }
+.b.tmp  { background: transparent; color: var(--muted); border: 1.5px dashed var(--muted); padding: 2.5px 5.5px; }
+.b.bak  { background: var(--band); color: var(--muted); }
+.b.keep { background: var(--lan-soft); color: var(--lan-ink); }
+
+/* ---------- the map: one card per top-level directory ---------- */
+.map { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.district {
+  min-width: 0; background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 14px; padding: 14px 16px 16px;
+}
+.district.home { grid-column: 1 / -1; background: var(--panel); border: 2px solid var(--dns); }
+.district.run { border: 1.5px dashed var(--muted); }
+.district > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-bottom: 8px; }
+.district h3 { margin: 0; font: 800 19px/1.3 var(--mono); }
+.district > header span { font-size: 14px; color: var(--muted); }
+.home-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
+
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { padding-left: 14px; }
+.tree li { position: relative; padding: 4px 0 4px 20px; min-width: 0; }
+.tree li::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 2px solid var(--rule); }
+.tree li:last-child::before { bottom: auto; height: 16px; }
+.tree li::after { content: ""; position: absolute; left: 0; top: 15px; width: 13px; border-top: 2px solid var(--rule); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.nm { font: 600 14px/1.6 var(--mono); overflow-wrap: anywhere; min-width: 0; }
+.dir { font: 700 14px/1.6 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.md { font-size: 12px; line-height: 1; color: var(--muted); border: 1px solid var(--rule); border-radius: 999px; padding: 3px 7px; white-space: nowrap; }
+.ds { display: block; font-size: 14px; line-height: 1.5; color: var(--muted); }
+
+/* ---------- diffs of the two changed files ---------- */
+.diffs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.fcard { min-width: 0; display: grid; gap: 10px; border: 2px solid var(--dns); border-radius: 14px; padding: 14px 16px 16px; }
+.fcard header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.fcard header code { font: 700 15px/1.4 var(--mono); overflow-wrap: anywhere; }
+.when { margin: 4px 0 0; font-size: 15px; line-height: 1.55; }
+.when time { font: 700 13px/1 var(--mono); color: var(--muted); margin-right: 10px; }
+.diff {
+  min-width: 0; overflow-x: auto; padding: 8px 0;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 10px;
+  font: 13px/1.65 var(--mono);
+}
+.diff > div { white-space: pre; padding: 0 12px; width: max-content; min-width: 100%; }
+.diff .add { background: var(--lan-soft); color: var(--lan-ink); }
+.diff .del { background: var(--stop-soft); color: var(--stop-ink); }
+.diff .gap { color: var(--muted); }
+
+/* ---------- kernel state (not files) ---------- */
+.kgrid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.kgrid li.wide { grid-column: span 2; }
+.kgrid li {
+  min-width: 0; display: grid; gap: 6px; align-content: start;
+  padding: 14px; border-radius: 12px; background: var(--paper); border: 1.5px dashed var(--muted);
+}
+.kgrid b { font-size: 15px; }
+.kgrid code { font: 700 14px/1.45 var(--mono); color: var(--proxy-ink); overflow-wrap: anywhere; }
+.kgrid span { font-size: 14px; line-height: 1.5; color: var(--muted); }
+
+/* ---------- timeline ---------- */
+.days { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 32px; }
+.day h3 { margin: 0 0 10px; font: 800 15px/1.4 var(--mono); color: var(--muted); letter-spacing: .02em; }
+.tl { list-style: none; margin: 0; padding: 0; }
+.tl > li { display: grid; grid-template-columns: 96px 26px minmax(0, 1fr); }
+.tl time { font: 700 13px/1.75 var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.rail { position: relative; }
+.rail::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 3px; transform: translateX(-50%); background: var(--rule); }
+.tl > li:first-child > .rail::before { top: 11px; }
+.tl > li:last-child > .rail::before { bottom: auto; height: 11px; }
+.rail::after {
+  content: ""; position: absolute; left: 50%; top: 5px; width: 13px; height: 13px; transform: translateX(-50%);
+  border-radius: 50%; background: var(--panel); border: 3px solid var(--proxy); box-sizing: border-box;
+}
+.ev { min-width: 0; padding-bottom: 18px; }
+.ev b { display: block; font-size: 16px; line-height: 1.4; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 7px 0 6px; padding: 0; list-style: none; }
+.chips li { font: 12.5px/1 var(--mono); padding: 5px 7px; border-radius: 6px; background: var(--proxy-soft); color: var(--proxy-ink); }
+.chips li.h { background: var(--dns-soft); color: var(--dns-ink); }
+.bk { margin: 0; font: 12px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* ---------- lists & commands ---------- */
+.ref { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 0; border-top: 1px solid var(--rule); }
+.ref dt, .ref dd { margin: 0; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+.ref dt { padding-right: 28px; font-weight: 700; }
+.ref dd { font-size: 15px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.cmd {
+  margin: 0; min-width: 0; overflow-x: auto; white-space: pre;
+  padding: 14px 16px; background: var(--paper); border: 1px solid var(--rule); border-radius: 12px;
+  font: 13.5px/1.75 var(--mono);
+}
+.cmd .c { color: var(--muted); }
+
+footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--rule); padding-top: 18px; }
+footer code { font-family: var(--mono); font-size: .92em; }
+
+@media (max-width: 860px) {
+  .diffs, .days { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .map, .home-cols, .kgrid { grid-template-columns: minmax(0, 1fr); }
+  .kgrid li.wide { grid-column: auto; }
+}
+@media (max-width: 560px) {
+  .ref { grid-template-columns: minmax(0, 1fr); }
+  .ref dt { border-bottom: 0; padding-bottom: 0; }
+  .tl > li { grid-template-columns: 52px 22px minmax(0, 1fr); }
+  .tl time { font-size: 12px; white-space: normal; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="top">
+    <nav class="tabs" aria-label="图解页面">
+      <a href="index.html">流量链路</a>
+      <a href="files.html" aria-current="page">动了哪些文件</a>
+    </nav>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对</p>
+    <h1>动了哪些文件</h1>
+    <p class="lede">系统原有的设置文件一个没改。新文件都放在名字带 xq 的独立位置；被改过的旧文件只有两个，都在你的家目录。</p>
+    <ul class="legend" aria-label="标记含义">
+      <li><span class="b new">新增</span>本方案放进去的</li>
+      <li><span class="b mod">改过</span>原有文件被改动</li>
+      <li><span class="b tmp">运行时</span>在内存里，重启清空</li>
+      <li><span class="b bak">备份</span>改动前的副本</li>
+      <li><span class="b keep">没动</span>特意没碰</li>
+    </ul>
+  </header>
+
+  <!-- 1. where everything lives -->
+  <section class="chapter" aria-labelledby="c-map">
+    <h2 id="c-map">文件都放在哪</h2>
+    <figure class="plate">
+      <div class="map">
+
+        <section class="district home" aria-labelledby="d-home">
+          <header><h3 id="d-home">/home/xuqian</h3><span>你的家目录 · 唯一改过旧文件的地方</span></header>
+          <div class="home-cols">
+            <ul class="tree">
+              <li><div class="row"><span class="nm">.bashrc</span><span class="b mod">改过</span></div><span class="ds">末尾加载快捷函数；删掉旧的 16791 函数</span></li>
+              <li><div class="row"><span class="nm">.bashrc.before-xq-tun-20261113-223304-pl7cz8oj</span><span class="b bak">备份</span></div><span class="ds">加载块之前的原文件</span></li>
+              <li><div class="row"><span class="nm">.bashrc.before-remove-16791-20261114-024758</span><span class="b bak">备份</span></div><span class="ds">删旧函数之前的原文件</span></li>
+            </ul>
+            <ul class="tree">
+              <li><span class="dir">.vscode-server/data/Machine/</span>
+                <ul>
+                  <li><div class="row"><span class="nm">settings.json</span><span class="b mod">改过</span></div><span class="ds">http.proxy 改为 192.168.5.34:4066</span></li>
+                  <li><div class="row"><span class="nm">settings.json.before-remove-16791-20261114-031708</span><span class="b bak">备份</span></div><span class="ds">改之前的原文件</span></li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="district" aria-labelledby="d-etc">
+          <header><h3 id="d-etc">/etc</h3><span>设置</span></header>
+          <ul class="tree">
+            <li><span class="dir">systemd/system/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-user-proxy.service</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心的服务定义；不开机自启</span></li>
+                <li><div class="row"><span class="nm">xq-tun-netns.service</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">建房间和守卫；未设开机自启</span></li>
+                <li><div class="row"><span class="nm">xq-tun.service</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">房间的核心；未设开机自启</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">xq-user-proxy/</span>
+              <ul>
+                <li><div class="row"><span class="nm">sing-box.json</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心配置：TUN、DNS、上游 4066</span></li>
+                <li><div class="row"><span class="nm">managed-by</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">归属标记，防止误覆盖</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">xq-tun/</span>
+              <ul>
+                <li><div class="row"><span class="nm">sing-box.json</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">房间核心的配置</span></li>
+                <li><div class="row"><span class="nm">settings.json</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">用户 xuqian、上游 .34:4066</span></li>
+                <li><div class="row"><span class="nm">managed-by</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">归属标记</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">netns/xq-tun/</span>
+              <ul>
+                <li><div class="row"><span class="nm">resolv.conf</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">房间里的 DNS：172.30.255.2</span></li>
+                <li><div class="row"><span class="nm">nsswitch.conf</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">房间里查域名的顺序</span></li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+
+        <section class="district" aria-labelledby="d-usr">
+          <header><h3 id="d-usr">/usr/local</h3><span>程序</span></header>
+          <ul class="tree">
+            <li><span class="dir">sbin/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-user-proxyctl</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">开关：on / off / status</span></li>
+                <li><div class="row"><span class="nm">xq-tunctl</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">建房、启停、进房</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">bin/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq_tun</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">命令 xq_tun run / shell / status</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">lib/xq-tun/</span>
+              <ul>
+                <li><div class="row"><span class="nm">sing-box-1.14.4/sing-box</span><span class="b new">新增</span><span class="md">共用</span></div><span class="ds">核心程序，两种模式都用它</span></li>
+                <li><div class="row"><span class="nm">verify.py</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">验收脚本</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">lib/xq-user-proxy/</span>
+              <ul>
+                <li><div class="row"><span class="nm">verify.py</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">不停服验收脚本</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">share/xq-tun/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-tun.bash</span><span class="b new">新增</span><span class="md">共用</span></div><span class="ds">终端快捷函数 xq_proxyon 等</span></li>
+                <li><div class="row"><span class="nm">shell.rc</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">xq_tun shell 的启动脚本</span></li>
+                <li><div class="row"><span class="nm">configure-shell.py</span><span class="b new">新增</span><span class="md">共用</span></div><span class="ds">往 ~/.bashrc 写加载块</span></li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+
+        <section class="district run" aria-labelledby="d-run">
+          <header><h3 id="d-run">/run</h3><span>运行时 · 重启清空</span></header>
+          <ul class="tree">
+            <li><span class="dir">xq-user-proxy/</span>
+              <ul>
+                <li><div class="row"><span class="nm">enabled</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">开关标记：有它就是 ON</span></li>
+                <li><div class="row"><span class="nm">state.json</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">当前阶段和守卫状态</span></li>
+                <li><div class="row"><span class="nm">before.json</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">开启前的路由、规则、DNS 快照</span></li>
+                <li><div class="row"><span class="nm">lock</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">防止两个操作同时进行</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">xq-tun/</span>
+              <ul>
+                <li><div class="row"><span class="nm">namespace.json</span><span class="b tmp">运行时</span><span class="md">房间</span></div><span class="ds">房间的身份和守卫指纹</span></li>
+                <li><div class="row"><span class="nm">lock</span><span class="b tmp">运行时</span><span class="md">房间</span></div></li>
+              </ul>
+            </li>
+            <li><div class="row"><span class="nm">netns/xq-tun</span><span class="b tmp">运行时</span><span class="md">房间</span></div><span class="ds">房间本身（命名空间的入口）</span></li>
+            <li><div class="row"><span class="nm">xq-user-proxy-install.lock · xq-tun-install.lock</span><span class="b tmp">运行时</span></div><span class="ds">安装锁</span></li>
+            <li><span class="dir">NetworkManager/system-connections/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-utun.nmconnection</span><span class="b tmp">运行时</span></div><span class="ds">NetworkManager 自己记下的，只旁观，不接管</span></li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+
+        <section class="district" aria-labelledby="d-var">
+          <header><h3 id="d-var">/var</h3><span>记录和备份</span></header>
+          <ul class="tree">
+            <li><span class="dir">lib/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-user-proxy/latest-backup</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">记下最近一次安装备份在哪</span></li>
+                <li><div class="row"><span class="nm">xq-tun/latest-backup</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">同上</span></li>
+              </ul>
+            </li>
+            <li><span class="dir">backups/</span>
+              <ul>
+                <li><div class="row"><span class="nm">xq-*/（10 个目录）</span><span class="b bak">备份</span></div><span class="ds">每次安装、更新前的快照，见下方时间线</span></li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+
+      </div>
+      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。装进系统的 13 个脚本和配置，与 <code>~/WIKI/scripts/</code> 下的源码逐字节一致（11-14 核对）。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 2. the two changed files -->
+  <section class="chapter" aria-labelledby="c-diff">
+    <h2 id="c-diff">改过的两个旧文件</h2>
+    <figure class="plate">
+      <div class="diffs">
+        <article class="fcard" aria-labelledby="f-bashrc">
+          <header><code id="f-bashrc">~/.bashrc</code><span class="b mod">改过 2 次</span></header>
+          <p class="when"><time>11-13 22:33</time>末尾加 5 行，新终端自动加载快捷函数</p>
+          <div class="diff" aria-label="新增的 5 行">
+            <div class="add">+ # &gt;&gt;&gt; xq-tun shell helper &gt;&gt;&gt;</div>
+            <div class="add">+ if [ -r /usr/local/share/xq-tun/xq-tun.bash ]; then</div>
+            <div class="add">+   . /usr/local/share/xq-tun/xq-tun.bash</div>
+            <div class="add">+ fi</div>
+            <div class="add">+ # &lt;&lt;&lt; xq-tun shell helper &lt;&lt;&lt;</div>
+          </div>
+          <p class="when"><time>11-14 02:48</time>删掉旧的 xq_proxyon / xq_proxyoff。它们导出 16791 代理，但早被上面的加载块覆盖，没有生效</p>
+          <div class="diff" aria-label="删除的旧函数（节选）">
+            <div class="del">- xq_proxyon() {</div>
+            <div class="gap">    …</div>
+            <div class="del">-   export http_proxy="http://192.168.5.34:16791"</div>
+            <div class="del">-   export https_proxy="http://192.168.5.34:16791"</div>
+            <div class="gap">    …</div>
+            <div class="del">- }</div>
+            <div class="del">- xq_proxyoff() {</div>
+            <div class="del">-   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY</div>
+            <div class="gap">    …</div>
+            <div class="del">- }</div>
+          </div>
+        </article>
+        <article class="fcard" aria-labelledby="f-vscode">
+          <header><code id="f-vscode">~/.vscode-server/data/Machine/settings.json</code><span class="b mod">改过 1 次</span></header>
+          <p class="when"><time>11-14 03:17</time>VS Code 交给扩展进程的代理，从 16791 改成 4066</p>
+          <div class="diff" aria-label="改动的一行">
+            <div class="del">-   "http.proxy": "http://192.168.5.34:16791",</div>
+            <div class="add">+   "http.proxy": "http://192.168.5.34:4066",</div>
+          </div>
+        </article>
+      </div>
+      <figcaption>两处都在原文件旁边留了备份，文件名见上图的家目录。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 3. kernel state -->
+  <section class="chapter" aria-labelledby="c-kernel">
+    <h2 id="c-kernel">不在文件里的设置</h2>
+    <figure class="plate">
+      <ul class="kgrid">
+        <li><b>防火墙表（nft）</b><code>inet xq_user_proxy</code><span>分拣、DNS 改送、出门守卫</span></li>
+        <li><b>策略路由</b><code>规则 18410 → 表 20261</code><span>改道进 TUN，或落进黑洞</span></li>
+        <li><b>虚拟网卡</b><code>xq-utun</code><span>随核心出现和消失；IPv6 关闭</span></li>
+        <li><b>连接账本（conntrack）</b><code>zone 20261</code><span>只记你的 DNS 改写</span></li>
+        <li class="wide"><b>房间（命名空间）</b><code>netns xq-tun</code><span>里面有网卡 xq-tun0、规则 9000–9010、路由表 2022、nft 表 inet xq_tun_guard</span></li>
+      </ul>
+      <figcaption>这些只存在于内核内存里。<code>xq_proxyoff</code> 会撤掉前四项，重启后全部清空。开机配置（<code>/etc/nftables.conf</code>、网卡配置）里一条也没写，所以重启后默认是关的。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4. timeline -->
+  <section class="chapter" aria-labelledby="c-time">
+    <h2 id="c-time">什么时候改的</h2>
+    <figure class="plate">
+      <div class="days">
+        <section class="day" aria-labelledby="day-13">
+          <h3 id="day-13">11-13 晚上</h3>
+          <ol class="tl">
+            <li><time>22:01</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>装房间模式</b>
+                <ul class="chips"><li>sing-box</li><li>xq-tunctl</li><li>xq-tun.bash</li><li>/etc/xq-tun/*</li><li>/etc/netns/xq-tun/*</li><li>xq-tun*.service</li></ul>
+                <p class="bk">备份 xq-tun-20261113-220104-FlesCo4Q</p></div></li>
+            <li><time>22:33</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>换终端入口</b>
+                <ul class="chips"><li>xq_tun</li><li>xq-tunctl</li><li>xq-tun.bash</li><li>shell.rc</li><li>configure-shell.py</li><li class="h">~/.bashrc</li></ul>
+                <p class="bk">备份 xq-tun-shell-20261113-223304-VwiWiJhs</p></div></li>
+            <li><time>23:01–23:03</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>装用户级 TUN</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>verify.py</li><li>/etc/xq-user-proxy/*</li><li>xq-user-proxy.service</li></ul>
+                <p class="bk">备份 xq-user-proxy-20261113-230113-Cc4bgMJ8 · …-230333-k7VIkKRx</p></div></li>
+            <li><time>23:38–23:46</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>局域网直连</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>xq-tun.bash</li></ul>
+                <p class="bk">备份 xq-user-proxy-lan-20261113-233847</p></div></li>
+            <li><time>23:56</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>不停服验收</b>
+                <ul class="chips"><li>verify.py</li></ul>
+                <p class="bk">备份 xq-user-proxy-live-20261113-KzVGamSt</p></div></li>
+          </ol>
+        </section>
+        <section class="day" aria-labelledby="day-14">
+          <h3 id="day-14">11-14 凌晨</h3>
+          <ol class="tl">
+            <li><time>00:18–00:29</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>访问权限加固</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>xq-tunctl</li><li>xq_tun</li><li>xq-tun.bash</li><li>两个 verify.py</li></ul>
+                <p class="bk">备份 xq-tun-access-me5f13pp · …-fvqheldr</p></div></li>
+            <li><time>02:47–02:48</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>删除 16791</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>verify.py</li><li class="h">~/.bashrc</li></ul>
+                <p class="bk">备份 xq-tun-access-mkcrhtaq</p></div></li>
+            <li><time>03:09</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>DNS 单独记账</b>
+                <ul class="chips"><li>xq-user-proxyctl</li></ul>
+                <p class="bk">备份 xq-tun-access-yo80rf39</p></div></li>
+            <li><time>03:17</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>VS Code 改用 4066</b>
+                <ul class="chips"><li class="h">settings.json</li></ul>
+                <p class="bk">备份 settings.json.before-remove-16791-20261114-031708</p></div></li>
+          </ol>
+        </section>
+      </div>
+      <figcaption>服务器时间（America/Los_Angeles）。蓝色是系统里本方案自己的文件，橙色是你家目录里的文件。系统备份都在 <code>/var/backups/</code>，每一步的“改了哪些”是比对备份里各版本的哈希得出的。</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5. deliberately untouched -->
+  <section class="chapter" aria-labelledby="c-keep">
+    <h2 id="c-keep">特意没动的</h2>
+    <p class="intro"><span class="b keep">没动</span> 下面这些系统设置，本方案一个也没碰。</p>
+    <dl class="ref">
+      <dt><code>/etc/resolv.conf</code></dt><dd>系统 DNS 仍是 127.0.0.53；你的 DNS 改送全靠内核规则</dd>
+      <dt><code>/etc/nsswitch.conf</code></dt><dd>房间里用的是自己的副本</dd>
+      <dt><code>/etc/sysctl.d/</code></dt><dd><code>rp_filter=2</code> 是 Ubuntu 自带的（procps 包），不是本方案设的</dd>
+      <dt><code>/etc/nftables.conf</code></dt><dd>规则不写进开机配置，所以重启即关</dd>
+      <dt>NetworkManager · netplan</dt><dd>网卡、IP、网关配置都没碰</dd>
+      <dt><code>/etc/sudoers</code></dt><dd>没加免密规则；<code>xq_proxyon</code> 内部照常用 <code>sudo</code></dd>
+      <dt><code>docker.service.d/http-proxy.conf</code></dt><dd>Docker 的代理仍是 16791（2025-09 的旧设置）；改它要重启 Docker，会中断正在跑的容器</dd>
+    </dl>
+  </section>
+
+  <!-- 6. still on 16791 -->
+  <section class="chapter" aria-labelledby="c-old">
+    <h2 id="c-old">还写着旧端口 16791 的文件</h2>
+    <p class="intro">这些是你自己的文件，本方案没改。读取这些变量的程序会直接连 .34 的 16791 端口：走局域网直连，不经过 TUN，也不是 4066。</p>
+    <dl class="ref">
+      <dt><code>~/set_proxy.sh</code></dt><dd><code>https_proxy</code></dd>
+      <dt><code>~/.env</code></dt><dd><code>HTTP_PROXY</code> <code>HTTPS_PROXY</code></dd>
+      <dt><code>~/realtek8197/.env</code></dt><dd><code>HTTP_PROXY</code> <code>HTTPS_PROXY</code></dd>
+      <dt><code>~/y5_back/.env</code></dt><dd><code>HTTP_PROXY</code> <code>HTTPS_PROXY</code></dd>
+      <dt><code>~/y5_xqbackup/.env</code></dt><dd><code>HTTP_PROXY</code> <code>HTTPS_PROXY</code></dd>
+      <dt><code>~/AX3000_TGP3/.env</code></dt><dd><code>http_proxy</code> <code>https_proxy</code> <code>HTTP_PROXY</code> <code>HTTPS_PROXY</code></dd>
+      <dt><code>~/rtAX1500/.env</code></dt><dd>两行都已注释，不生效</dd>
+    </dl>
+  </section>
+
+  <!-- 7. check it yourself -->
+  <section class="chapter" aria-labelledby="c-check">
+    <h2 id="c-check">自己核对</h2>
+<pre class="cmd"><span class="c"># 装进系统的文件和 WIKI 源码是否一致（两行哈希应相同）</span>
+sha256sum /usr/local/sbin/xq-user-proxyctl ~/WIKI/scripts/xq-user-proxy/xq-user-proxyctl
+<span class="c"># 服务定义</span>
+systemctl cat xq-user-proxy.service
+<span class="c"># 内核里的设置（ON 时才有）</span>
+sudo nft list table inet xq_user_proxy
+ip rule show | grep 18410; ip route show table 20261
+<span class="c"># 运行时文件</span>
+sudo ls -l /run/xq-user-proxy</pre>
+  </section>
+
+  <footer>依据 2026-11-14 在本机的逐项核对：文件属性、内容哈希，以及 <code>/var/backups</code> 里各次备份的版本。时间为服务器时间（America/Los_Angeles）。</footer>
+</main>
+</body>
+</html>

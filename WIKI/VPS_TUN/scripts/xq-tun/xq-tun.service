@@ -1,0 +1,27 @@
+[Unit]
+Description=XQ isolated TUN to 192.168.5.34 SOCKS5
+Requires=xq-tun-netns.service
+After=xq-tun-netns.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=root
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ExecStartPre=/usr/local/lib/xq-tun/sing-box-1.14.4/sing-box check -c /etc/xq-tun/sing-box.json
+ExecStart=/usr/local/lib/xq-tun/sing-box-1.14.4/sing-box run -c /etc/xq-tun/sing-box.json
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+# The core needs the host network to reach the SOCKS server.
+# Only the TUN inbound has netns=xq-tun in sing-box.json.
+
+[Install]
+WantedBy=multi-user.target

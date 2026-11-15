@@ -1,0 +1,296 @@
+#!/usr/bin/python3
+"""WSL-wide TUN controller. Root-owned when installed; only owns xq resources."""
+import base64
+import fcntl
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+STATE = Path('/var/lib/xq-proxy')
+ENABLED = STATE / 'enabled'
+STATEFILE = STATE / 'state.json'
+CONF = Path('/etc/xq-proxy/sing-box.json')
+RESOLV = Path('/etc/resolv.conf')
+USER = 'xq-proxy'
+SERVICE = 'xq-proxy.service'
+TUN = 'xq-tun'
+TABLE = '20260'
+PRIORITIES = (18400, 18401, 18402)
+PORT = 4066
+SUBNET = ipaddress.ip_network('172.30.255.0/30')
+
+
+def run(args, *, check=True, data=None):
+    r = subprocess.run(args, input=data, text=True, capture_output=True, timeout=35)
+    if check and r.returncode:
+        raise RuntimeError(' '.join(args) + ': ' + r.stderr.strip())
+    return r
+
+
+def atomic(path, data, mode=0o600):
+    path = Path(path)
+    fd, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data if isinstance(data, bytes) else data.encode())
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(name, mode)
+        os.replace(name, path)
+    finally:
+        if os.path.lexists(name):
+            os.unlink(name)
+
+
+def load():
+    return json.loads(STATEFILE.read_text()) if STATEFILE.exists() else {}
+
+
+def save(s):
+    atomic(STATEFILE, json.dumps(s, indent=2) + '\n')
+
+
+def resolver_snapshot():
+    if RESOLV.is_symlink():
+        return {'kind': 'symlink', 'target': os.readlink(RESOLV)}
+    if RESOLV.exists():
+        return {'kind': 'file', 'mode': stat.S_IMODE(RESOLV.stat().st_mode),
+                'data': base64.b64encode(RESOLV.read_bytes()).decode()}
+    return {'kind': 'absent'}
+
+
+def restore_resolver(snapshot):
+    if snapshot['kind'] == 'symlink':
+        temp = RESOLV.parent / ('.xq-resolv-' + str(os.getpid()))
+        try:
+            os.symlink(snapshot['target'], temp)
+            os.replace(temp, RESOLV)
+        finally:
+            if os.path.lexists(temp):
+                temp.unlink()
+    elif snapshot['kind'] == 'file':
+        atomic(RESOLV, base64.b64decode(snapshot['data']), snapshot['mode'])
+    elif os.path.lexists(RESOLV):
+        RESOLV.unlink()
+
+
+def gateway():
+    routes = json.loads(run(['ip', '-j', '-4', 'route', 'show', 'table', 'main', 'default']).stdout)
+    routes = [r for r in routes if r.get('gateway') and r.get('dev') != TUN]
+    if not routes:
+        raise RuntimeError('No physical IPv4 default gateway; existing guard is retained')
+    r = min(routes, key=lambda x: x.get('metric', 0))
+    return str(ipaddress.IPv4Address(r['gateway'])), r['dev']
+
+
+def guard_text(s):
+    # Only the dedicated core may use the Windows SOCKS transport. No established bypass.
+    return f'''table inet xq_proxy {{
+      chain output {{
+        type filter hook output priority -10; policy drop;
+        meta l4proto {{ tcp, udp }} th dport 53 oifname != "{TUN}" counter reject with icmpx type admin-prohibited
+        oifname "lo" counter accept
+        meta nfproto ipv4 oifname "{TUN}" counter accept
+        meta skuid {s['uid']} ip daddr {s['host']} tcp dport {PORT} counter accept
+        meta skuid {s['uid']} ip daddr {s['host']} meta l4proto udp counter accept
+        counter reject with icmpx type admin-prohibited
+      }}
+      chain forward {{
+        type filter hook forward priority -10; policy drop;
+        meta nfproto ipv4 oifname "{TUN}" counter accept
+        meta nfproto ipv4 iifname "{TUN}" ct state established,related counter accept
+        counter reject with icmpx type admin-prohibited
+      }}
+    }}\n'''
+
+
+def install_guard(s):
+    exists = run(['nft', 'list', 'table', 'inet', 'xq_proxy'], check=False).returncode == 0
+    text = ('delete table inet xq_proxy\n' if exists else '') + guard_text(s)
+    run(['nft', '--check', '-f', '-'], data=text)
+    run(['nft', '-f', '-'], data=text)
+
+
+def config(s):
+    return {
+        'log': {'level': 'warn', 'timestamp': True},
+        'dns': {'servers': [{'type': 'https', 'tag': 'proxied-dns', 'server': '1.1.1.1',
+            'server_port': 443, 'path': '/dns-query',
+            'tls': {'enabled': True, 'server_name': 'cloudflare-dns.com'}, 'detour': 'karing'}],
+            'final': 'proxied-dns', 'strategy': 'ipv4_only'},
+        'inbounds': [{'type': 'tun', 'tag': 'tun-in', 'interface_name': TUN,
+            'address': ['172.30.255.1/30'], 'mtu': 1280, 'auto_route': False,
+            'dns_mode': 'disabled', 'stack': 'gvisor'}],
+        'outbounds': [{'type': 'socks', 'tag': 'karing', 'server': s['host'],
+            'server_port': PORT, 'version': '5', 'bind_interface': s['interface']}],
+        'route': {'rules': [{'inbound': 'tun-in', 'port': 53, 'action': 'hijack-dns'}],
+            'final': 'karing'},
+    }
+
+
+def preflight(s):
+    # Run the local SOCKS handshake as the dedicated UID so an already-active guard allows it.
+    code = ('import socket; '
+        f's=socket.create_connection(({s["host"]!r},{PORT}),timeout=4); '
+        's.settimeout(4); s.sendall(bytes([5,1,0])); '
+        'assert s.recv(2)==bytes([5,0]), "SOCKS5 handshake refused"; s.close()')
+    run(['runuser', '-u', USER, '--', '/usr/bin/python3', '-c', code])
+
+
+def remove_routes():
+    for family in ('-4', '-6'):
+        for priority in PRIORITIES:
+            # Only these reserved priorities are used by this controller.
+            while run(['ip', family, 'rule', 'del', 'pref', str(priority)], check=False).returncode == 0:
+                pass
+        run(['ip', family, 'route', 'flush', 'table', TABLE], check=False)
+
+
+def attach():
+    if not ENABLED.exists():
+        raise RuntimeError('Proxy mode is OFF')
+    s = load()
+    # A guard must exist before routing or resolver changes.
+    run(['nft', 'list', 'table', 'inet', 'xq_proxy'])
+    for _ in range(50):
+        if run(['ip', 'link', 'show', TUN], check=False).returncode == 0:
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError('TUN interface did not appear; guard retained')
+    remove_routes()
+    run(['ip', '-4', 'route', 'replace', 'default', 'dev', TUN, 'table', TABLE])
+    run(['ip', '-4', 'rule', 'add', 'pref', str(PRIORITIES[0]), 'iif', TUN, 'lookup', 'main'])
+    run(['ip', '-4', 'rule', 'add', 'pref', str(PRIORITIES[1]),
+         'uidrange', f"{s['uid']}-{s['uid']}", 'lookup', 'main'])
+    run(['ip', '-4', 'rule', 'add', 'pref', str(PRIORITIES[2]), 'lookup', TABLE])
+    # Unsupported IPv6 is explicitly unreachable, never silently sent to the physical interface.
+    run(['ip', '-6', 'route', 'replace', 'unreachable', 'default', 'table', TABLE])
+    run(['ip', '-6', 'rule', 'add', 'pref', str(PRIORITIES[2]), 'lookup', TABLE])
+    atomic(RESOLV, '# Managed by xq-proxy while ON; OFF restores the original.\nnameserver 172.30.255.2\noptions timeout:2 attempts:2\n', 0o644)
+    s['phase'] = 'active'
+    save(s)
+
+
+def on():
+    s = load()
+    was_on = ENABLED.exists()
+    previous_endpoint = (s.get('host'), s.get('interface'), s.get('uid'))
+    # On boot, restore the saved guard BEFORE any operation that may fail or wait.
+    if was_on:
+        install_guard(s)
+        atomic(Path('/run/xq-proxy-enabled'), 'on\n', 0o644)
+    host, interface = gateway()
+    if not was_on:
+        for family in ('-4', '-6'):
+            rules = json.loads(run(['ip', '-j', family, 'rule', 'show']).stdout)
+            if any(r.get('priority') in PRIORITIES for r in rules):
+                raise RuntimeError('Reserved policy routing priority is already in use')
+            routes = run(['ip', family, 'route', 'show', 'table', TABLE], check=False).stdout.strip()
+            if routes:
+                raise RuntimeError('Reserved routing table is already in use')
+        routes = json.loads(run(['ip', '-j', '-4', 'route', 'show', 'table', 'main']).stdout)
+        for r in routes:
+            dst = r.get('dst', 'default')
+            if dst != 'default' and ipaddress.ip_network(dst, strict=False).overlaps(SUBNET):
+                raise RuntimeError('TUN subnet overlaps an existing route')
+        s = {'resolver_before': resolver_snapshot(), 'activated_at': time.time()}
+    account = pwd.getpwnam(USER)
+    s.update(host=host, interface=interface, uid=account.pw_uid, port=PORT)
+    # Install the guard even during boot recovery or an unavailable-upstream retry.
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    save(s)
+    atomic(ENABLED, 'on\n')
+    install_guard(s)
+    atomic(Path('/run/xq-proxy-enabled'), 'on\n', 0o644)
+    preflight(s)
+    CONF.parent.mkdir(mode=0o755, exist_ok=True)
+    atomic(CONF, json.dumps(config(s), indent=2) + '\n', 0o644)
+    run(['/usr/bin/sing-box', 'check', '-c', str(CONF)])
+    rules4 = json.loads(run(['ip', '-j', '-4', 'rule', 'show']).stdout)
+    rules6 = json.loads(run(['ip', '-j', '-6', 'rule', 'show']).stdout)
+    rules_present = (all(any(r.get('priority') == p for r in rules4) for p in PRIORITIES)
+        and any(r.get('priority') == PRIORITIES[2] for r in rules6))
+    healthy = (was_on and previous_endpoint == (s['host'], s['interface'], s['uid'])
+        and run(['systemctl', 'is-active', '--quiet', SERVICE], check=False).returncode == 0
+        and rules_present
+        and 'default' in run(['ip', '-4', 'route', 'show', 'table', TABLE], check=False).stdout
+        and RESOLV.exists() and not RESOLV.is_symlink()
+        and 'nameserver 172.30.255.2' in RESOLV.read_text())
+    if not healthy:
+        run(['systemctl', 'restart', SERVICE])
+    status()
+
+
+def off():
+    s = load()
+    # Cancel boot retries before releasing the guard so OFF cannot race a pending ON.
+    run(['systemctl', 'stop', 'xq-proxy-boot.service'], check=False)
+    # Stop retries first; retain the independent guard until DNS and routes are restored.
+    run(['systemctl', 'stop', SERVICE], check=False)
+    if s and ENABLED.exists():
+        remove_routes()
+        restore_resolver(s['resolver_before'])
+    if run(['nft', 'list', 'table', 'inet', 'xq_proxy'], check=False).returncode == 0:
+        run(['nft', 'delete', 'table', 'inet', 'xq_proxy'])
+    ENABLED.unlink(missing_ok=True)
+    Path('/run/xq-proxy-enabled').unlink(missing_ok=True)
+    if s:
+        s['phase'] = 'off'
+        save(s)
+    status()
+
+
+def status():
+    s = load()
+    enabled = ENABLED.exists()
+    core = run(['systemctl', 'is-active', '--quiet', SERVICE], check=False).returncode == 0
+    guard = run(['nft', 'list', 'table', 'inet', 'xq_proxy'], check=False).returncode == 0
+    print('代理状态：' + ('已开启（WSL 全流量）' if enabled and core and guard else
+          '已开启但隧道异常（保留直连阻断）' if enabled and guard else
+          '异常：期望开启但防火墙缺失' if enabled else '已关闭（恢复原网络）'))
+    try:
+        host, interface = gateway()
+        addrs = json.loads(run(['ip', '-j', '-4', 'addr', 'show', 'dev', interface]).stdout)
+        local = next(a['local'] for item in addrs for a in item.get('addr_info', []) if a['family'] == 'inet')
+        print('当前 WSL IP：' + local)
+        print('Windows 宿主机 IP（WSL 网关）：' + host)
+    except (RuntimeError, StopIteration):
+        pass
+    print(('代理 IP：' if enabled else '原代理 IP：') + s.get('host', '未设置'))
+    print('代理端口：' + str(s.get('port', PORT)))
+    if enabled:
+        print('防直连：' + ('已开启' if guard else '缺失'))
+
+
+def main():
+    if os.geteuid() != 0:
+        raise RuntimeError('Use sudo xq-proxyctl on|off|status')
+    action = sys.argv[1] if len(sys.argv) == 2 else ''
+    if action not in ('on', 'off', 'status', 'attach'):
+        raise RuntimeError('Usage: xq-proxyctl on|off|status')
+    # attach is called by systemd while on() waits for service readiness.
+    if action == 'attach':
+        attach()
+        return
+    with open('/run/lock/xq-proxy.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        {'on': on, 'off': off, 'status': status}[action]()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        print('xq-proxy: ' + str(exc), file=sys.stderr)
+        if ENABLED.exists():
+            print('未自动回退直连。恢复原网络请执行 sudo xq-proxyctl off。', file=sys.stderr)
+        sys.exit(1)

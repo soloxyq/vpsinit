@@ -1,0 +1,15 @@
+[Unit]
+Description=Reset XQ WSL proxy to OFF on distribution startup
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network.target network-online.target systemd-user-sessions.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xq-proxyctl boot-off
+RemainAfterExit=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

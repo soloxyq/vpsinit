@@ -1,0 +1,63 @@
+#!/bin/bash
+# Applications are launched only after the root controller has dropped privileges.
+set -euo pipefail
+
+if (( EUID != 1006 )); then
+  printf 'xq_tun 仅允许 xuqian（UID 1006）使用；root 和其他用户请使用自己的网络环境。\n' >&2
+  exit 1
+fi
+
+if (( $# == 0 )); then
+  printf '用法：xq_tun {start|stop|restart|status|shell|run 命令...}\n' >&2
+  exit 2
+fi
+
+# Applications already inside the namespace cannot use sudo (no_new_privs).
+# Check the real namespace, not a user-settable environment variable.
+if [[ /proc/self/ns/net -ef /run/netns/xq-tun ]]; then
+  case "$1" in
+    run)
+      shift
+      if [[ ${1-} == -- ]]; then shift; fi
+      (( $# > 0 )) || { printf '用法：xq_tun run 命令...\n' >&2; exit 2; }
+      unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY ftp_proxy FTP_PROXY
+      exec -- "$@"
+      ;;
+    shell)
+      (( $# == 1 )) || exit 2
+      printf '当前已处于 TUN 环境，直接运行程序即可。\n'
+      exit 0
+      ;;
+    status|check)
+      (( $# == 1 )) || exit 2
+      if /usr/sbin/ip link show dev xq-tun0 >/dev/null 2>&1; then
+        printf '当前进程在 TUN 命名空间，TUN 接口存在；上游连通性需另行测试。\n'
+        exit 0
+      fi
+      printf '当前进程在 TUN 命名空间，但核心接口不存在；不会回退宿主直连。\n' >&2
+      exit 1
+      ;;
+    start|stop|restart)
+      printf '服务管理请在宿主终端执行；返回宿主使用 xq_proxyoff 或 exit。\n' >&2
+      exit 2
+      ;;
+    *) printf '未知操作；可用操作：start stop restart status shell run。\n' >&2; exit 2 ;;
+  esac
+fi
+
+case "$1" in
+  shell|run)
+    exec /usr/bin/sudo /usr/local/sbin/xq-tunctl --app-path "$PATH" "$@"
+    ;;
+  start|stop|restart|status|check)
+    if (( $# != 1 )); then
+      printf '此命令不接受额外参数。\n' >&2
+      exit 2
+    fi
+    exec /usr/bin/sudo /usr/local/sbin/xq-tunctl "$@"
+    ;;
+  *)
+    printf '未知操作；可用操作：start stop restart status shell run。\n' >&2
+    exit 2
+    ;;
+esac

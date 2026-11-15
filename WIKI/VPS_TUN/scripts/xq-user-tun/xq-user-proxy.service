@@ -1,0 +1,27 @@
+[Unit]
+Description=XQ per-user TUN and DNS proxy
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/xq-user-proxy/enabled
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ExecStartPre=/usr/local/lib/xq-user-proxy/bin/sing-box check -c /etc/xq-user-proxy/sing-box.json
+ExecStart=/usr/local/lib/xq-user-proxy/bin/sing-box run -c /etc/xq-user-proxy/sing-box.json
+ExecStartPost=/usr/local/sbin/xq-user-proxyctl attach
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+
+# Deliberately no [Install] target: an explicit on operation creates the
+# volatile enabled marker and guard. Reboot starts with this feature OFF.
+# Core failures never remove the independently managed guard or blackholes.

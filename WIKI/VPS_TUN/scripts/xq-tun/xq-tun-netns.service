@@ -1,0 +1,19 @@
+[Unit]
+Description=XQ isolated TUN network namespace and guard
+Before=xq-tun.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/xq-tunctl setup
+ExecStop=/usr/local/sbin/xq-tunctl teardown
+RemainAfterExit=yes
+TimeoutStartSec=30
+TimeoutStopSec=30
+UMask=0077
+# ip netns add must publish its bind mount into the host mount namespace.
+# Do not enable PrivateMounts, PrivateTmp, or ProtectSystem on this unit.
+
+[Install]
+WantedBy=multi-user.target

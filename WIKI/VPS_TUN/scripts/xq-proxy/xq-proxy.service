@@ -1,0 +1,28 @@
+[Unit]
+Description=XQ WSL TUN to Karing full-proxy SOCKS5
+DefaultDependencies=no
+After=local-fs.target
+Before=shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/xq-proxy/enabled
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=xq-proxy
+Group=xq-proxy
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ExecStart=/usr/bin/sing-box run -c /etc/xq-proxy/sing-box.json
+ExecStartPost=+/usr/local/sbin/xq-proxyctl attach
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+TimeoutStopSec=10
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

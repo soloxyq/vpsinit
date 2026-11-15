@@ -1,0 +1,545 @@
+#!/usr/bin/python3 -I
+"""Host-network TUN for xuqian's UID; distinct from the xq-tun namespace.
+
+Only controller-owned nftables/routing objects are changed. New outbounds of
+UID 1006 are marked after conntrack/DNAT; replies keep the original host route.
+UID 1006 DNS translations live in a dedicated conntrack zone, so a reused source
+port never makes another user's flow share them.
+No host resolver, forwarding sysctl, or unrelated user's rules are replaced.
+"""
+import contextlib
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+UID = 1006
+USER = 'xuqian'
+HOST = '192.168.5.34'
+LAN_V4 = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+          '169.254.0.0/16', '224.0.0.0/4', '255.255.255.255/32')
+LAN_V6 = ('fc00::/7', 'fe80::/10', 'ff00::/8')
+PORT = 4066
+TUN = 'xq-utun'
+ADDRESS = '172.30.254.1/32'
+RTABLE = '20261'
+PRIORITY = '18410'
+ROUTE_BIT = 0x40000000
+DNS_BIT = 0x20000000
+OWNER_BIT = 0x10000000
+DNS_ZONE = 20261
+TABLE = 'xq_user_proxy'
+SERVICE = 'xq-user-proxy.service'
+STATE = Path('/run/xq-user-proxy')
+STATEFILE = STATE / 'state.json'
+ENABLED = STATE / 'enabled'
+CONFIG = Path('/etc/xq-user-proxy/sing-box.json')
+IP = '/usr/sbin/ip'
+NFT = '/usr/sbin/nft'
+CONNTRACK = '/usr/sbin/conntrack'
+SYSTEMCTL = '/usr/bin/systemctl'
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
+
+
+def run(args, *, check=True, data=None, timeout=30):
+    result = subprocess.run(args, env=ENV, input=data, text=True,
+                            capture_output=True, timeout=timeout, close_fds=True)
+    if check and result.returncode:
+        raise RuntimeError(' '.join(args) + ': ' + result.stderr.strip())
+    return result
+
+
+def trusted(path, *, directory=False):
+    path = Path(path)
+    for item in (path, *path.parents):
+        info = item.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError(f'不可信的管理路径：{item}')
+    mode = path.stat().st_mode
+    if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+        raise RuntimeError(f'管理路径类型异常：{path}')
+
+
+def atomic(path, content):
+    fd, name = tempfile.mkstemp(prefix='.xq-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(name, 0o600)
+        os.replace(name, path)
+    finally:
+        if os.path.lexists(name):
+            os.unlink(name)
+
+
+def save(data):
+    atomic(STATEFILE, json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+
+
+def load():
+    trusted(STATEFILE)
+    data = json.loads(STATEFILE.read_text())
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if data.get('owner') != 'xq-user-proxy-v1' or data.get('boot_id') != boot:
+        raise RuntimeError('运行状态归属或启动周期不匹配；拒绝修改网络')
+    return data
+
+
+@contextlib.contextmanager
+def locked():
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    trusted(STATE, directory=True)
+    path = STATE / 'lock'
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        trusted(path)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def rule_args(family):
+    # ip_route_me_harder's reroute does not preserve the socket UID selector.
+    # The nft route chain owns UID selection; this RPDB rule matches only its bit.
+    return [IP, family, 'rule', 'add', 'pref', PRIORITY,
+            'fwmark', f'{ROUTE_BIT:#x}/{ROUTE_BIT:#x}', 'lookup', RTABLE]
+
+
+def rules(family):
+    return json.loads(run([IP, '-j', family, 'rule', 'show']).stdout)
+
+
+def routes(family):
+    result = run([IP, '-j', family, 'route', 'show', 'table', RTABLE], check=False)
+    if result.returncode:
+        if 'does not exist' in result.stderr:
+            return []
+        raise RuntimeError(result.stderr.strip())
+    return json.loads(result.stdout)
+
+
+def number(value):
+    return int(value, 0) if isinstance(value, str) else int(value)
+
+
+def own_rule(rule):
+    return (rule.get('priority') == int(PRIORITY)
+            and str(rule.get('table')) == RTABLE
+            and number(rule.get('fwmark', 0)) == ROUTE_BIT
+            and number(rule.get('fwmask', 0xffffffff)) == ROUTE_BIT
+            and set(rule) <= {'priority', 'src', 'dst', 'fwmark', 'fwmask', 'table', 'protocol', 'flags'}
+            and not rule.get('flags') and rule.get('src', 'all') == 'all'
+            and rule.get('dst', 'all') == 'all')
+
+
+def table_exists():
+    result = run([NFT, 'list', 'table', 'inet', TABLE], check=False)
+    if result.returncode and 'No such file or directory' not in result.stderr:
+        raise RuntimeError(result.stderr.strip())
+    return result.returncode == 0
+
+
+def firewall(active=True):
+    extra = ''
+    if active:
+        extra = f'''
+  chain classify_output {{
+    type filter hook output priority -110; policy accept;
+    meta skuid {UID} ct direction original ct mark set ct mark | {OWNER_BIT:#x}
+  }}
+  chain dns_output {{
+    type nat hook output priority -100; policy accept;
+    ip daddr @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 return
+    ct mark & {OWNER_BIT:#x} != 0 ct direction original meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_BIT:#x} dnat ip to 127.0.0.1:1053
+  }}
+  chain route_output {{
+    type route hook output priority -90; policy accept;
+    meta skuid {UID} goto target_route
+    meta skuid != {UID} return
+    ct mark & {OWNER_BIT:#x} != 0 goto target_route
+  }}
+  chain target_route {{
+    ct direction reply meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
+    oifname "lo" meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
+    ip daddr @lan_v4 meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
+    ip6 daddr @lan_v6 meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
+    meta mark set meta mark | {ROUTE_BIT:#x}
+  }}
+'''
+    # Before conntrack lookup, put both directions of every flow involving the
+    # private listener in their own zone: the owner's translatable DNS queries,
+    # the owner's direct queries to 1053, the listener's replies, and ICMP
+    # errors about packets sent to 1053 (so a stopped core still fails fast).
+    # All users share the host conntrack table; without the zone a reused UDP
+    # source port could make another user's query match the owner's DNAT entry
+    # (or the reverse).
+    return f'''table inet {TABLE} {{
+  set lan_v4 {{
+    type ipv4_addr; flags interval;
+    elements = {{ {', '.join(LAN_V4)} }}
+  }}
+  set lan_v6 {{
+    type ipv6_addr; flags interval;
+    elements = {{ {', '.join(LAN_V6)} }}
+  }}
+  chain dns_zone_output {{
+    type filter hook output priority raw; policy accept;
+    meta skuid {UID} meta nfproto ipv4 ip daddr != @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 ct zone set {DNS_ZONE}
+    meta skuid {UID} ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport 1053 ct zone set {DNS_ZONE}
+    ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport 1053 ct zone set {DNS_ZONE}
+    ip saddr 127.0.0.1 icmp type destination-unreachable @th,240,16 1053 ct zone set {DNS_ZONE}
+  }}
+  chain private_dns_output {{
+    type filter hook output priority -80; policy accept;
+    ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport 1053 jump private_dns_access
+  }}
+  chain private_dns_access {{
+    ct direction reply counter return
+    meta skuid {UID} counter return
+    meta skuid != {UID} counter reject with icmpx type admin-prohibited
+    ct mark & {OWNER_BIT:#x} != 0 counter return
+    counter reject with icmpx type admin-prohibited
+  }}
+  chain output {{
+    type filter hook postrouting priority -10; policy accept;
+    oifname "{TUN}" jump private_tun_access
+    meta skuid {UID} goto target_output
+    meta skuid != {UID} return
+    ct mark & {OWNER_BIT:#x} != 0 goto target_output
+  }}
+  chain private_tun_access {{
+    meta skuid {UID} counter return
+    meta skuid != {UID} counter drop
+    ct mark & {OWNER_BIT:#x} != 0 counter return
+    counter drop
+  }}
+  chain target_output {{
+    ct direction reply counter accept
+    ip daddr @lan_v4 counter accept
+    ip6 daddr @lan_v6 counter accept
+    meta l4proto {{ tcp, udp }} th dport 53 counter drop
+    oifname "lo" counter accept
+    meta nfproto ipv4 oifname "{TUN}" counter accept
+    counter drop
+  }}
+{extra}}}
+'''
+
+
+def firewall_digest():
+    text = run([NFT, '--stateless', 'list', 'table', 'inet', TABLE]).stdout
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def install_firewall(state, active=True):
+    source = (f'delete table inet {TABLE}\n' if table_exists() else '') + firewall(active)
+    run([NFT, '--check', '-f', '-'], data=source)
+    run([NFT, '-f', '-'], data=source)
+    state['guard_digest'] = firewall_digest()
+    state['guard_active'] = active
+    save(state)
+
+
+def check_nss():
+    hosts = [line.split('#', 1)[0].partition(':')[2].split()
+             for line in Path('/etc/nsswitch.conf').read_text().splitlines()
+             if line.partition(':')[0].strip() == 'hosts']
+    if len(hosts) != 1 or 'dns' not in hosts[0]:
+        raise RuntimeError('hosts NSS 配置不能确定由 libc DNS 解析；停止启用')
+    allowed = {'files', 'dns', 'mdns4_minimal', '[NOTFOUND=return]'}
+    if set(hosts[0]) - allowed:
+        raise RuntimeError('检测到共享 NSS 解析模块；不能保证按 UID 接管 DNS')
+    for path in ('/run/nscd/socket', '/var/run/nscd/socket', '/var/run/.nscd_socket'):
+        if os.path.exists(path):
+            raise RuntimeError('检测到 nscd 套接字；不修改其他用户服务，停止启用')
+    if run([SYSTEMCTL, 'is-active', '--quiet', 'nscd.service'], check=False).returncode == 0:
+        raise RuntimeError('nscd 正在运行；停止启用')
+
+
+def snapshot():
+    result = {'time': time.time(), 'routes': {}, 'rules': {}}
+    for family in ('-4', '-6'):
+        result['routes'][family] = json.loads(run([IP, '-j', family, 'route', 'show', 'table', 'all']).stdout)
+        result['rules'][family] = rules(family)
+    resolver = Path('/etc/resolv.conf')
+    result['resolver_link'] = os.readlink(resolver) if resolver.is_symlink() else None
+    result['resolver_sha256'] = hashlib.sha256(resolver.read_bytes()).hexdigest()
+    result['nftables'] = json.loads(run([NFT, '--stateless', '--json', 'list', 'ruleset']).stdout)
+    return result
+
+
+def preflight():
+    trusted(CONFIG)
+    if not os.path.isfile(CONNTRACK) or not os.access(CONNTRACK, os.X_OK):
+        raise RuntimeError('需要 /usr/sbin/conntrack，以便 OFF 精确清理本功能的 DNS 映射')
+    check_nss()
+    if table_exists():
+        raise RuntimeError('自有 nft 表名称已被占用，拒绝覆盖')
+    existing_nft = run([NFT, '--stateless', 'list', 'ruleset']).stdout
+    if re.search(r'\b(?:meta|ct)\s+mark\b|\bct\s+(?:original\s+|reply\s+)?zone\b', existing_nft):
+        raise RuntimeError('其他 nft 规则使用了 meta/ct mark 或 ct zone；需先人工核对保留标记位和 zone，停止自动启用')
+    for family in ('-4', '-6'):
+        for rule in rules(family):
+            if rule.get('priority') == int(PRIORITY):
+                raise RuntimeError('策略路由优先级已被占用')
+            if 'fwmark' in rule or 'fwmask' in rule:
+                mark = number(rule.get('fwmark', 0))
+                mask = number(rule.get('fwmask', 0xffffffff))
+                if (mark | mask) & ROUTE_BIT:
+                    raise RuntimeError('其他策略规则的 fwmark/掩码与保留路由标记位重叠')
+        if routes(family):
+            raise RuntimeError('专用路由表已经有其他路由')
+    if run([IP, 'link', 'show', TUN], check=False).returncode == 0:
+        raise RuntimeError('TUN 接口名称已被占用')
+    for item in json.loads(run([IP, '-j', '-4', 'route', 'show', 'table', 'all']).stdout):
+        dst = item.get('dst', 'default')
+        if dst != 'default' and ipaddress.ip_address(ADDRESS.split('/')[0]) in ipaddress.ip_network(dst, strict=False):
+            raise RuntimeError('TUN /32 地址与现有路由重叠')
+    prior_owned = STATEFILE.exists() and load().get('phase') == 'off'
+    for bit in (DNS_BIT, OWNER_BIT):
+        # Owned connections survive OFF to preserve live control channels;
+        # their marks expire with conntrack naturally. Never adopt such
+        # marks without our trusted prior ownership state.
+        if bit == OWNER_BIT and prior_owned:
+            continue
+        existing = run([CONNTRACK, '-L', '-f', 'ipv4', '--mark', f'{bit:#x}/{bit:#x}'], check=False)
+        if existing.returncode or existing.stdout.strip():
+            raise RuntimeError('专用 conntrack 标记已占用或无法核验')
+    if not prior_owned:
+        existing = run([CONNTRACK, '-L', '--zone', str(DNS_ZONE)], check=False)
+        if existing.returncode or existing.stdout.strip():
+            raise RuntimeError('专用 conntrack zone 已占用或无法核验')
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as sock:
+            sock.bind(('127.0.0.1', 1053))
+
+
+def install_routes():
+    run([IP, '-4', 'route', 'replace', 'blackhole', 'default', 'metric', '32760', 'table', RTABLE])
+    run([IP, '-6', 'route', 'replace', 'unreachable', 'default', 'metric', '32760', 'table', RTABLE])
+    for family in ('-4', '-6'):
+        found = [rule for rule in rules(family) if rule.get('priority') == int(PRIORITY)]
+        if found and (len(found) != 1 or not own_rule(found[0])):
+            raise RuntimeError('自有策略规则遭修改；保留 guard，拒绝覆盖')
+        if not found:
+            run(rule_args(family))
+
+
+def attach():
+    # ExecStartPost must not acquire the lock held by `on` waiting on systemctl.
+    state = load()
+    if not ENABLED.exists() or not state.get('guard_active'):
+        raise RuntimeError('用户代理已关闭；拒绝附加路由')
+    if firewall_digest() != state.get('guard_digest'):
+        raise RuntimeError('guard 不完整；拒绝附加路由')
+    for _ in range(50):
+        result = run([IP, '-j', '-4', 'address', 'show', 'dev', TUN], check=False)
+        if result.returncode == 0:
+            interfaces = json.loads(result.stdout)
+            found = [(a['local'], a['prefixlen']) for i in interfaces for a in i.get('addr_info', [])]
+            if found == [('172.30.254.1', 32)]:
+                break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError('未检测到正确的 TUN /32 地址；保留 guard')
+    # This feature is IPv4-only. Disable IPv6 on our new interface alone so
+    # its automatically generated link-local/multicast routes do not alter
+    # the host IPv6 routing tables. Never change all/default/physical devices.
+    ipv6_switch = Path(f'/proc/sys/net/ipv6/conf/{TUN}/disable_ipv6')
+    if ipv6_switch.exists():
+        ipv6_switch.write_text('1\n')
+    for family in ('-4', '-6'):
+        found = [r for r in rules(family) if r.get('priority') == int(PRIORITY)]
+        if len(found) != 1 or not own_rule(found[0]):
+            raise RuntimeError('专用策略路由缺失；保留 guard')
+    main_routes = json.loads(run([IP, '-j', '-4', 'route', 'show', 'table', 'main']).stdout)
+    if any(route.get('dev') == TUN for route in main_routes):
+        raise RuntimeError('检测到 TUN 进入宿主 main 表；拒绝继续')
+    if not ENABLED.exists():
+        raise RuntimeError('关闭操作已开始，拒绝附加路由')
+    run([IP, '-4', 'route', 'replace', 'default', 'dev', TUN, 'metric', '10', 'table', RTABLE])
+
+
+def check():
+    state = load()
+    if not ENABLED.exists() or not state.get('guard_active'):
+        raise RuntimeError('用户代理未开启')
+    if run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode:
+        raise RuntimeError('核心未运行；guard 和黑洞路由保留')
+    if firewall_digest() != state.get('guard_digest'):
+        raise RuntimeError('guard 与记录不一致')
+    for family in ('-4', '-6'):
+        found = [r for r in rules(family) if r.get('priority') == int(PRIORITY)]
+        if len(found) != 1 or not own_rule(found[0]):
+            raise RuntimeError('专用策略规则异常')
+    v4, v6 = routes('-4'), routes('-6')
+    if not any(r.get('type') == 'blackhole' and r.get('dst') == 'default' for r in v4):
+        raise RuntimeError('IPv4 黑洞回退缺失')
+    if not any(r.get('dev') == TUN and r.get('dst') == 'default' and r.get('metric') == 10 for r in v4):
+        raise RuntimeError('TUN 专用默认路由缺失')
+    if not any(r.get('type') == 'unreachable' and r.get('dst') == 'default' for r in v6):
+        raise RuntimeError('IPv6 阻断路由缺失')
+
+
+def on():
+    with locked():
+        if ENABLED.exists():
+            state = load()
+            # Healthy repeated ON preserves the current core PID.
+            try:
+                check()
+                status()
+                return
+            except RuntimeError:
+                check_nss()
+                install_firewall(state)
+                install_routes()
+                if run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode == 0:
+                    attach()
+                else:
+                    run([SYSTEMCTL, 'reset-failed', SERVICE], check=False)
+                    run([SYSTEMCTL, 'start', SERVICE], timeout=60)
+        else:
+            if STATEFILE.exists() and load().get('phase') not in ('off',):
+                raise RuntimeError('上次操作未完成；请先执行 off 完成清理')
+            preflight()
+            atomic(STATE / 'before.json', json.dumps(snapshot(), ensure_ascii=False, indent=2) + '\n')
+            state = {'owner': 'xq-user-proxy-v1', 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                     'phase': 'enabling', 'uid': UID, 'started_at': time.time()}
+            netns = os.stat('/proc/self/ns/net')
+            state['host_netns'] = [netns.st_dev, netns.st_ino]
+            save(state)
+            install_firewall(state)
+            install_routes()
+            atomic(ENABLED, 'on\n')
+            run([SYSTEMCTL, 'reset-failed', SERVICE], check=False)
+            run([SYSTEMCTL, 'start', SERVICE], timeout=60)
+        check()
+        state['phase'] = 'on'
+        save(state)
+    status()
+
+
+def delete_dns_connections():
+    # Delete only this feature's DNS translations, in every zone (entries from
+    # before the dedicated zone included). Other connections and unrelated
+    # users' conntrack state are never flushed.
+    result = run([CONNTRACK, '-D', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
+    if result.returncode and not (result.returncode == 1 and re.search(r'\b0 flow entries', result.stderr)):
+        raise RuntimeError('清理本功能 DNS conntrack 失败；guard 保留：' + result.stderr.strip())
+
+
+def remove_routes():
+    for family in ('-4', '-6'):
+        args = rule_args(family)
+        args[3] = 'del'
+        found = [r for r in rules(family) if own_rule(r)]
+        for _ in found:
+            run(args)
+    for family, tail in (
+        ('-4', ['default', 'dev', TUN, 'metric', '10']),
+        ('-4', ['blackhole', 'default', 'metric', '32760']),
+        ('-6', ['unreachable', 'default', 'metric', '32760']),
+    ):
+        result = run([IP, family, 'route', 'del', *tail, 'table', RTABLE], check=False)
+        if result.returncode and not any(s in result.stderr for s in ('No such process', 'Cannot find device', 'No such file')):
+            raise RuntimeError(result.stderr.strip())
+
+
+def off():
+    with locked():
+        if not STATEFILE.exists():
+            if table_exists():
+                raise RuntimeError('存在无归属记录的 nft 表；拒绝删除')
+            print('用户代理已关闭。')
+            return
+        state = load()
+        if state.get('phase') == 'off' and not ENABLED.exists() and not table_exists():
+            print('用户代理已关闭。')
+            return
+        ENABLED.unlink(missing_ok=True)
+        state['phase'] = 'disabling'
+        save(state)
+        # Stop creating new tagged DNS NAT entries before deleting old ones.
+        # The output guard remains present throughout shutdown.
+        install_firewall(state, active=False)
+        run([SYSTEMCTL, 'stop', SERVICE], timeout=45)
+        delete_dns_connections()
+        remove_routes()
+        run([NFT, 'delete', 'table', 'inet', TABLE])
+        state.update(phase='off', guard_active=False, stopped_at=time.time())
+        save(state)
+    print('用户代理已关闭：xuqian 的宿主会话恢复原网络；独立 xq_tun run 环境保持不变。')
+
+
+def status():
+    enabled = ENABLED.exists()
+    print('作用范围：宿主网络中 xuqian（UID 1006）的所有会话及程序')
+    print('上游：SOCKS5 192.168.5.34:4066（仅 TCP；DNS 经代理 DoH）')
+    result = run([IP, '-j', '-4', 'route', 'get', HOST], check=False)
+    if result.returncode == 0:
+        data = json.loads(result.stdout)[0]
+        print(f'宿主 IPv4：{data.get("prefsrc", data.get("src", "未知"))}，接口：{data.get("dev", "未知")}')
+    print('开关：' + ('ON（当前启动周期）' if enabled else 'OFF'))
+    print('核心：' + run([SYSTEMCTL, 'is-active', SERVICE], check=False).stdout.strip())
+    print('独立 guard：' + ('存在' if table_exists() else '不存在'))
+    if enabled:
+        try:
+            check()
+            print('路由和 DNS 接管规则：完整；未在 status 中发起公网探测')
+        except (RuntimeError, OSError) as error:
+            print('异常：' + str(error))
+            return 1
+    print('局域网：私网、链路本地、多播/广播按宿主路由直连（包括局域网 DNS）。')
+    print('IPv4 直连范围：' + ', '.join(LAN_V4))
+    print('IPv6 直连范围：' + ', '.join(LAN_V6))
+    print('默认系统 DNS 和公网 DNS 查询经代理解析。')
+    print(f'DNS 改写使用独立 conntrack zone {DNS_ZONE}，不与其他用户的连接共用跟踪条目。')
+    print('公网：TCP 经代理；ICMP/ping、普通 UDP 和 IPv6 主动出站被阻断。')
+    print('连通性验证请使用 HTTPS；公网 ping 失败不代表 HTTPS 代理不可用。')
+    print('NSS 的 mdns4_minimal 仅保留本地域名发现，不属于公网 DNS 查询。')
+    print('重启默认 OFF；此开关不会停止独立 xq_tun run 服务。')
+    return 0
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        raise RuntimeError('需要通过 sudo 执行固定的用户代理控制器')
+    if pwd.getpwnam(USER).pw_uid != UID:
+        raise RuntimeError('xuqian 的 UID 与固定配置不一致')
+    if os.environ.get('SUDO_UID', '0') not in ('0', str(UID)):
+        raise RuntimeError('此入口仅授权给 xuqian')
+    if len(argv) != 1 or argv[0] not in ('on', 'off', 'status', 'check', 'attach'):
+        raise RuntimeError('用法：xq-user-proxyctl {on|off|status|check|attach}')
+    here = os.stat('/proc/self/ns/net')
+    if argv[0] == 'attach':
+        # The core service intentionally lacks CAP_SYS_PTRACE. Comparing its
+        # own netns with a trusted saved identity avoids opening PID 1's ns fd.
+        host_identity = load()['host_netns']
+    else:
+        host = os.stat('/proc/1/ns/net')
+        host_identity = [host.st_dev, host.st_ino]
+    if [here.st_dev, here.st_ino] != host_identity:
+        raise RuntimeError('请从宿主 shell 管理用户代理，不要在独立网络命名空间中操作')
+    return globals()[argv[0]]() or 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print('xq-user-proxy: ' + str(error), file=sys.stderr)
+        sys.exit(1)

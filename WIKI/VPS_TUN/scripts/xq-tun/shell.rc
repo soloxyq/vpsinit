@@ -1,0 +1,33 @@
+# Used only by: /bin/bash --rcfile /usr/local/share/xq-tun/shell.rc -i
+# The privileged launcher has already entered xq-tun and dropped privileges.
+if [[ ! /proc/self/ns/net -ef /run/netns/xq-tun ]]; then
+  printf 'TUN shell 启动失败：当前网络命名空间不正确。\n' >&2
+  builtin exit 1
+fi
+
+# A normal nested `bash` does not inherit this non-exported marker. A (...) Bash
+# subshell inherits its value, but has a different BASHPID and cannot use off.
+if [[ ! ${_XQ_TUN_SHELL_PID+x} ]]; then
+  declare -gr _XQ_TUN_SHELL_PID="$BASHPID"
+elif [[ $_XQ_TUN_SHELL_PID != "$BASHPID" ]]; then
+  printf 'TUN shell 启动失败：不能复用其他 shell 的入口标记。\n' >&2
+  builtin exit 1
+fi
+readonly _XQ_TUN_SHELL_PID
+export -n _XQ_TUN_SHELL_PID
+
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+unset all_proxy ALL_PROXY no_proxy NO_PROXY ftp_proxy FTP_PROXY
+if [[ -r $HOME/.bashrc ]]; then
+  source "$HOME/.bashrc"
+fi
+
+# User startup files can define legacy xq_proxyon/off or set proxy variables.
+# Restore the namespace-aware helpers last and remove those proxy variables.
+if ! source /usr/local/share/xq-tun/xq-tun.bash; then
+  printf 'TUN shell 启动失败：无法加载已安装的控制函数。\n' >&2
+  builtin exit 1
+fi
+_xq_tun_clear_proxy_env
+_xq_tun_prompt
+export -n _XQ_TUN_SHELL_PID

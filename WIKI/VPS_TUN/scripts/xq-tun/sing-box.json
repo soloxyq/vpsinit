@@ -1,0 +1,44 @@
+{
+  "log": {"level": "warn", "timestamp": true},
+  "dns": {
+    "servers": [{
+      "type": "https",
+      "tag": "proxied-dns",
+      "server": "1.1.1.1",
+      "server_port": 443,
+      "path": "/dns-query",
+      "tls": {"enabled": true, "server_name": "cloudflare-dns.com"},
+      "detour": "upstream"
+    }],
+    "final": "proxied-dns",
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [{
+    "type": "tun",
+    "tag": "tun-in",
+    "netns": "xq-tun",
+    "interface_name": "xq-tun0",
+    "address": ["172.30.255.1/30"],
+    "mtu": 1280,
+    "auto_route": true,
+    "auto_redirect": false,
+    "strict_route": true,
+    "dns_mode": "disabled",
+    "stack": "gvisor"
+  }],
+  "outbounds": [{
+    "type": "socks",
+    "tag": "upstream",
+    "server": "192.168.5.34",
+    "server_port": 4066,
+    "version": "5",
+    "network": "tcp"
+  }],
+  "route": {
+    "rules": [
+      {"inbound": "tun-in", "port": 53, "action": "hijack-dns"},
+      {"network": ["udp", "icmp"], "action": "reject"}
+    ],
+    "final": "upstream"
+  }
+}

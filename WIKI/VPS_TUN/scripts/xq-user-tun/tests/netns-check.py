@@ -1,131 +1,386 @@
 #!/usr/bin/python3 -I
-"""Exercise generated ACLs in a fresh, disposable network namespace only.
+"""Exercise the generated rules and the route cleanup on a real kernel, inside
+a fresh, disposable network namespace only.
 
-Run: sudo unshare --net python3 -I tests/netns-check.py
-No service/controller lifecycle calls, host routes or host DNS changes.
+    sudo unshare --net python3 -I tests/netns-check.py
+
+runs every check with three real identities: the owner, another user and root
+(the core). Without root, a rootless user namespace has one identity only. Two
+commands: the shell must know HOSTNS before it expands the second one:
+
+    HOSTNS=$(readlink /proc/self/ns/net)
+    unshare --user --map-root-user --net env XQ_HOST_NETNS="$HOSTNS" python3 -I tests/netns-check.py
+
+There the same checks run with that one identity cast as the owner, as a
+bystander or as a sender that is not the core, by changing the UID constants
+the rules are generated from. Checks that need two users at the same time are
+reported as skipped, and a process without CAP_NET_BIND_SERVICE stands in for
+"another user" where only the right to bind a port matters.
+
+No service and no controller lifecycle call; no host route, rule, sysctl or DNS
+change. Every controller path is redirected to a temporary directory, and the
+controller may only run ip, nft and conntrack, which act on this namespace. The
+one sysctl written, ip_unprivileged_port_start, is this namespace's own.
 """
+import ipaddress
 import json
 import os
 from pathlib import Path
 import runpy
+import select
 import socket
 import subprocess
-import threading
+import sys
+import tempfile
 
 BASE = Path(__file__).resolve().parents[1]
 OWNER = 23456  # Deliberately unrelated to the development server's account.
 OTHER = 23457
+NOBODY = 23458  # the UID of no socket in this test
 IP = '/usr/sbin/ip'
 NFT = '/usr/sbin/nft'
+CONNTRACK = '/usr/sbin/conntrack'
+SETPRIV = '/usr/bin/setpriv'
+TABLE = 'xq_user_proxy'
+THRESHOLD = Path('/proc/sys/net/ipv4/ip_unprivileged_port_start')  # per network namespace
+# Resolvers of every class, each with its own listener (REMOTE: an address nobody answers).
+STUB, PUBLIC, REMOTE, LAN = '127.0.0.53', '203.0.113.53', '203.0.113.54', '10.77.0.53'
+V6_LOOPBACK, ULA, V6_PUBLIC = '::1', 'fd00:77::53', '2001:db8::53'
+RESOLVERS = {STUB: 'stub', PUBLIC: 'public', REMOTE: None, LAN: 'lan',
+             V6_LOOPBACK: 'v6-loopback', ULA: 'ula', V6_PUBLIC: 'v6-public'}
+USAGE = 'sudo unshare --net python3 -I tests/netns-check.py   (or the rootless form described in this file)'
+LISTENERS = {}
 
 
-def run(args, **kwargs):
-    return subprocess.run(args, check=True, text=True, capture_output=True,
-                          timeout=15, **kwargs).stdout
+def run(args, *, data=None):
+    result = subprocess.run(args, input=data, text=True, capture_output=True, timeout=15)
+    if result.returncode:
+        raise RuntimeError(f'{args!r}: exit {result.returncode}\n{result.stdout}\n{result.stderr}')
+    return result.stdout
 
 
-def start_echo(port, response):
-    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind(('127.0.0.1', port))
-    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    tcp.bind(('127.0.0.1', port))
-    tcp.listen()
+# Children take the identity they are told, when it is not already theirs.
+IDENTITY = 'if uid != os.getuid(): os.setgroups([]);os.setgid(uid);os.setuid(uid)'
 
-    def udp_loop():
-        while True:
-            _, peer = udp.recvfrom(1024)
-            udp.sendto(response, peer)
-
-    def tcp_loop():
-        while True:
-            conn, _ = tcp.accept()
-            with conn:
-                conn.settimeout(2)
-                conn.recv(1024)
-                conn.sendall(response)
-
-    for worker in (udp_loop, tcp_loop):
-        threading.Thread(target=worker, daemon=True).start()
-
+ECHO = r'''
+import json,os,socket,sys,threading
+uid,address,port,label=int(sys.argv[1]),sys.argv[2],int(sys.argv[3]),sys.argv[4]
+''' + IDENTITY + r'''
+family=socket.AF_INET6 if ':' in address else socket.AF_INET
+udp=socket.socket(family,socket.SOCK_DGRAM);udp.bind((address,port))
+tcp=socket.socket(family,socket.SOCK_STREAM);tcp.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+tcp.bind((address,port));tcp.listen()
+def udp_loop():
+    while True:
+        _,peer=udp.recvfrom(1024);udp.sendto(label.encode(),peer)
+threading.Thread(target=udp_loop,daemon=True).start()
+print(json.dumps({'ready':label}),flush=True)
+while True:
+    conn,_=tcp.accept()
+    with conn:
+        conn.settimeout(2)
+        try: conn.recv(1024);conn.sendall(label.encode())
+        except OSError: pass
+'''
 
 PROBE = r'''
-import json,os,socket,sys
-uid,port,tcp,source,mark=map(int,sys.argv[1:])
-os.setgroups([]);os.setgid(uid);os.setuid(uid)
-with socket.socket(socket.AF_INET,socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM) as s:
-    s.settimeout(0.5)
-    s.bind(('127.0.0.1',source))
-    if mark: s.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,mark)
-    port_used=s.getsockname()[1]
+import json,os,socket,sys,time
+uid,dest,port,tcp,source=sys.argv[1:]
+uid,port,tcp,source=int(uid),int(port),int(tcp),int(source)
+''' + IDENTITY + r'''
+family=socket.AF_INET6 if ':' in dest else socket.AF_INET
+result={'reply':None,'error':None}
+with socket.socket(family,socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM) as s:
+    s.settimeout(1.0)
+    if source: s.bind(('::' if family==socket.AF_INET6 else '0.0.0.0',source))
+    started=time.monotonic()
     try:
-        s.connect(('127.0.0.1',port));s.sendall(b'query');reply=s.recv(1024).decode()
-    except OSError: reply=None
-print(json.dumps({'reply':reply,'source':port_used}))
+        s.connect((dest,port));s.sendall(b'query');result['reply']=s.recv(1024).decode()
+    except OSError as error: result['error']=type(error).__name__
+    result['seconds']=round(time.monotonic()-started,3)
+    result['source']=s.getsockname()[1]
+print(json.dumps(result))
+'''
+
+BIND = r'''
+import json,os,socket,sys
+uid,port=int(sys.argv[1]),int(sys.argv[2])
+''' + IDENTITY + r'''
+outcome=[]
+for kind in (socket.SOCK_DGRAM,socket.SOCK_STREAM):
+    for address in ('127.0.0.1','0.0.0.0'):
+        with socket.socket(socket.AF_INET,kind) as s:
+            try: s.bind((address,port));outcome.append('bound')
+            except OSError as error: outcome.append(type(error).__name__)
+print(json.dumps(outcome))
 '''
 
 
-def probe(uid, port, tcp=False, source=0):
-    return json.loads(run(['/usr/bin/python3', '-I', '-c', PROBE,
-                           str(uid), str(port), str(int(tcp)), str(source), '0']))
+def echo(name, uid, address, port, label):
+    child = subprocess.Popen([sys.executable, '-I', '-u', '-c', ECHO, str(uid), address, str(port), label],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    ready, _, _ = select.select([child.stdout], [], [], 5)
+    if not ready or not child.stdout.readline():
+        child.kill()
+        raise RuntimeError(f'listener {label} on {address}:{port} did not start: {child.stderr.read()}')
+    LISTENERS[name] = child
+
+
+def stop(name):
+    child = LISTENERS.pop(name)
+    child.terminate()
+    child.wait(timeout=5)
+
+
+def probe(uid, dest, port=53, tcp=False, source=0):
+    return json.loads(run([sys.executable, '-I', '-c', PROBE, str(uid), dest, str(port), str(int(tcp)), str(source)]))
+
+
+def expect(result, reply, what):
+    assert result['reply'] == reply, f'{what}: expected {reply!r}, got {result!r}'
 
 
 def hits(chain, verdict):
-    data = json.loads(run([NFT, '-j', 'list', 'chain', 'inet', 'xq_user_proxy', chain]))
+    data = json.loads(run([NFT, '-j', 'list', 'chain', 'inet', TABLE, chain]))
     return sum(expr['counter']['packets']
                for item in data['nftables']
                if any(verdict in e for e in item.get('rule', {}).get('expr', []))
                for expr in item.get('rule', {}).get('expr', []) if 'counter' in expr)
 
 
-def main():
-    if os.geteuid() != 0 or os.stat('/proc/self/ns/net') == os.stat('/proc/1/ns/net'):
-        raise SystemExit('Refusing host network: run sudo unshare --net python3 -I tests/netns-check.py')
+# The test's own counters of where one kind of probe leaves the host. Interface
+# statistics would also count the kernel's IPv6 housekeeping packets.
+EXITS = '''table inet xq_netns_check {
+  counter tun { }
+  counter wan { }
+  chain postrouting {
+    type filter hook postrouting priority 100; policy accept;
+    udp dport 9999 oifname "xq-utun" counter name tun
+    udp dport 9999 oifname "test-wan" counter name wan
+  }
+}
+'''
+
+
+def exits():
+    """Probes to UDP port 9999 that left through (the TUN, the uplink) so far."""
+    return tuple(json.loads(run([NFT, '-j', 'list', 'counter', 'inet', 'xq_netns_check', name]))
+                 ['nftables'][-1]['counter']['packets'] for name in ('tun', 'wan'))
+
+
+def refuse_unsafe_namespace():
+    if os.geteuid() != 0:
+        raise SystemExit('Needs root inside a new network namespace: ' + USAGE)
+    try:
+        here, host = os.stat('/proc/self/ns/net'), os.stat('/proc/1/ns/net')
+        on_host = (here.st_dev, here.st_ino) == (host.st_dev, host.st_ino)
+    except PermissionError:
+        # A rootless user namespace may not look at PID 1, so its caller names
+        # the host namespace. Such a namespace has no privilege over the host
+        # network in any case.
+        declared = os.environ.get('XQ_HOST_NETNS', '')
+        on_host = not declared.startswith('net:[') or os.readlink('/proc/self/ns/net') == declared
+    if on_host:
+        raise SystemExit('Refusing host network: ' + USAGE)
     interfaces = json.loads(run([IP, '-j', 'link', 'show']))
     if [item['ifname'] for item in interfaces] != ['lo']:
         raise SystemExit('Refusing a namespace that is not fresh (expected only lo)')
-    ctl = runpy.run_path(str(BASE / 'xq-user-proxyctl'))
+
+
+def can_switch_to(*uids):
+    ranges = [tuple(map(int, line.split())) for line in Path('/proc/self/uid_map').read_text().splitlines()]
+    return all(any(first <= uid < first + count for first, _, count in ranges) for uid in uids)
+
+
+def sandbox(ctl, base):
+    """The namespace shares the host file system: keep the controller inside `base`."""
     scope = ctl['firewall'].__globals__
-    scope.update(UID=OWNER, GID=OWNER, USER='test-owner', HOST='198.51.100.10', PORT=1080)
-    run([IP, 'link', 'set', 'lo', 'up'])
-    for name in ('xq-utun', 'test-wan'):
-        run([IP, 'link', 'add', name, 'type', 'dummy'])
-        run([IP, 'link', 'set', name, 'up'])
-    run([IP, 'address', 'add', '198.18.0.2/24', 'dev', 'test-wan'])
-    run([IP, 'route', 'add', 'default', 'dev', 'test-wan'])
-    run([IP, 'route', 'add', 'blackhole', 'default', 'metric', '32760', 'table', '20261'])
-    run([IP, 'route', 'add', 'default', 'dev', 'xq-utun', 'metric', '10', 'table', '20261'])
-    run([IP, 'rule', 'add', 'pref', '18410', 'fwmark', '0x40000000/0x40000000', 'table', '20261'])
+    for directory in ('state', 'etc'):
+        (base / directory).mkdir()
+    scope.update(STATE=base / 'state', STATEFILE=base / 'state/state.json', ENABLED=base / 'state/enabled',
+                 CONFIG=base / 'etc/sing-box.json', SETTINGS=base / 'etc/settings.json',
+                 RESOLV=base / 'etc/resolv.conf', HOST='198.51.100.10', PORT=1080)
+    atomic, command = scope['atomic'], scope['run']
+
+    def checked_atomic(path, content):
+        if not Path(path).resolve().is_relative_to(base):
+            raise AssertionError('Controller attempted a write outside the test directory: ' + str(path))
+        return atomic(path, content)
+
+    def checked_run(args, **kwargs):
+        if args == [scope['SYSTEMCTL'], 'is-active', '--quiet', scope['SERVICE']]:
+            # No systemd here: the core unit is simply "not running". Nothing is executed.
+            return subprocess.CompletedProcess(args, 3, '', '')
+        if args[0] not in (IP, NFT, CONNTRACK):
+            raise AssertionError('Unexpected controller command in the namespace test: ' + repr(args))
+        return command(args, **kwargs)
+
+    scope.update(atomic=checked_atomic, run=checked_run)
+    return scope
+
+
+def cast(scope, owner, core):
+    """Load the guard for this owner UID and core UID; forget earlier connections."""
+    scope.update(UID=owner, GID=owner, USER='test-owner', CORE_UID=core)
     for active in (True, False):
-        run([NFT, '--check', '-f', '-'], input=ctl['firewall'](active))
-    run([NFT, '-f', '-'], input=ctl['firewall']())
-    for port, reply in ((53, b'original'), (1053, b'private'), (18080, b'ordinary')):
-        start_echo(port, reply)
+        run([NFT, '--check', '-f', '-'], data=scope['firewall'](active))
+    scope['install_firewall']({})        # the controller's own load: replaces an existing table
+    assert scope['table_exists']()
+    run([CONNTRACK, '-F'])
 
-    for uid in (OWNER, 0, OTHER):
-        for tcp in (False, True):
-            assert probe(uid, 18080, tcp)['reply'] == 'ordinary'
-            assert probe(uid, 53, tcp)['reply'] == ('private' if uid == OWNER else 'original')
-            assert probe(uid, 1053, tcp)['reply'] == ('private' if uid == OWNER else None)
-    assert hits('private_dns_access', 'reject') >= 4
-    print('PASS: arbitrary owner UID gets proxied DNS; root/other UID retain original DNS and ordinary TCP/UDP, private DNS denied', flush=True)
 
-    first = probe(OWNER, 1053)
-    assert first['reply'] == 'private'
-    assert probe(OTHER, 1053, source=first['source'])['reply'] is None
+def check_route_cleanup(scope):
+    """A1: cleanup where the routing table never existed, exists in part, and is already clean."""
+    remove, routes, rules = scope['remove_routes'], scope['routes'], scope['rules']
+    for family in ('-4', '-6'):
+        # The answer of the real tool that used to make OFF fail on every retry.
+        listing = subprocess.run([IP, '-j', family, 'route', 'show', 'table', '20261'], capture_output=True)
+        assert listing.returncode != 0, 'this namespace already has routing table 20261'
+        assert routes(family) == []
+    remove()
+    remove()
+    print('PASS: remove_routes() twice where routing table 20261 was never created', flush=True)
+
+    def owned():
+        return ([scope['has_route'](item) for item in (scope['TUN_ROUTE'], scope['BLACKHOLE'], scope['UNREACHABLE'])],
+                [any(map(scope['own_rule'], rules(family))) for family in ('-4', '-6')])
+
+    run(scope['route_command'](scope['BLACKHOLE'], 'replace'))      # ON stopped between its two routes
+    assert owned() == ([False, True, False], [False, False])
+    remove()
+    assert owned() == ([False, False, False], [False, False])
+    remove()                                                        # the table now exists and is empty
+    scope['install_routes']()
+    scope['install_routes']()                                       # repeating ON's step adds nothing
+    run(scope['route_command'](scope['TUN_ROUTE'], 'replace'))
+    assert owned() == ([True, True, True], [True, True])
+    foreign = [IP, '-4', 'route', 'add', '198.51.100.0/24', 'dev', 'test-wan', 'table', '20261']
+    run(foreign)
+    remove()
+    assert owned() == ([False, False, False], [False, False])
+    assert [route['dst'] for route in routes('-4')] == ['198.51.100.0/24'], routes('-4')
+    remove()
+    foreign[3] = 'del'
+    run(foreign)
+    print('PASS: partial and complete sets of owned routes and rules are removed; '
+          'a foreign route in the same table is kept', flush=True)
+
+
+def check_owner(scope, owner):
+    """What the owner gets for every class of resolver, against the classifier's answer."""
+    port = scope['DNS_PORT']
+    for tcp in (False, True):
+        expect(probe(owner, '127.0.0.1', 18080, tcp), 'ordinary', 'owner ordinary loopback traffic')
+        expect(probe(owner, '127.0.0.1', port, tcp), 'private', 'owner asking the private entry directly')
+        for address, original in RESOLVERS.items():
+            kind = scope['nameserver_path'](ipaddress.ip_address(address))[0]
+            reply = {'proxied': 'private', 'lan': original, 'blocked': None}[kind]
+            expect(probe(owner, address, tcp=tcp), reply, f'owner DNS to {address} ({kind}, tcp={tcp})')
+    kinds = {address: scope['nameserver_path'](ipaddress.ip_address(address))[0] for address in RESOLVERS}
+    assert kinds == {STUB: 'proxied', PUBLIC: 'proxied', REMOTE: 'proxied', LAN: 'lan',
+                     V6_LOOPBACK: 'blocked', ULA: 'lan', V6_PUBLIC: 'blocked'}, kinds
+    print(f'PASS: owner DNS over UDP and TCP: loopback stub and public IPv4 go to 127.0.0.1:{port}; '
+          'LAN and ULA resolvers are reached directly; ::1 and public IPv6 are blocked; '
+          'the classifier says the same', flush=True)
+
+
+def check_bystander(scope, uid, who):
+    """Root and other users keep the original servers and are refused the private entry."""
+    rejected = hits('private_dns_access', 'reject')
+    for tcp in (False, True):
+        expect(probe(uid, '127.0.0.1', 18080, tcp), 'ordinary', f'{who} ordinary loopback traffic')
+        for address, original in RESOLVERS.items():
+            expect(probe(uid, address, tcp=tcp), original, f'{who} DNS to {address} (tcp={tcp})')
+        expect(probe(uid, '127.0.0.1', scope['DNS_PORT'], tcp), None, f'{who} asking the private entry')
+    assert hits('private_dns_access', 'reject') >= rejected + 2
+    print(f'PASS: {who} reaches every original resolver and ordinary TCP/UDP; the private entry is refused', flush=True)
+
+
+def check_cross_identity(scope, owner, other):
+    first = probe(owner, '127.0.0.1', scope['DNS_PORT'])
+    expect(first, 'private', 'owner asking the private entry')
+    expect(probe(other, '127.0.0.1', scope['DNS_PORT'], source=first['source']), None,
+           'another UID reusing the owner tuple to the private entry')
     print('PASS: another UID cannot borrow an owner conntrack tuple', flush=True)
-
     # All users share one conntrack table, and a just-closed UDP source port
     # can be reused by another UID within the conntrack timeout. In neither
     # order may one UID inherit the other's DNS translation.
-    owner_first = probe(OWNER, 53)
-    assert owner_first['reply'] == 'private'
-    assert probe(OTHER, 53, source=owner_first['source'])['reply'] == 'original'
-    other_first = probe(OTHER, 53)
-    assert other_first['reply'] == 'original'
-    assert probe(OWNER, 53, source=other_first['source'])['reply'] == 'private'
+    owner_first = probe(owner, STUB)
+    expect(owner_first, 'private', 'owner DNS')
+    expect(probe(other, STUB, source=owner_first['source']), 'stub', 'another UID reusing the owner source port')
+    other_first = probe(other, STUB)
+    expect(other_first, 'stub', 'another UID DNS')
+    expect(probe(owner, STUB, source=other_first['source']), 'private', 'owner reusing the other source port')
     print('PASS: a reused UDP source port never carries DNS translation between UIDs', flush=True)
 
+
+def check_dns_cleanup(scope, owner):
+    """OFF's conntrack step: only this feature's DNS mappings go, and it can be repeated."""
+    expect(probe(owner, STUB), 'private', 'owner DNS')
+    expect(probe(owner, '127.0.0.1', 18080), 'ordinary', 'owner ordinary traffic')
+    assert scope['dns_connections'](), 'the owner query left no marked DNS mapping'
+    scope['delete_dns_connections']()
+    assert scope['dns_connections']() == []
+    assert 'dport=18080' in run([CONNTRACK, '-L']), 'an ordinary connection was deleted too'
+    scope['delete_dns_connections']()
+    print('PASS: delete_dns_connections() removes only the DNS mappings and succeeds again with none left', flush=True)
+
+
+def check_listener_restart(scope, owner, core, unprivileged, who):
+    """While the core is down nobody else can take the entry, and the owner fails fast."""
+    port = scope['DNS_PORT']
+    stop('private')
+    assert unprivileged(port) == ['PermissionError'] * 4, unprivileged(port)
+    assert unprivileged(port + 20000) == ['bound'] * 4, 'the control port should be bindable'
+    for tcp in (False, True):
+        result = probe(owner, STUB, tcp=tcp)
+        assert (result['reply'], result['error']) == (None, 'ConnectionRefusedError') and result['seconds'] < 0.5, \
+            f'owner DNS with the core down must fail at once, without the port 53 resolver: {result!r}'
+    echo('private', core, '127.0.0.1', port, 'private')
+    for tcp in (False, True):
+        expect(probe(owner, STUB, tcp=tcp), 'private', 'owner DNS after the core listener came back')
+    print(f'PASS: with the core listener stopped, {who} cannot bind 127.0.0.1:{port} or 0.0.0.0:{port} '
+          '(PermissionError), the owner gets ECONNREFUSED at once instead of the port 53 resolver, '
+          'and a restarted listener serves again', flush=True)
+
+
+def check_forged_reply(scope, owner, squatter, who):
+    """Even where the port can be squatted, an answer that is not the core's never arrives."""
+    port, original = scope['DNS_PORT'], THRESHOLD.read_text()
+    assert scope['endpoint_fault']() is None
+    stop('private')
+    THRESHOLD.write_text('0\n')             # this namespace only: ordinary users may now bind the entry
+    try:
+        assert 'ip_unprivileged_port_start' in scope['endpoint_fault']()
+        echo('squatter', squatter, '127.0.0.1', port, 'forged')
+        dropped = hits('dns_zone_output', 'drop')
+        for tcp in (False, True):
+            expect(probe(owner, STUB, tcp=tcp), None, f'owner DNS answered by {who} (tcp={tcp})')
+        assert hits('dns_zone_output', 'drop') > dropped, 'the forged replies did not hit the identity rule'
+        stop('squatter')
+    finally:
+        THRESHOLD.write_text(original)
+    assert scope['endpoint_fault']() is None
+    print(f'PASS: with ip_unprivileged_port_start lowered in this namespace, replies of {who} on port {port} '
+          'are dropped and never reach the owner; the controller reports the lowered threshold', flush=True)
+
+
+def check_flushed_ruleset(scope, owner):
+    """A5: selection lives in nft, so without the table the owner's new connections go direct."""
+    run([NFT, '-f', '-'], data=EXITS)
+    probe(owner, '203.0.113.10', 9999)
+    assert exits() == (1, 0), f'an owner packet should enter the TUN: {exits()}'
+    run([NFT, 'delete', 'table', 'inet', TABLE])        # what `nft flush ruleset` does to this table
+    assert not scope['table_exists']()
+    probe(owner, '203.0.113.10', 9999)
+    assert exits() == (1, 1), f'without the table an owner packet should leave by the main route: {exits()}'
+    run([NFT, 'delete', 'table', 'inet', 'xq_netns_check'])
+    expect(probe(owner, STUB), 'stub', 'owner DNS without the table')
+    print('PASS: once the table is gone, a new owner connection leaves by the main route and owner DNS '
+          'reaches the system resolver directly; table_exists() sees it', flush=True)
+
+
+def check_tun_acl():
     before = hits('private_tun_access', 'drop')
     marked_route = json.loads(run([IP, '-j', 'route', 'get', '203.0.113.10', 'mark', '0x40000000']))
     assert marked_route[0]['dev'] == 'xq-utun'
@@ -139,8 +394,10 @@ def main():
         else:
             raise AssertionError('Marked root unexpectedly connected through TUN')
     assert hits('private_tun_access', 'drop') > before
-    print('PASS: marked root traffic denied at the TUN ACL', flush=True)
+    print('PASS: marked traffic of a non-owner is denied at the TUN ACL', flush=True)
 
+
+def check_core_loss(scope, bystander):
     # Simulate core/TUN loss: only the test namespace changes, guard stays.
     run([IP, 'link', 'delete', 'xq-utun'])
     result = subprocess.run([IP, '-j', 'route', 'get', '203.0.113.10', 'mark', '0x40000000'],
@@ -148,13 +405,125 @@ def main():
     # Linux blackhole routes may return EINVAL ("Invalid argument"), whereas
     # unreachable routes return ENETUNREACH. Verify the route, not error prose.
     assert result.returncode != 0, result.stdout
-    remaining = json.loads(run([IP, '-j', 'route', 'show', 'table', '20261']))
-    assert any(r.get('type') == 'blackhole' and r.get('dst') == 'default' for r in remaining)
-    assert not any(r.get('dev') == 'xq-utun' for r in remaining)
+    assert scope['has_route'](scope['BLACKHOLE']) and not scope['has_route'](scope['TUN_ROUTE'])
     root_route = json.loads(run([IP, '-j', 'route', 'get', '203.0.113.10']))
     assert root_route[0]['dev'] == 'test-wan'
-    assert probe(0, 53)['reply'] == 'original'
-    print('PASS: core loss leaves owner blackhole while unmarked root routing/DNS remain available', flush=True)
+    expect(probe(bystander, STUB), 'stub', 'non-owner DNS after the TUN disappeared')
+    print('PASS: core loss leaves the owner blackhole while unmarked routing/DNS of others remain available',
+          flush=True)
+
+
+def check_shutdown(scope, owner, core):
+    """OFF's own steps in OFF's order, and what status would find before and after."""
+    scope.update(UID=owner, GID=owner, CORE_UID=core)
+    found, unchecked = scope['kernel_leftovers']()
+    # The table, two rules and two routes (the TUN route left with its device). The
+    # three-identity run also still has the owner's last DNS mappings (the single-identity
+    # run flushed them when it recast the rules), and OFF's conntrack step below must remove them.
+    fixed = [item for item in found if 'DNS conntrack' not in item]
+    assert (len(fixed), len(found) - len(fixed), unchecked) in ((5, 0, []), (5, 1, [])), found
+    scope['install_firewall']({}, active=False)          # stop translating before the mappings are deleted
+    assert 'dnat' not in run([NFT, 'list', 'table', 'inet', TABLE])
+    for tcp in (False, True):
+        expect(probe(owner, STUB, tcp=tcp), None, 'owner DNS while only the guard is left')
+    for _ in range(2):                                   # the second round finds nothing left to do
+        scope['delete_dns_connections']()
+        scope['remove_routes']()
+        if scope['table_exists']():
+            run([NFT, 'delete', 'table', 'inet', TABLE])
+        assert scope['kernel_leftovers']() == ([], []), scope['kernel_leftovers']()
+    expect(probe(owner, STUB), 'stub', 'owner DNS after the cleanup')
+    print('PASS: the steps of OFF in order: the guard-only stage blocks owner DNS instead of leaking it, '
+          'then nothing of this feature is left and repeating the cleanup changes nothing', flush=True)
+
+
+def exercise(scope, single):
+    me = os.getuid()
+    run([IP, 'link', 'set', 'lo', 'up'])
+    for name in ('xq-utun', 'test-wan'):
+        run([IP, 'link', 'add', name, 'type', 'dummy'])
+        run([IP, 'link', 'set', name, 'up'])
+    run([IP, 'address', 'add', '198.18.0.2/24', 'dev', 'test-wan'])
+    run([IP, 'route', 'add', 'default', 'dev', 'test-wan'])
+    run([IP, '-6', 'address', 'add', '2001:db8:1::2/64', 'dev', 'test-wan', 'nodad'])
+    run([IP, '-6', 'route', 'add', 'default', 'dev', 'test-wan'])
+    for address in (LAN, PUBLIC):
+        run([IP, 'address', 'add', address + '/32', 'dev', 'lo'])
+    for address in (ULA, V6_PUBLIC):
+        run([IP, '-6', 'address', 'add', address + '/128', 'dev', 'lo', 'nodad'])
+
+    check_route_cleanup(scope)
+    port = scope['DNS_PORT']
+    scope['install_routes']()
+    run(scope['route_command'](scope['TUN_ROUTE'], 'replace'))
+    echo('private', me, '127.0.0.1', port, 'private')
+    echo('ordinary', me, '127.0.0.1', 18080, 'ordinary')
+    for address, label in RESOLVERS.items():
+        if label:
+            echo(label, me, address, 53, label)
+
+    if single:
+        # One identity: it plays each role in turn.
+        owner, bystanders, squatter = me, [(me, 'a non-owner identity')], me
+        restricted = [SETPRIV, '--bounding-set=-net_bind_service', '--inh-caps=-net_bind_service',
+                      '--ambient-caps=-net_bind_service', '--']
+        who = 'a process without CAP_NET_BIND_SERVICE'
+    else:
+        owner, bystanders, squatter = OWNER, [(0, 'root'), (OTHER, 'another UID')], OTHER
+        restricted, who = [], 'another UID'
+
+    def unprivileged(number):
+        return json.loads(run([*restricted, sys.executable, '-I', '-c', BIND,
+                               str(me if single else OTHER), str(number)]))
+
+    cast(scope, owner, me)
+    print('PASS: active and inactive guard pass nft --check and load through install_firewall()', flush=True)
+    check_owner(scope, owner)
+    if not single:
+        for uid, name in bystanders:
+            check_bystander(scope, uid, name)
+        check_cross_identity(scope, owner, OTHER)
+    check_dns_cleanup(scope, owner)
+    check_listener_restart(scope, owner, me, unprivileged, who)
+    check_flushed_ruleset(scope, owner)
+
+    # In the single-identity run the listener's own identity is cast out of the core role.
+    cast(scope, owner, NOBODY if single else me)
+    check_forged_reply(scope, owner, squatter, 'a sender that is not the core' if single else 'another UID')
+    cast(scope, owner, me)
+    echo('private', me, '127.0.0.1', port, 'private')
+    for tcp in (False, True):
+        expect(probe(owner, STUB, tcp=tcp), 'private', 'owner DNS once the core listener is back')
+    print('PASS: the legitimate core listener answers again after the squatter', flush=True)
+
+    if single:
+        cast(scope, NOBODY, me)
+        for uid, name in bystanders:
+            check_bystander(scope, uid, name)
+    check_tun_acl()
+    check_core_loss(scope, bystanders[0][0])
+    check_shutdown(scope, owner, me)
+    if single:
+        print('SKIPPED (needs a second UID at the same time; run as root): borrowing an owner conntrack tuple, '
+              'source-port reuse between UIDs, and binding/answering as a real other UID', flush=True)
+    print('ALL CHECKS PASSED: ' + ('single identity (rootless user namespace)' if single else
+                                   f'owner UID {OWNER}, other UID {OTHER}, root'), flush=True)
+
+
+def main():
+    refuse_unsafe_namespace()
+    single = not can_switch_to(OWNER, OTHER)
+    if single and not os.access(SETPRIV, os.X_OK):
+        raise SystemExit('The single-identity run needs ' + SETPRIV)
+    print('MODE: ' + ('single identity; roles are cast through the UID constants of the rules' if single
+                      else 'three identities'), flush=True)
+    ctl = runpy.run_path(str(BASE / 'xq-user-proxyctl'))
+    with tempfile.TemporaryDirectory(prefix='xq-user-tun-netns-') as directory:
+        try:
+            exercise(sandbox(ctl, Path(directory).resolve()), single)
+        finally:
+            for name in list(LISTENERS):
+                LISTENERS.pop(name).kill()
 
 
 if __name__ == '__main__':

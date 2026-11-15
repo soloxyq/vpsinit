@@ -42,7 +42,7 @@
       "type": "direct",
       "tag": "uid-dns",
       "listen": "127.0.0.1",
-      "listen_port": 1053
+      "listen_port": 40
     }
   ],
   "outbounds": [

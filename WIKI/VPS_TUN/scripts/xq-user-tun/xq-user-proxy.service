@@ -10,7 +10,8 @@ StartLimitBurst=5
 Type=simple
 User=root
 Group=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+# CAP_NET_BIND_SERVICE: the private DNS entry is a privileged loopback port.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 ExecStartPre=/usr/local/lib/xq-user-proxy/bin/sing-box check -c /etc/xq-user-proxy/sing-box.json
 ExecStart=/usr/local/lib/xq-user-proxy/bin/sing-box run -c /etc/xq-user-proxy/sing-box.json

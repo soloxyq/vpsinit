@@ -4,8 +4,9 @@
 Only controller-owned nftables/routing objects are changed. New owner outbounds
 are marked after conntrack/DNAT; replies keep the original host route. Owner DNS
 translations live in a dedicated conntrack zone, so a reused source port never
-makes another user's flow share them. No host resolver, forwarding sysctl, or
-unrelated user's rules are replaced.
+makes another user's flow share them. The private DNS entry is a privileged
+loopback port that only the core identity may answer from. No host resolver,
+forwarding sysctl, or unrelated user's rules are replaced.
 """
 import contextlib
 import fcntl
@@ -34,6 +35,14 @@ LAN_V6 = ('fc00::/7', 'fe80::/10', 'ff00::/8')
 PORT = None
 TUN = 'xq-utun'
 ADDRESS = '172.30.254.1/32'
+# Private DNS entry on 127.0.0.1. Binding it needs CAP_NET_BIND_SERVICE, so no
+# ordinary user can take the owner's translated queries while the core is
+# down. 40 is IANA-unassigned and stays privileged under the usual
+# ip_unprivileged_port_start tweaks (80, 53); bindresvport() picks from 512-1023.
+DNS_PORT = 40
+# The only identity that may send from DNS_PORT: the user the core unit runs as.
+CORE_UID = 0
+MAXNS = 3  # glibc asks only the first three nameservers of resolv.conf
 RTABLE = '20261'
 PRIORITY = '18410'
 ROUTE_BIT = 0x40000000
@@ -47,6 +56,8 @@ STATEFILE = STATE / 'state.json'
 ENABLED = STATE / 'enabled'
 CONFIG = Path('/etc/xq-user-proxy/sing-box.json')
 SETTINGS = Path('/etc/xq-user-proxy/settings.json')
+RESOLV = Path('/etc/resolv.conf')
+SYSCTL = Path('/proc/sys/net')
 IP = '/usr/sbin/ip'
 NFT = '/usr/sbin/nft'
 CONNTRACK = '/usr/sbin/conntrack'
@@ -118,7 +129,7 @@ def check_config():
         {'type': 'tun', 'tag': 'uid-tun', 'interface_name': TUN,
          'address': [ADDRESS], 'dns_address': ['172.30.254.2'], 'mtu': 1280,
          'auto_route': False, 'auto_redirect': False, 'dns_mode': 'disabled', 'stack': 'gvisor'},
-        {'type': 'direct', 'tag': 'uid-dns', 'listen': '127.0.0.1', 'listen_port': 1053},
+        {'type': 'direct', 'tag': 'uid-dns', 'listen': '127.0.0.1', 'listen_port': DNS_PORT},
     ]
     expected_dns = {
         'servers': [{'type': 'https', 'tag': 'proxied-dns', 'server': '1.1.1.1',
@@ -189,16 +200,41 @@ def rule_args(family):
 
 
 def rules(family):
-    return json.loads(run([IP, '-j', family, 'rule', 'show']).stdout)
+    # -N: tables by number, whatever names rt_tables gives them.
+    return json.loads(run([IP, '-N', '-j', family, 'rule', 'show']).stdout)
 
 
 def routes(family):
-    result = run([IP, '-j', family, 'route', 'show', 'table', RTABLE], check=False)
-    if result.returncode:
-        if 'does not exist' in result.stderr:
-            return []
-        raise RuntimeError(result.stderr.strip())
-    return json.loads(result.stdout)
+    """Routes in this feature's own routing table.
+
+    One dump of all tables, filtered by table number. Asking for the table
+    alone fails until its first route exists, and only the wording of that
+    error would tell it from a real failure.
+    """
+    dump = json.loads(run([IP, '-N', '-j', family, 'route', 'show', 'table', 'all']).stdout)
+    return [route for route in dump if str(route.get('table')) == RTABLE]
+
+
+# The three routes this feature owns in RTABLE:
+# label, family, `ip route` arguments, type, metric, device.
+TUN_ROUTE = ('TUN 专用默认路由', '-4', ('default', 'dev', TUN, 'metric', '10'), 'unicast', 10, TUN)
+BLACKHOLE = ('IPv4 黑洞回退', '-4', ('blackhole', 'default', 'metric', '32760'), 'blackhole', 32760, None)
+UNREACHABLE = ('IPv6 阻断路由', '-6', ('unreachable', 'default', 'metric', '32760'), 'unreachable', 32760, None)
+
+
+def route_command(owned, action):
+    return [IP, owned[1], 'route', action, *owned[2], 'table', RTABLE]
+
+
+def has_route(owned):
+    _, family, _, kind, metric, device = owned
+
+    def kind_of(route):
+        # ip -N prints the type as its RTN_* number and omits it for unicast.
+        name = str(route.get('type', 'unicast'))
+        return {'6': 'blackhole', '7': 'unreachable'}.get(name, name)
+    return any(kind_of(route) == kind and route.get('dst') == 'default' and route.get('metric') == metric
+               and device in (None, route.get('dev')) for route in routes(family))
 
 
 def number(value):
@@ -216,10 +252,13 @@ def own_rule(rule):
 
 
 def table_exists():
-    result = run([NFT, 'list', 'table', 'inet', TABLE], check=False)
-    if result.returncode and 'No such file or directory' not in result.stderr:
-        raise RuntimeError(result.stderr.strip())
-    return result.returncode == 0
+    listing = json.loads(run([NFT, '-j', 'list', 'tables']).stdout)
+    return any(item.get('table', {}).get('family') == 'inet' and item['table'].get('name') == TABLE
+               for item in listing.get('nftables', []))
+
+
+def core_active():
+    return run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode == 0
 
 
 def firewall(active=True):
@@ -233,7 +272,7 @@ def firewall(active=True):
   chain dns_output {{
     type nat hook output priority -100; policy accept;
     ip daddr @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 return
-    ct mark & {OWNER_BIT:#x} != 0 ct direction original meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_BIT:#x} dnat ip to 127.0.0.1:1053
+    ct mark & {OWNER_BIT:#x} != 0 ct direction original meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_BIT:#x} dnat ip to 127.0.0.1:{DNS_PORT}
   }}
   chain route_output {{
     type route hook output priority -90; policy accept;
@@ -251,11 +290,15 @@ def firewall(active=True):
 '''
     # Before conntrack lookup, put both directions of every flow involving the
     # private listener in their own zone: the owner's translatable DNS queries,
-    # the owner's direct queries to 1053, the listener's replies, and ICMP
-    # errors about packets sent to 1053 (so a stopped core still fails fast).
-    # All users share the host conntrack table; without the zone a reused UDP
-    # source port could make another user's query match the owner's DNAT entry
-    # (or the reverse).
+    # the owner's direct queries to the entry, the listener's replies, and ICMP
+    # errors about packets sent to the entry (so a stopped core still fails
+    # fast). All users share the host conntrack table; without the zone a
+    # reused UDP source port could make another user's query match the owner's
+    # DNAT entry (or the reverse).
+    # A reply from the entry counts only when the core's socket sent it: one
+    # from any other socket is dropped before it can match the owner's query.
+    # The kernel's own RST and ICMP errors have no socket, match neither skuid
+    # test and pass.
     return f'''table inet {TABLE} {{
   set lan_v4 {{
     type ipv4_addr; flags interval;
@@ -268,13 +311,14 @@ def firewall(active=True):
   chain dns_zone_output {{
     type filter hook output priority raw; policy accept;
     meta skuid {UID} meta nfproto ipv4 ip daddr != @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 ct zone set {DNS_ZONE}
-    meta skuid {UID} ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport 1053 ct zone set {DNS_ZONE}
-    ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport 1053 ct zone set {DNS_ZONE}
-    ip saddr 127.0.0.1 icmp type destination-unreachable @th,240,16 1053 ct zone set {DNS_ZONE}
+    meta skuid {UID} ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport {DNS_PORT} ct zone set {DNS_ZONE}
+    ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport {DNS_PORT} meta skuid != {CORE_UID} counter drop
+    ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport {DNS_PORT} ct zone set {DNS_ZONE}
+    ip saddr 127.0.0.1 icmp type destination-unreachable @th,240,16 {DNS_PORT} ct zone set {DNS_ZONE}
   }}
   chain private_dns_output {{
     type filter hook output priority -80; policy accept;
-    ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport 1053 jump private_dns_access
+    ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport {DNS_PORT} jump private_dns_access
   }}
   chain private_dns_access {{
     ct direction reply counter return
@@ -344,15 +388,132 @@ def snapshot():
     for family in ('-4', '-6'):
         result['routes'][family] = json.loads(run([IP, '-j', family, 'route', 'show', 'table', 'all']).stdout)
         result['rules'][family] = rules(family)
-    resolver = Path('/etc/resolv.conf')
+    resolver = RESOLV
     result['resolver_link'] = os.readlink(resolver) if resolver.is_symlink() else None
     result['resolver_sha256'] = hashlib.sha256(resolver.read_bytes()).hexdigest()
     result['nftables'] = json.loads(run([NFT, '--stateless', '--json', 'list', 'ruleset']).stdout)
     return result
 
 
+def nameservers():
+    """What glibc takes from resolv.conf: ((address, scope) in file order, rotate)."""
+    try:
+        text = RESOLV.read_bytes().decode(errors='replace')  # bytes: text mode would hide a CR
+    except FileNotFoundError:
+        text = ''
+    found, rotate = [], False
+    for line in text.split('\n'):
+        # As glibc reads it: a NUL ends the line (it is a C string), the keyword
+        # stands at the very start, fields are separated by blanks or tabs only,
+        # and the rest of a nameserver line is ignored.
+        keyword, _, rest = line.partition('\0')[0].replace('\t', ' ').partition(' ')
+        fields = [field for field in rest.split(' ') if field]
+        if keyword == 'options':
+            rotate = rotate or any(field.startswith('rotate') for field in fields)
+        elif keyword == 'nameserver' and fields:
+            address = parse_nameserver(fields[0])
+            if address:
+                found.append(address)
+    return found, rotate
+
+
+def parse_nameserver(token):
+    """(address, scope) for one nameserver entry; None where glibc skips the entry."""
+    # glibc's order. First the whole token as IPv4: a stray character such as
+    # the CR of a CRLF file spoils it, though inet_aton alone would tolerate a
+    # trailing one. Then what precedes the first '%' as IPv6; what follows is a
+    # scope, and glibc keeps the address even when it cannot use the scope.
+    if not any(character.isspace() for character in token):
+        try:
+            return ipaddress.IPv4Address(socket.inet_aton(token)), ''
+        except (OSError, ValueError):
+            pass
+    address, _, scope = token.partition('%')
+    try:
+        return ipaddress.IPv6Address(socket.inet_pton(socket.AF_INET6, address)), scope
+    except (OSError, ValueError):
+        return None
+
+
+def nameserver_path(address):
+    """(kind, description): where firewall() sends an owner query to this resolver."""
+    # A query to an IPv4-mapped address leaves as IPv4 and meets the IPv4 rules.
+    address = address.ipv4_mapped if address.version == 6 and address.ipv4_mapped else address
+    networks = LAN_V4 if address.version == 4 else LAN_V6
+    direct = any(address in ipaddress.ip_network(network) for network in networks)
+    if address.version == 4:
+        if direct:
+            return 'lan', '直连范围内的 IPv4：按宿主路由直连该服务器，不经代理'
+        return 'proxied', f'改送专用入口 127.0.0.1:{DNS_PORT}，经代理 DoH 解析'
+    if direct:
+        return 'lan', '直连范围内的 IPv6（ULA/链路本地）：按宿主路由直连该服务器，不经代理'
+    return 'blocked', '阻断：本方案不代理 IPv6 DNS，只有 ULA/链路本地地址可以直连'
+
+
+def resolver_paths():
+    """(address, kind, description) for every nameserver glibc accepts, in its order.
+
+    kind is 'proxied' (taken over and resolved through the proxy), 'lan'
+    (direct, not proxied), 'blocked', or 'unused' beyond glibc's first MAXNS.
+    Without any nameserver glibc asks 127.0.0.1.
+    """
+    servers = nameservers()[0] or [(ipaddress.IPv4Address('127.0.0.1'), '')]
+    paths = []
+    for index, (address, scope) in enumerate(servers):
+        kind, text = nameserver_path(address)
+        if index >= MAXNS:
+            kind, text = 'unused', f'glibc 只使用前 {MAXNS} 个 nameserver，此项不会被查询'
+        # inet_ntop keeps an IPv4-mapped address readable on every Python version.
+        shown = str(address) if address.version == 4 else socket.inet_ntop(socket.AF_INET6, address.packed)
+        # The scope is shown as written; escaped, since it may hold control characters.
+        paths.append((shown + ('%' + scope.encode('unicode_escape').decode() if scope else ''), kind, text))
+    return paths
+
+
+def resolver_report():
+    """(lines, warnings, fault): where the owner's default DNS goes while ON."""
+    servers, rotate = nameservers()
+    paths = resolver_paths()
+    lines = [f'{position}. {address} → {text}' for position, (address, _, text) in enumerate(paths, 1)]
+    if not servers:
+        lines[0] += '（/etc/resolv.conf 没有有效的 nameserver，这是 glibc 的默认值）'
+    used = [path for path in paths if path[1] != 'unused']
+    usable = [index for index, path in enumerate(used) if path[1] != 'blocked']
+    if not usable:
+        return lines, [], ('默认 DNS 没有可用路径：glibc 会使用的 nameserver 全部被阻断（'
+                           + '；'.join(f'{address} → {text}' for address, _, text in used)
+                           + '），目标用户的域名解析会失败。请先在 /etc/resolv.conf 配置至少一个 IPv4 nameserver')
+    warnings = [f'默认 DNS {address} 在直连范围内，查询直接发给该服务器，不经代理'
+                for address, kind, _ in used if kind == 'lan']
+    for index, (address, kind, _) in enumerate(used):
+        if kind == 'blocked' and rotate:
+            warnings.append(f'/etc/resolv.conf 启用了 rotate，被阻断的 {address} 会轮流成为首选，解析会间歇失败或超时')
+        elif kind == 'blocked' and index < usable[-1]:
+            warnings.append(f'被阻断的 {address} 排在可用的 nameserver 之前，解析会先在它上面失败或超时')
+    return lines, warnings, None
+
+
+def resolver_fault():
+    return resolver_report()[2]
+
+
+def endpoint_fault():
+    """Why the private DNS entry cannot be guaranteed to belong to the core, or None."""
+    try:
+        start = int((SYSCTL / 'ipv4/ip_unprivileged_port_start').read_text())
+    except FileNotFoundError:
+        return None  # kernels without this sysctl reserve every port below 1024
+    if start > DNS_PORT:
+        return None
+    return (f'net.ipv4.ip_unprivileged_port_start 为 {start}：普通用户可以绑定专用 DNS 入口 '
+            f'127.0.0.1:{DNS_PORT}，无法保证入口只属于核心；请把它恢复为大于 {DNS_PORT} 的值（内核默认 1024）')
+
+
 def preflight():
     check_config()
+    for fault in (endpoint_fault(), resolver_fault()):
+        if fault:
+            raise RuntimeError(fault + '；拒绝开启，尚未改动网络')
     if not os.path.isfile(CONNTRACK) or not os.access(CONNTRACK, os.X_OK):
         raise RuntimeError('需要 /usr/sbin/conntrack，以便 OFF 精确清理本功能的 DNS 映射')
     check_nss()
@@ -393,12 +554,16 @@ def preflight():
             raise RuntimeError('专用 conntrack zone 已占用或无法核验')
     for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
         with socket.socket(socket.AF_INET, kind) as sock:
-            sock.bind(('127.0.0.1', 1053))
+            try:
+                sock.bind(('127.0.0.1', DNS_PORT))
+            except OSError as error:
+                raise RuntimeError(f'专用 DNS 入口 127.0.0.1:{DNS_PORT} 无法绑定（{error.strerror or error}）；'
+                                   '请先确认没有其他服务占用它') from None
 
 
 def install_routes():
-    run([IP, '-4', 'route', 'replace', 'blackhole', 'default', 'metric', '32760', 'table', RTABLE])
-    run([IP, '-6', 'route', 'replace', 'unreachable', 'default', 'metric', '32760', 'table', RTABLE])
+    run(route_command(BLACKHOLE, 'replace'))
+    run(route_command(UNREACHABLE, 'replace'))
     for family in ('-4', '-6'):
         found = [rule for rule in rules(family) if rule.get('priority') == int(PRIORITY)]
         if found and (len(found) != 1 or not own_rule(found[0])):
@@ -413,7 +578,7 @@ def attach():
     state = load()
     if not ENABLED.exists() or not state.get('guard_active'):
         raise RuntimeError('用户代理已关闭；拒绝附加路由')
-    if firewall_digest() != state.get('guard_digest'):
+    if not table_exists() or firewall_digest() != state.get('guard_digest'):
         raise RuntimeError('guard 不完整；拒绝附加路由')
     for _ in range(50):
         result = run([IP, '-j', '-4', 'address', 'show', 'dev', TUN], check=False)
@@ -429,12 +594,12 @@ def attach():
     # This feature is IPv4-only. Disable IPv6 on our new interface alone so
     # its automatically generated link-local/multicast routes do not alter
     # the host IPv6 routing tables. Never change all/default/physical devices.
-    ipv6_switch = Path(f'/proc/sys/net/ipv6/conf/{TUN}/disable_ipv6')
+    ipv6_switch = SYSCTL / f'ipv6/conf/{TUN}/disable_ipv6'
     if ipv6_switch.exists():
         ipv6_switch.write_text('1\n')
     # Strict reverse path filtering can reject policy-routed TUN replies.
     # Loose mode is applied only to our own interface, never host all/default.
-    Path(f'/proc/sys/net/ipv4/conf/{TUN}/rp_filter').write_text('2\n')
+    (SYSCTL / f'ipv4/conf/{TUN}/rp_filter').write_text('2\n')
     for family in ('-4', '-6'):
         found = [r for r in rules(family) if r.get('priority') == int(PRIORITY)]
         if len(found) != 1 or not own_rule(found[0]):
@@ -444,31 +609,36 @@ def attach():
         raise RuntimeError('检测到 TUN 进入宿主 main 表；拒绝继续')
     if not ENABLED.exists():
         raise RuntimeError('关闭操作已开始，拒绝附加路由')
-    run([IP, '-4', 'route', 'replace', 'default', 'dev', TUN, 'metric', '10', 'table', RTABLE])
+    run(route_command(TUN_ROUTE, 'replace'))
 
 
 def check():
     check_config()
-    state = load()
-    if not ENABLED.exists() or not state.get('guard_active'):
+    if not ENABLED.exists():
         raise RuntimeError('用户代理未开启')
-    if run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode:
+    state = load()
+    if not state.get('guard_active'):
+        raise RuntimeError('用户代理未开启')
+    # Without the table nothing below is kept: say so before anything else.
+    if not table_exists():
+        raise RuntimeError(f'防直连 nft 表 inet {TABLE} 不存在（规则集可能被 nft flush ruleset 或 nftables.service '
+                           f'清空）；{USER} 的新连接和 DNS 可能正在直连。请执行 xq_proxyon 重建')
+    if not core_active():
         raise RuntimeError('核心未运行；guard 和黑洞路由保留')
     if firewall_digest() != state.get('guard_digest'):
         raise RuntimeError('guard 与记录不一致')
-    if Path(f'/proc/sys/net/ipv4/conf/{TUN}/rp_filter').read_text().strip() != '2':
+    if (SYSCTL / f'ipv4/conf/{TUN}/rp_filter').read_text().strip() != '2':
         raise RuntimeError('自有 TUN 的 rp_filter 设置异常')
     for family in ('-4', '-6'):
         found = [r for r in rules(family) if r.get('priority') == int(PRIORITY)]
         if len(found) != 1 or not own_rule(found[0]):
             raise RuntimeError('专用策略规则异常')
-    v4, v6 = routes('-4'), routes('-6')
-    if not any(r.get('type') == 'blackhole' and r.get('dst') == 'default' for r in v4):
-        raise RuntimeError('IPv4 黑洞回退缺失')
-    if not any(r.get('dev') == TUN and r.get('dst') == 'default' and r.get('metric') == 10 for r in v4):
-        raise RuntimeError('TUN 专用默认路由缺失')
-    if not any(r.get('type') == 'unreachable' and r.get('dst') == 'default' for r in v6):
-        raise RuntimeError('IPv6 阻断路由缺失')
+    for owned in (BLACKHOLE, TUN_ROUTE, UNREACHABLE):
+        if not has_route(owned):
+            raise RuntimeError(owned[0] + '缺失')
+    for fault in (endpoint_fault(), resolver_fault()):
+        if fault:
+            raise RuntimeError(fault)
 
 
 def on():
@@ -485,7 +655,7 @@ def on():
                 check_nss()
                 install_firewall(state)
                 install_routes()
-                if run([SYSTEMCTL, 'is-active', '--quiet', SERVICE], check=False).returncode == 0:
+                if core_active():
                     attach()
                 else:
                     run([SYSTEMCTL, 'reset-failed', SERVICE], check=False)
@@ -511,43 +681,108 @@ def on():
     status()
 
 
+def dns_connections():
+    """Conntrack entries carrying this feature's DNS mark, in every zone."""
+    if not os.path.isfile(CONNTRACK) or not os.access(CONNTRACK, os.X_OK):
+        raise RuntimeError(f'缺少可执行的 {CONNTRACK}')
+    result = run([CONNTRACK, '-L', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
+    if result.returncode:
+        raise RuntimeError(f'{CONNTRACK} 无法列出连接跟踪条目：{result.stderr.strip()}')
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 def delete_dns_connections():
     # Delete only this feature's DNS translations, in every zone (entries from
     # before the dedicated zone included). Other connections and unrelated
-    # users' conntrack state are never flushed.
+    # users' conntrack state are never flushed. Success is what a second
+    # listing shows, not what the delete printed.
+    if not dns_connections():
+        return
     result = run([CONNTRACK, '-D', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
-    if result.returncode and not (result.returncode == 1 and re.search(r'\b0 flow entries', result.stderr)):
-        raise RuntimeError('清理本功能 DNS conntrack 失败；guard 保留：' + result.stderr.strip())
+    left = len(dns_connections())
+    if left:
+        raise RuntimeError(f'清理本功能 DNS conntrack 失败，仍有 {left} 条；guard 保留：' + result.stderr.strip())
 
 
 def remove_routes():
+    """Remove this feature's rules and routes; succeed whenever none is left.
+
+    Each object is looked up before its delete and again afterwards. A table
+    that was never created, a half-finished ON and a finished OFF therefore all
+    end the same way, while a delete whose object is still there (permissions,
+    a busy netlink) fails with the tool's own message. Other routes in the
+    table are not ours and stay.
+    """
     for family in ('-4', '-6'):
         args = rule_args(family)
         args[3] = 'del'
-        found = [r for r in rules(family) if own_rule(r)]
-        for _ in found:
-            run(args)
-    for family, tail in (
-        ('-4', ['default', 'dev', TUN, 'metric', '10']),
-        ('-4', ['blackhole', 'default', 'metric', '32760']),
-        ('-6', ['unreachable', 'default', 'metric', '32760']),
-    ):
-        result = run([IP, family, 'route', 'del', *tail, 'table', RTABLE], check=False)
-        if result.returncode and not any(s in result.stderr for s in ('No such process', 'Cannot find device', 'No such file')):
-            raise RuntimeError(result.stderr.strip())
+        result = None
+        for _ in [rule for rule in rules(family) if own_rule(rule)]:
+            result = run(args, check=False)
+        if result is not None and any(own_rule(rule) for rule in rules(family)):
+            raise RuntimeError('专用策略规则删除失败；guard 保留：' + result.stderr.strip())
+    for owned in (TUN_ROUTE, BLACKHOLE, UNREACHABLE):
+        if has_route(owned):
+            result = run(route_command(owned, 'del'), check=False)
+            if has_route(owned):
+                raise RuntimeError(owned[0] + '删除失败；guard 保留：' + result.stderr.strip())
+
+
+def kernel_leftovers():
+    """This feature's kernel and service objects that exist right now.
+
+    Read-only. Returns what was found and what could not be checked.
+    """
+    found, unchecked = [], []
+    if core_active():
+        found.append(f'核心 {SERVICE} 仍在运行')
+    if table_exists():
+        found.append(f'防直连 nft 表 inet {TABLE} 仍存在')
+    for family, name in (('-4', 'IPv4'), ('-6', 'IPv6')):
+        if any(own_rule(rule) for rule in rules(family)):
+            found.append(f'{name} 专用策略规则（优先级 {PRIORITY}）仍存在')
+    for owned in (TUN_ROUTE, BLACKHOLE, UNREACHABLE):
+        if has_route(owned):
+            found.append(f'路由表 {RTABLE} 中的 {owned[0]}仍存在')
+    try:
+        mappings = len(dns_connections())
+    except (RuntimeError, OSError) as error:
+        unchecked.append(f'本功能的 DNS conntrack 映射（{error}）')
+    else:
+        if mappings:
+            found.append(f'仍有 {mappings} 条本功能的 DNS conntrack 映射')
+    return found, unchecked
+
+
+def unfinished():
+    """Why the recorded state is not a completed OFF, or None."""
+    if not STATEFILE.exists():
+        return None
+    try:
+        phase = load().get('phase')
+    except (RuntimeError, OSError, ValueError) as error:
+        return f'运行状态记录无法核验（{error}）'
+    return None if phase == 'off' else f'上一次操作停在 {phase} 阶段，没有完成'
 
 
 def off():
     with locked():
-        if not STATEFILE.exists():
-            if table_exists():
-                raise RuntimeError('存在无归属记录的 nft 表；拒绝删除')
+        state = load() if STATEFILE.exists() else None
+        # Read-only. It decides whether anything is left to do, and makes every
+        # tool the cleanup depends on answer before the first change.
+        found, unchecked = kernel_leftovers()
+        if state is None:
+            if found:
+                raise RuntimeError('没有本启动周期的归属记录，拒绝删除：' + '；'.join(found) + '。请管理员核对后手动处理')
             print('用户代理已关闭。')
             return
-        state = load()
-        if state.get('phase') == 'off' and not ENABLED.exists() and not table_exists():
+        if state.get('phase') == 'off' and not ENABLED.exists() and not found:
             print('用户代理已关闭。')
             return
+        if unchecked:
+            raise RuntimeError('OFF 需要 conntrack 才能精确清理 DNS 映射，但无法核验' + unchecked[0]
+                               + '。OFF 尚未改动任何东西，代理和防直连规则保持原状。root 自身的网络不经代理，'
+                               '可直接执行 sudo apt install conntrack，然后重试 xq_proxyoff')
         ENABLED.unlink(missing_ok=True)
         state['phase'] = 'disabling'
         save(state)
@@ -557,7 +792,8 @@ def off():
         run([SYSTEMCTL, 'stop', SERVICE], timeout=45)
         delete_dns_connections()
         remove_routes()
-        run([NFT, 'delete', 'table', 'inet', TABLE])
+        if table_exists():
+            run([NFT, 'delete', 'table', 'inet', TABLE])
         state.update(phase='off', guard_active=False, stopped_at=time.time())
         save(state)
     print(f'用户代理已关闭：{USER} 的宿主会话恢复原网络。')
@@ -566,7 +802,7 @@ def off():
 def status():
     enabled = ENABLED.exists()
     print(f'作用范围：宿主网络中 {USER}（UID {UID}）的所有会话及程序')
-    print(f'上游：SOCKS5 {HOST}:{PORT}（仅 TCP；DNS 经代理 DoH）')
+    print(f'上游：SOCKS5 {HOST}:{PORT}（仅 TCP；被接管的 DNS 经它走 DoH）')
     result = run([IP, '-j', '-4', 'route', 'get', HOST], check=False)
     if result.returncode == 0:
         data = json.loads(result.stdout)[0]
@@ -581,10 +817,34 @@ def status():
         except (RuntimeError, OSError) as error:
             print('异常：' + str(error))
             return 1
+    else:
+        found, unchecked = kernel_leftovers()
+        pending = unfinished()
+        if pending:
+            found.insert(0, pending)
+        if found:
+            print('异常：开关为 OFF，但本功能没有清理干净：')
+            for item in found:
+                print('  - ' + item)
+            if STATEFILE.exists():
+                print('恢复入口：执行 xq_proxyoff（即 sudo /usr/local/sbin/xq-user-proxyctl off），'
+                      '它从中断处继续清理，可重复执行。')
+            else:
+                print('没有本启动周期的归属记录，xq_proxyoff 不会改动这些对象；请管理员核对后手动处理。')
+            return 1
+        print('残留检查：未发现本功能的核心、guard 或策略路由' + ('。' if unchecked else '，也没有 DNS 映射。'))
+        for item in unchecked:
+            print('未核验：' + item)
     print('局域网：私网、链路本地、多播/广播按宿主路由直连（包括局域网 DNS）。')
     print('IPv4 直连范围：' + ', '.join(LAN_V4))
     print('IPv6 直连范围：' + ', '.join(LAN_V6))
-    print('默认系统 DNS 和公网 DNS 查询经代理解析。')
+    lines, warnings, fault = resolver_report()
+    print('默认 DNS（/etc/resolv.conf）' + ('的实际路径：' if enabled else '在开启后的路径（当前 OFF，按宿主原路径解析）：'))
+    for line in lines:
+        print('  ' + line)
+    for warning in ([fault + '；按当前配置 xq_proxyon 会拒绝开启'] if fault else warnings):
+        print('警告：' + warning)
+    print(f'显式查询其他 DNS：公网 IPv4 同样改送 127.0.0.1:{DNS_PORT}；直连范围内的地址直连、不经代理；其余 IPv6 阻断。')
     print(f'DNS 改写使用独立 conntrack zone {DNS_ZONE}，不与其他用户的连接共用跟踪条目。')
     print('公网：TCP 经代理；ICMP/ping、普通 UDP 和 IPv6 主动出站被阻断。')
     print('连通性验证请使用 HTTPS；公网 ping 失败不代表 HTTPS 代理不可用。')

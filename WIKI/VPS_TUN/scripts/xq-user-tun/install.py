@@ -21,6 +21,8 @@ import tarfile
 import tempfile
 import time
 
+# The controller is loaded as a module below; never leave its bytecode behind.
+sys.dont_write_bytecode = True
 VERSION = '1.14.4'
 # Official immutable asset digests, checked 2026-11-14:
 # https://github.com/SagerNet/sing-box/releases/expanded_assets/v1.14.4
@@ -78,8 +80,9 @@ def parse_args(argv):
     except ValueError:
         parser.error('--proxy-ip 必须是可用的 IPv4 单播地址，不接受域名、IPv6 或 URL')
     if not 1 <= args.proxy_port <= 65535: parser.error('--proxy-port 必须在 1–65535 之间')
-    if args.proxy_ip == '127.0.0.1' and args.proxy_port == 1053:
-        parser.error('代理不能占用专用 DNS 入口 127.0.0.1:1053')
+    dns_port = package_controller().DNS_PORT
+    if args.proxy_ip == '127.0.0.1' and args.proxy_port == dns_port:
+        parser.error(f'代理不能占用专用 DNS 入口 127.0.0.1:{dns_port}')
     if args.proxy_ip == '172.30.254.1':
         parser.error('代理 IP 与本方案专用 TUN 地址 172.30.254.1 冲突')
     return args
@@ -122,6 +125,8 @@ def render(directory, settings):
     if len(upstream) != 1 or upstream[0].get('type') != 'socks':
         raise RuntimeError('模板上游异常')
     upstream[0]['server'], upstream[0]['server_port'] = settings['proxy_ip'], settings['proxy_port']
+    if [x.get('listen_port') for x in config['inbounds'] if x.get('tag') == 'uid-dns'] != [package_controller().DNS_PORT]:
+        raise RuntimeError('模板的专用 DNS 入口与控制器不一致')
     files['sing-box.json'] = json.dumps(config, indent=2) + '\n'
     files['settings.json'] = json.dumps(settings, indent=2) + '\n'
     for name in ('xq-user-proxy.bash', 'xq-user-proxy.service'):
@@ -266,6 +271,34 @@ def load_controller(path):
     return module
 
 
+def package_controller():
+    """The controller shipped next to this installer.
+
+    It alone defines the private DNS port, the classification of the default
+    resolver and the host conditions the DNS path needs; the installer asks it
+    instead of repeating them.
+    """
+    if package_controller.module is None:
+        source = SOURCE / 'xq-user-proxyctl'
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError('缺少完整安装目录或源文件是符号链接：' + str(source))
+        package_controller.module = load_controller(source)
+    return package_controller.module
+
+
+package_controller.module = None
+
+
+def dns_preflight():
+    """Refuse a host where the DNS path cannot work or be owned. Read-only."""
+    ctl = package_controller()
+    for fault in (ctl.endpoint_fault(), ctl.resolver_fault()):
+        if fault:
+            raise RuntimeError(fault + '；尚未写入任何系统文件')
+    for warning in ctl.resolver_report()[1]:
+        print('警告：' + warning, flush=True)
+
+
 def write_new(path, content, mode):
     with path.open('xb') as stream:
         stream.write(content)
@@ -311,6 +344,7 @@ def as_owner(settings, command, **kwargs):
 
 def install(args, settings):
     host_preflight()
+    dns_preflight()
     destinations_clear()
     # A shared installer lock is itself checked before opening it as root.
     lockpath = Path('/run/xq-user-proxy-install.lock')

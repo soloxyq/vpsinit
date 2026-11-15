@@ -2,7 +2,7 @@
 """Install the archived XQ proxy on a fresh WSL2 NAT distribution; starts OFF.
 
 No downloads, proxy traffic, network configuration, or credentials are performed here.
-Run with sudo after installing dependencies. --check is read-only.
+Run with sudo after installing dependencies, including conntrack. --check is read-only.
 """
 import sys
 sys.dont_write_bytecode = True
@@ -32,6 +32,10 @@ SOURCE = Path(__file__).resolve().parent
 SAFE_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
 PRIORITIES = {18400, 18401, 18402}
 SUBNET = ipaddress.ip_network('172.30.255.0/30')
+# DNS interception resources the controller owns while ON (see xq-proxyctl).
+CONNTRACK = '/usr/sbin/conntrack'
+DNS_PORT = 1053
+DNS_ZONE = 20262
 SOURCE_BLOCK = '''\n# XQ WSL TUN controls: loading functions does not enable the proxy.
 if [ -r "$HOME/.config/xq/proxy.bash" ]; then
   . "$HOME/.config/xq/proxy.bash"
@@ -88,6 +92,38 @@ def read_sources():
     return result
 
 
+def tracks_conntrack(value):
+    """True if an nft JSON expression reads or sets a conntrack mark or zone."""
+    if isinstance(value, dict):
+        ct = value.get('ct')
+        if isinstance(ct, dict) and ct.get('key') in ('mark', 'zone'):
+            return True
+        return any(tracks_conntrack(item) for item in value.values())
+    return isinstance(value, list) and any(tracks_conntrack(item) for item in value)
+
+
+def guard_probes(controller, gateway, probe_table):
+    """Render both guards the controller loads: ON, and the OFF shutdown stage.
+
+    The controller's own guard_text is used so the probe cannot drift from what ON
+    installs. Executing the module only defines constants and functions; its main()
+    runs only as __main__. Each text is renamed to a separate table for nft --check.
+    """
+    header = 'table inet xq_proxy {\n'
+    probes = []
+    try:
+        scope = {'__name__': 'xq_install_probe'}
+        exec(compile(controller, 'xq-proxyctl', 'exec'), scope)
+        for dns_active in (True, False):
+            text = scope['guard_text']({'uid': 0, 'host': gateway}, dns_active=dns_active)
+            if not text.startswith(header):
+                raise ValueError('unexpected table header')
+            probes.append(f'table inet {probe_table} {{\n' + text[len(header):])
+    except Exception as exc:
+        raise RuntimeError(f'Cannot render the archived controller guard for the kernel probe: {exc}') from None
+    return probes
+
+
 def preflight():
     if os.geteuid() != 0:
         raise RuntimeError('Use sudo for --check as well, so firewall and routing checks are reliable.')
@@ -97,9 +133,13 @@ def preflight():
         raise RuntimeError('This installer requires standard WSL2; it is not a general VPS installer.')
     if Path('/proc/1/comm').read_text().strip() != 'systemd':
         raise RuntimeError('PID 1 must be systemd. Configure WSL systemd and fully restart the distribution first.')
-    required = ('bash', 'python3', 'curl', 'ip', 'nft', 'runuser', 'useradd',
+    required = ('bash', 'python3', 'curl', 'ip', 'ss', 'nft', 'runuser', 'useradd',
                 'systemctl', 'systemd-analyze', 'wslinfo', 'sing-box')
     missing = [name for name in required if not shutil.which(name, path=SAFE_PATH)]
+    # The controller runs conntrack by this exact path: ON checks its DNS zone, and
+    # OFF removes only its own DNS mappings with it, so OFF cannot complete without it.
+    if not os.path.isfile(CONNTRACK) or not os.access(CONNTRACK, os.X_OK):
+        missing.append(CONNTRACK + ' (package conntrack)')
     if missing:
         raise RuntimeError('Install prerequisites first; missing: ' + ', '.join(missing))
     if command('wslinfo', '--networking-mode').stdout.strip().lower() != 'nat':
@@ -135,6 +175,9 @@ def preflight():
         raise RuntimeError('Stale XQ TUN DNS found. Restore the original resolver with the previous setup before installing.')
     if not servers:
         raise RuntimeError('The current resolver has no usable nameserver; establish normal OFF DNS first.')
+    if not any(server.version == 4 for server in servers):
+        raise RuntimeError('The current resolver has no IPv4 nameserver; ON intercepts IPv4 DNS only and '
+                           'blocks IPv6. Establish normal IPv4 OFF DNS first.')
 
     targets = [Path('/usr/local/sbin/xq-proxyctl'), target_home / '.config/xq/proxy.bash',
                Path('/run/xq-proxy-enabled')]
@@ -176,6 +219,12 @@ def preflight():
         name = item.get('table', {}).get('name', '')
         if name in ('xq_proxy', 'xq_proxy_validation'):
             raise RuntimeError('Existing XQ firewall state; use its original OFF/recovery procedure first.')
+    # Same rule as the controller's ON check: its DNS interception owns conntrack
+    # zone 20262 and mark bit 0x02000000, which any other ct mark/zone rule may touch.
+    for item in nft.get('nftables', []):
+        if tracks_conntrack(item.get('rule', {}).get('expr', [])):
+            raise RuntimeError('Another nftables rule uses conntrack mark/zone; the controller refuses to '
+                               f'share DNS zone {DNS_ZONE} and mark 0x02000000 with it.')
     links = json.loads(command('ip', '-j', 'link', 'show').stdout)
     if any(link.get('ifname') == 'xq-tun' for link in links):
         raise RuntimeError('Existing xq-tun interface; no network changes were made.')
@@ -201,26 +250,30 @@ def preflight():
         if destination != 'default' and ipaddress.ip_network(destination, strict=False).overlaps(SUBNET):
             raise RuntimeError('The reserved TUN subnet 172.30.255.0/30 overlaps an existing route.')
 
-    # Kernel validation only: --check never installs this deliberately separate table.
+    # The controller's ON refuses an occupied DNS zone or local DNS port before any
+    # change. A fresh installation owns neither, so both must be unused now.
+    zone = command(CONNTRACK, '-L', '-f', 'ipv4', '--zone', str(DNS_ZONE), check=False)
+    if zone.returncode:
+        raise RuntimeError(f'Cannot list conntrack zone {DNS_ZONE}; ctnetlink with zone filtering is '
+                           'required: ' + zone.stderr.strip())
+    if zone.stdout.strip():
+        raise RuntimeError(f'Conntrack zone {DNS_ZONE} already has entries; the DNS interception needs it unused.')
+    listeners = command('ss', '-H', '-l', '-n', '-t', '-u', '-p', 'sport', '=', f':{DNS_PORT}').stdout
+    listeners = [' '.join(line.split()) for line in listeners.splitlines() if line.strip()]
+    if listeners:
+        raise RuntimeError(f'TCP/UDP port {DNS_PORT} is already in use; the controller needs '
+                           f'127.0.0.1:{DNS_PORT} for local DNS: ' + '; '.join(listeners))
+
+    # Kernel validation only: --check never installs these deliberately separate tables.
+    # ON needs a raw-priority conntrack zone chain and inet output NAT to the local DNS
+    # port; the OFF shutdown stage rejects new DNS in the raw-priority chain instead.
     probe_table = f'xq_install_probe_{os.getpid()}'
-    guard_probe = f'''table inet {probe_table} {{
-      chain output {{
-        type filter hook output priority -10; policy drop;
-        meta l4proto {{ tcp, udp }} th dport 53 oifname != "xq-tun" counter reject with icmpx type admin-prohibited
-        oifname "lo" counter accept
-        meta nfproto ipv4 oifname "xq-tun" counter accept
-        meta skuid 0 ip daddr {gateway} tcp dport 4066 counter accept
-        meta skuid 0 ip daddr {gateway} meta l4proto udp counter accept
-        counter reject with icmpx type admin-prohibited
-      }}
-      chain forward {{
-        type filter hook forward priority -10; policy drop;
-        meta nfproto ipv4 oifname "xq-tun" counter accept
-        meta nfproto ipv4 iifname "xq-tun" ct state established,related counter accept
-        counter reject with icmpx type admin-prohibited
-      }}
-    }}\n'''
-    command('nft', '--check', '-f', '-', data=guard_probe)
+    for guard_probe in guard_probes(sources['xq-proxyctl'], gateway, probe_table):
+        try:
+            command('nft', '--check', '-f', '-', data=guard_probe)
+        except RuntimeError as exc:
+            raise RuntimeError('Kernel/nftables cannot load the controller guard (conntrack zone/mark, '
+                               f'raw-priority chain, inet output NAT): {exc}') from None
 
     bashrc = target_home / '.bashrc'
     if lexists(bashrc) and (bashrc.is_symlink() or not bashrc.is_file()
@@ -313,6 +366,7 @@ def install(account, target_home, sources, original, updated):
         print('Open a new Bash terminal, or run: source ~/.bashrc')
         print('Then use xq_proxystatus; run xq_proxyon only when ready to enable all-WSL routing.')
         print('Recovery entry: sudo /usr/local/sbin/xq-proxyctl off')
+        print('Controller log: sudo journalctl -t xq-proxyctl -n 80 --no-pager')
     except Exception:
         save_record()
         print(f'Installation stopped. No ON command was run. Inspect partial-file manifest: {backup}/installation.json', file=sys.stderr)
@@ -325,7 +379,8 @@ def main():
     parser.add_argument('--check', action='store_true', help='read-only prerequisite and conflict checks; no installation')
     args = parser.parse_args()
     account, target_home, sources, original, updated = preflight()
-    print(f'Preflight PASS: WSL2 NAT, systemd, TUN, sing-box {VERSION}, no XQ conflicts.')
+    print(f'Preflight PASS: WSL2 NAT, systemd, TUN, sing-box {VERSION}, conntrack, DNS interception guard; '
+          f'no XQ, DNS port {DNS_PORT} or conntrack mark/zone conflicts.')
     print(f'Machine architecture: {platform.machine()}')
     print(f'Target account: {account.pw_name}; home: {target_home}')
     if args.check:

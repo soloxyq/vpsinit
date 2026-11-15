@@ -2,7 +2,7 @@
 
 整理日期：2026-11-13（America/Los_Angeles）。
 
-**在新 VPS 部署用户级 TUN，请使用 [一键部署指南](VPS-用户级TUN一键部署.md) 和 [便携安装包](scripts/xq-user-tun/README.md)。** 本文保留语言、时区等环境复现流程；Mico-system 的历史 TUN 安装器绑定原部署，不能作为新机器安装入口。
+**在新 VPS 部署用户级 TUN，请使用 [一键部署指南](../VPS_TUN/VPS-用户级TUN一键部署.md) 和 [便携安装包](../VPS_TUN/scripts/xq-user-tun/README.md)。** 本文保留语言、时区等环境复现流程；Mico-system 的历史 TUN 安装器绑定原部署，不能作为新机器安装入口。
 
 这份指南把当天在 WSL 中完成的设置改写成普通 Ubuntu / Debian VPS 可执行的流程。**VPS 适配内容是复现建议，并非今天已在另一台 VPS 执行的记录。** 今天的实际变更、Codex 配置与 WSL 代理函数见 [WIKI 目录](README.md)。
 

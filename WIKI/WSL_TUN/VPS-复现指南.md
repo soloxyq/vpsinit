@@ -2,6 +2,8 @@
 
 整理日期：2026-11-13（America/Los_Angeles）。
 
+**在新 VPS 部署用户级 TUN，请使用 [一键部署指南](../VPS_TUN/VPS-用户级TUN一键部署.md) 和 [便携安装包](../VPS_TUN/scripts/xq-user-tun/README.md)。** 本文保留语言、时区等环境复现流程；Mico-system 的历史 TUN 安装器绑定原部署，不能作为新机器安装入口。
+
 这份指南把当天在 WSL 中完成的设置改写成普通 Ubuntu / Debian VPS 可执行的流程。**VPS 适配内容是复现建议，并非今天已在另一台 VPS 执行的记录。** 今天的实际变更、Codex 配置与 WSL 代理函数见 [WIKI 目录](README.md)。
 
 这里的“US 环境”指 `en_US.UTF-8`、洛杉矶时区及你选择的网络连接方式。语言和时区不会改变公网 IP 的所属地区，也不构成任何服务的账号安全保证。文档不保存密码、API Key 或登录令牌。
@@ -174,11 +176,11 @@ env -u TZ date '+%Y-%m-%d %H:%M:%S %Z %z'
 
 如果 VPS 本身的出口已经符合你的使用需求，可以不配置应用层代理。若确实需要代理，先准备一个真实可达的 HTTP 代理服务，再填写实际主机和端口。
 
-例如，**仅当这台 VPS 自己运行的 HTTP 代理确实监听 `127.0.0.1:16791` 时**，在当前 shell 使用：
+例如，**仅当这台 VPS 自己运行的 HTTP 代理确实监听 `127.0.0.1:4066` 时**，在当前 shell 使用：
 
 ```bash
 export XQ_PROXY_HOST="127.0.0.1"
-export XQ_PROXY_PORT="16791"
+export XQ_PROXY_PORT="4066"
 export http_proxy="http://${XQ_PROXY_HOST}:${XQ_PROXY_PORT}"
 export https_proxy="$http_proxy"
 export HTTP_PROXY="$http_proxy"

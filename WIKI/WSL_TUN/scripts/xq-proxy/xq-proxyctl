@@ -2,6 +2,7 @@
 """WSL-wide TUN controller. Root-owned when installed; only owns xq resources."""
 import base64
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -9,8 +10,10 @@ from pathlib import Path
 import pwd
 import socket
 import stat
+import struct
 import subprocess
 import sys
+import syslog
 import tempfile
 import time
 
@@ -29,6 +32,22 @@ SUBNET = ipaddress.ip_network('172.30.255.0/30')
 TUN_DNS = '172.30.255.2'
 DNS_HEADER = '# Managed by xq-proxy while ON; OFF restores the original.'
 WSL_RESOLV = Path('/mnt/wsl/resolv.conf')
+DNS_LISTEN = '127.0.0.1'
+DNS_PORT = 1053
+DNS_ZONE = 20262
+DNS_MARK = 0x02000000
+DNS_BIT = DNS_MARK
+CONNTRACK = '/usr/sbin/conntrack'
+CORE = Path('/usr/bin/sing-box')
+
+
+def event(message, priority=syslog.LOG_INFO):
+    """Record control transitions, never users' DNS questions or payloads."""
+    try:
+        syslog.openlog('xq-proxyctl', syslog.LOG_PID, syslog.LOG_DAEMON)
+        syslog.syslog(priority, message.replace('\n', ' | ')[:1200])
+    except OSError:
+        pass
 
 
 def run(args, *, check=True, data=None):
@@ -169,11 +188,39 @@ def gateway():
     return str(ipaddress.IPv4Address(r['gateway'])), r['dev']
 
 
-def guard_text(s):
+def guard_text(s, dns_active=True):
     # Only the dedicated core may use the Windows SOCKS transport. No established bypass.
+    # Keep zone classification during shutdown so old mappings can be identified
+    # and removed while the independent output guard remains in place.
+    # During OFF, stop new DNS flows before conntrack, including null-NAT
+    # bindings that could otherwise survive in our zone into the next ON.
+    stopping = '' if dns_active else f'''
+        meta skuid != {s['uid']} meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 counter reject with icmpx type admin-prohibited
+        meta skuid != {s['uid']} ip daddr {DNS_LISTEN} meta l4proto {{ tcp, udp }} th dport {DNS_PORT} counter reject with icmpx type admin-prohibited
+'''
+    nat = f'''
+      chain dns_nat_output {{
+        type nat hook output priority -100; policy accept;
+        ct direction reply return
+        meta skuid {s['uid']} return
+        ct zone != {DNS_ZONE} return
+        ip daddr {DNS_LISTEN} meta l4proto {{ tcp, udp }} th dport {DNS_PORT} ct mark set ct mark | {DNS_MARK:#x} return
+        meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_MARK:#x} dnat ip to {DNS_LISTEN}:{DNS_PORT}
+      }}
+''' if dns_active else ''
     return f'''table inet xq_proxy {{
+      chain dns_zone_output {{
+        type filter hook output priority raw; policy accept;
+{stopping}
+        meta skuid != {s['uid']} meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct zone set {DNS_ZONE}
+        meta skuid != {s['uid']} ip daddr {DNS_LISTEN} meta l4proto {{ tcp, udp }} th dport {DNS_PORT} ct zone set {DNS_ZONE}
+        ip saddr {DNS_LISTEN} meta l4proto {{ tcp, udp }} th sport {DNS_PORT} ct zone set {DNS_ZONE}
+        ip saddr {DNS_LISTEN} icmp type destination-unreachable @th,240,16 {DNS_PORT} ct zone set {DNS_ZONE}
+      }}
+{nat}
       chain output {{
         type filter hook output priority -10; policy drop;
+        oifname "lo" ip saddr {DNS_LISTEN} meta l4proto {{ tcp, udp }} th sport {DNS_PORT} ct zone {DNS_ZONE} ct mark & {DNS_MARK:#x} != 0 ct direction reply counter accept
         meta l4proto {{ tcp, udp }} th dport 53 oifname != "{TUN}" counter reject with icmpx type admin-prohibited
         oifname "lo" counter accept
         meta nfproto ipv4 oifname "{TUN}" counter accept
@@ -190,11 +237,114 @@ def guard_text(s):
     }}\n'''
 
 
-def install_guard(s):
+def firewall_digest():
+    text = run(['nft', '--stateless', 'list', 'table', 'inet', 'xq_proxy']).stdout
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def install_guard(s, dns_active=True):
     exists = run(['nft', 'list', 'table', 'inet', 'xq_proxy'], check=False).returncode == 0
-    text = ('delete table inet xq_proxy\n' if exists else '') + guard_text(s)
+    text = ('delete table inet xq_proxy\n' if exists else '') + guard_text(s, dns_active)
     run(['nft', '--check', '-f', '-'], data=text)
     run(['nft', '-f', '-'], data=text)
+    s.update(guard_digest=firewall_digest(), dns_active=dns_active,
+             dns_zone=DNS_ZONE, dns_mark=DNS_MARK)
+
+
+def require_conntrack():
+    if not os.path.isfile(CONNTRACK) or not os.access(CONNTRACK, os.X_OK):
+        raise RuntimeError('需要安装 conntrack，才能精确清理本功能的 DNS 映射；未改变网络')
+
+
+def delete_dns_connections():
+    require_conntrack()
+    result = run([CONNTRACK, '-D', '-f', 'ipv4', '--zone', str(DNS_ZONE),
+                  '--mark', f'{DNS_MARK:#x}/{DNS_MARK:#x}'], check=False)
+    # conntrack returns 1 when no matching entries exist.
+    if result.returncode not in (0, 1) or (result.returncode == 1 and
+            '0 flow entries have been deleted' not in result.stderr):
+        raise RuntimeError('清理本功能 DNS conntrack 失败；guard 保留：' + result.stderr.strip())
+
+
+def check_dns_reservations(s):
+    """Fail before mutation when ownership of the DNS tracking space is unclear."""
+    require_conntrack()
+    ruleset = json.loads(run(['nft', '-j', 'list', 'ruleset']).stdout)
+    def tracking_reference(value):
+        if isinstance(value, dict):
+            if value.get('ct', {}).get('key') in ('zone', 'mark'):
+                return True
+            return any(tracking_reference(v) for v in value.values())
+        return isinstance(value, list) and any(tracking_reference(v) for v in value)
+    for item in ruleset.get('nftables', []):
+        rule = item.get('rule', {})
+        if rule.get('family') == 'inet' and rule.get('table') == 'xq_proxy':
+            continue
+        # Arbitrary masks/maps can overwrite our bit or select our zone. Do not
+        # guess that an existing tracking policy is disjoint merely by its name.
+        if tracking_reference(rule.get('expr', [])):
+            raise RuntimeError('其他 nft 表使用 conntrack mark/zone，无法确认 DNS zone 20262 和标记 0x02000000 无冲突；拒绝覆盖')
+    result = run([CONNTRACK, '-L', '-f', 'ipv4', '--zone', str(DNS_ZONE)], check=False)
+    if result.returncode != 0:
+        raise RuntimeError('无法检查 DNS conntrack zone：' + result.stderr.strip())
+    entries = [line for line in result.stdout.splitlines() if line.strip()]
+    owns_zone = s.get('dns_zone') == DNS_ZONE and s.get('dns_mark') == DNS_MARK
+    if entries and not owns_zone:
+        raise RuntimeError('DNS conntrack zone 20262 已被占用，拒绝启用')
+    for line in entries:
+        mark = next((part[5:] for part in line.split() if part.startswith('mark=')), '0')
+        if not int(mark, 0) & DNS_MARK:
+            raise RuntimeError('DNS conntrack zone 20262 存在非本功能标记的连接，拒绝启用')
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dns_listening():
+    """Check both transports and the exact loopback bind, without public I/O."""
+    for transport in ('-t', '-u'):
+        result = run(['ss', '-H', '-l', '-n', transport, 'sport', '=', f':{DNS_PORT}'], check=False)
+        if result.returncode or not any(f'{DNS_LISTEN}:{DNS_PORT}' in line.split()
+                                        for line in result.stdout.splitlines()):
+            return False
+    return True
+
+
+def dns_probe(timeout=4):
+    """Bound the complete UDP probe across the default IPv4 DNS servers."""
+    servers = nameservers(RESOLV.read_bytes())
+    deadline = time.monotonic() + timeout
+    failures = []
+    query_id = os.urandom(2)
+    question = b'\x07example\x03com\x00\x00\x01\x00\x01'
+    packet = query_id + struct.pack('!HHHHH', 0x0100, 1, 0, 0, 0) + question
+    ipv4 = [server for server in servers if ipaddress.ip_address(server).version == 4]
+    if not ipv4:
+        return False, '默认 resolver 没有 IPv4 DNS（IPv6 仍按策略阻断）'
+    for server in ipv4:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+                connection.settimeout(remaining / max(1, len(ipv4) - len(failures)))
+                connection.connect((server, 53))
+                connection.send(packet)
+                answer = connection.recv(4096)
+                if len(answer) < 12 or answer[:2] != query_id:
+                    raise RuntimeError('DNS 响应 ID/长度不匹配')
+                flags, questions, answers = struct.unpack('!HHH', answer[2:8])
+                if not flags & 0x8000 or flags & 0x0200 or flags & 0x000f or questions != 1 or not answers:
+                    raise RuntimeError('DNS 响应未返回成功答案')
+                return True, f'成功（默认 DNS {server}，example.com A）'
+        except (OSError, RuntimeError) as exc:
+            failures.append(f'{server}: {exc}')
+    return False, '; '.join(failures) or '默认 DNS 探测超时'
 
 
 def config(s):
@@ -206,10 +356,12 @@ def config(s):
             'final': 'proxied-dns', 'strategy': 'ipv4_only'},
         'inbounds': [{'type': 'tun', 'tag': 'tun-in', 'interface_name': TUN,
             'address': ['172.30.255.1/30'], 'mtu': 1280, 'auto_route': False,
-            'dns_mode': 'disabled', 'stack': 'gvisor'}],
+            'dns_mode': 'disabled', 'stack': 'gvisor'},
+            {'type': 'direct', 'tag': 'dns-in', 'listen': DNS_LISTEN, 'listen_port': DNS_PORT}],
         'outbounds': [{'type': 'socks', 'tag': 'karing', 'server': s['host'],
             'server_port': PORT, 'version': '5', 'bind_interface': s['interface']}],
-        'route': {'rules': [{'inbound': 'tun-in', 'port': 53, 'action': 'hijack-dns'}],
+        'route': {'rules': [{'inbound': 'dns-in', 'action': 'hijack-dns'},
+                            {'inbound': 'tun-in', 'port': 53, 'action': 'hijack-dns'}],
             'final': 'karing'},
     }
 
@@ -221,6 +373,14 @@ def preflight(s):
         's.settimeout(4); s.sendall(bytes([5,1,0])); '
         'assert s.recv(2)==bytes([5,0]), "SOCKS5 handshake refused"; s.close()')
     run(['runuser', '-u', USER, '--', '/usr/bin/python3', '-c', code])
+
+
+def check_dns_port():
+    listeners = run(['ss', '-H', '-l', '-n', '-t', '-u', '-p',
+                     'sport', '=', f':{DNS_PORT}']).stdout.splitlines()
+    pid = run(['systemctl', 'show', '--property=MainPID', '--value', SERVICE]).stdout.strip()
+    if any(not pid.isdigit() or pid == '0' or f'pid={pid},' not in line for line in listeners):
+        raise RuntimeError('DNS 端口 1053 已被其他进程占用，拒绝启用')
 
 
 def remove_routes():
@@ -236,7 +396,7 @@ def attach():
     if not ENABLED.exists():
         raise RuntimeError('Proxy mode is OFF')
     s = load()
-    # A guard must exist before routing or resolver changes.
+    # A guard must exist before routing changes. WSL owns resolv.conf.
     run(['nft', 'list', 'table', 'inet', 'xq_proxy'])
     for _ in range(50):
         if run(['ip', 'link', 'show', TUN], check=False).returncode == 0:
@@ -253,18 +413,31 @@ def attach():
     # Unsupported IPv6 is explicitly unreachable, never silently sent to the physical interface.
     run(['ip', '-6', 'route', 'replace', 'unreachable', 'default', 'table', TABLE])
     run(['ip', '-6', 'rule', 'add', 'pref', str(PRIORITIES[2]), 'lookup', TABLE])
-    atomic(RESOLV, DNS_HEADER + '\nnameserver ' + TUN_DNS + '\noptions timeout:2 attempts:2\n', 0o644)
+    for _ in range(30):
+        if dns_listening():
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError('本地 DNS TCP/UDP 1053 未监听；guard 保留')
     s['phase'] = 'active'
+    s['running_config_digest'] = file_digest(CONF)
+    s['running_core_digest'] = file_digest(CORE)
     save(s)
+    event('attach completed: TUN routes and local DNS TCP/UDP 1053 ready; resolver unchanged')
 
 
 def on():
     s = load()
+    # Dependencies and resource conflicts are checked before changing a running
+    # installation; in particular, OFF must always be able to clear DNS NAT.
+    check_dns_reservations(s)
+    check_dns_port()
     was_on = ENABLED.exists()
     previous_endpoint = (s.get('host'), s.get('interface'), s.get('uid'))
     # On repeated ON, restore the saved guard before an operation that may fail or wait.
     if was_on:
         install_guard(s)
+        save(s)
         atomic(Path('/run/xq-proxy-enabled'), 'on\n', 0o644)
     host, interface = gateway()
     if not was_on:
@@ -294,34 +467,56 @@ def on():
     save(s)
     atomic(ENABLED, 'on\n')
     install_guard(s)
+    save(s)
     atomic(Path('/run/xq-proxy-enabled'), 'on\n', 0o644)
     preflight(s)
     CONF.parent.mkdir(mode=0o755, exist_ok=True)
     atomic(CONF, json.dumps(config(s), indent=2) + '\n', 0o644)
-    run(['/usr/bin/sing-box', 'check', '-c', str(CONF)])
+    run([str(CORE), 'check', '-c', str(CONF)])
+    # During migration, put back the validated resolver baseline once. New
+    # sessions may replace this WSL symlink freely; DNS interception is in nft.
+    if current_dns_managed():
+        restore_resolver(s['resolver_before'])
     healthy = (was_on and previous_endpoint == (s['host'], s['interface'], s['uid'])
         and not configuration_issues(s))
     if not healthy:
         run(['systemctl', 'restart', SERVICE])
-    return status()
+    result = status()
+    event('on completed: ' + ('configuration and default DNS healthy' if result == 0 else
+                              'health check failed; direct-traffic guard retained'),
+          syslog.LOG_INFO if result == 0 else syslog.LOG_WARNING)
+    return result
 
 
 def off(*, from_boot=False):
     s = load()
     guard_exists = run(['nft', 'list', 'table', 'inet', 'xq_proxy'], check=False).returncode == 0
     cleanup = ENABLED.exists() or guard_exists or current_dns_managed()
+    uses_dns_nat = s.get('dns_zone') == DNS_ZONE and s.get('dns_mark') == DNS_MARK
+    if uses_dns_nat and (cleanup or s.get('phase') != 'off'):
+        require_conntrack()
     # Find a safe baseline before stopping a working core or removing protection.
     snapshot = recovery_snapshot(s) if cleanup else None
     # A boot reset must not stop the unit that is currently running this command.
     if not from_boot:
         run(['systemctl', 'stop', 'xq-proxy-boot.service'], check=False)
+    if uses_dns_nat and guard_exists:
+        # Keep replies/classification and the independent guard, but reject new
+        # DNS flows before conntrack and stop creating fresh NAT bindings.
+        install_guard(s, dns_active=False)
+    if cleanup:
+        ENABLED.unlink(missing_ok=True)
+        s['phase'] = 'disabling'
+        save(s)
     # Stop retries first; retain the independent guard until DNS and routes are restored.
     run(['systemctl', 'stop', SERVICE])
+    if uses_dns_nat and (cleanup or s.get('phase') != 'off'):
+        delete_dns_connections()
     stale_routes = bool(s) and any(owned_rule(r, s) for family in ('-4', '-6')
                                   for r in json_result(['ip', '-j', family, 'rule', 'show']))
     if cleanup or stale_routes:
         remove_routes()
-    if cleanup:
+    if cleanup and current_dns_managed():
         restore_resolver(snapshot)
         s['resolver_before'] = snapshot
     if guard_exists:
@@ -330,8 +525,13 @@ def off(*, from_boot=False):
     Path('/run/xq-proxy-enabled').unlink(missing_ok=True)
     if s:
         s['phase'] = 'off'
+        s['dns_active'] = False
         save(s)
-    return status()
+    result = status()
+    event(('boot-off' if from_boot else 'off') + ' completed: ' +
+          ('owned DNS mappings, routes and guard removed' if result == 0 else 'residual configuration detected'),
+          syslog.LOG_INFO if result == 0 else syslog.LOG_WARNING)
+    return result
 
 
 def json_result(args):
@@ -395,15 +595,33 @@ def configuration_issues(s, *, core=None, guard=None):
         issues.append('代理核心未运行')
     if not guard:
         issues.append('防直连规则表缺失')
+    elif not s.get('dns_active') or s.get('guard_digest') != firewall_digest():
+        issues.append('DNS 接管或防直连规则与已安装摘要不匹配')
     links = json_result(['ip', '-j', 'link', 'show', TUN])
     if not any('UP' in link.get('flags', []) for link in links):
         issues.append('TUN 接口不存在或未启用')
     issues.extend(route_issues(s))
     try:
-        if RESOLV.is_symlink() or nameservers(RESOLV.read_bytes()) != [TUN_DNS]:
-            issues.append('DNS 配置未唯一指向 TUN DNS ' + TUN_DNS)
-    except OSError:
+        servers = nameservers(RESOLV.read_bytes())
+        if not servers or not any(ipaddress.ip_address(server).version == 4 for server in servers):
+            issues.append('默认 resolver 缺少 IPv4 DNS（IPv6 仍按策略阻断）')
+        if current_dns_managed():
+            issues.append('仍残留旧版 TUN resolver；需要迁移回原 DNS')
+    except (OSError, ValueError):
         issues.append('DNS 配置不可读取')
+    if not dns_listening():
+        issues.append('本地 DNS TCP/UDP 1053 监听不完整')
+    if not os.access(CONNTRACK, os.X_OK):
+        issues.append('缺少 conntrack，无法安全关闭 DNS 接管')
+    try:
+        if json.loads(CONF.read_text()) != config(s):
+            issues.append('代理核心配置偏离预期')
+        if s.get('running_config_digest') != file_digest(CONF):
+            issues.append('当前核心尚未加载最新配置')
+        if s.get('running_core_digest') != file_digest(CORE):
+            issues.append('代理核心二进制已变化，需要重启加载')
+    except (OSError, ValueError, KeyError):
+        issues.append('代理核心配置或二进制不可检查')
     if not safe_snapshot(s.get('resolver_before')):
         issues.append('原 DNS 恢复备份不可用')
     try:
@@ -443,13 +661,26 @@ def status():
     print('代理端口：' + str(s.get('port', PORT)))
     if enabled:
         print('防直连：' + ('已开启' if guard else '缺失'))
-        print('配置检查：' + ('异常' if issues else 'DNS、路由和恢复备份正常'))
+        print('DNS 接管：应用 IPv4 TCP/UDP 53 → 127.0.0.1:1053 → 代理 DoH；WSL 继续管理 resolver')
+        print('配置检查：' + ('异常' if issues else 'DNS 入口、接管规则、路由和运行版本正常'))
     for issue in issues:
         print('检查异常：' + issue)
     if issues:
         print('建议执行：' + ('xq_proxyon 重新应用配置，或 xq_proxyoff 恢复普通网络' if enabled else
                             'xq_proxyoff 清理残留配置'))
-    return 1 if issues else 0
+    dns_ok = True
+    if enabled and not issues:
+        try:
+            dns_ok, detail = dns_probe(timeout=4)
+        except (OSError, ValueError) as exc:
+            dns_ok, detail = False, str(exc)
+        print('默认 DNS 连通性：' + detail)
+        if not dns_ok:
+            event('default DNS health probe failed: ' + detail, syslog.LOG_WARNING)
+            print('配置完整，但默认 DNS 探测失败；请检查上游和服务日志。')
+    elif enabled:
+        print('默认 DNS 连通性：未探测（先修复配置异常）')
+    return 1 if issues or not dns_ok else 0
 
 
 def main():
@@ -474,6 +705,7 @@ if __name__ == '__main__':
     try:
         sys.exit(main() or 0)
     except Exception as exc:
+        event('controller failed: ' + str(exc), syslog.LOG_ERR)
         print('xq-proxy: ' + str(exc), file=sys.stderr)
         if ENABLED.exists():
             print('未自动回退直连。恢复原网络请执行 sudo xq-proxyctl off。', file=sys.stderr)

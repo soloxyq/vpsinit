@@ -2,23 +2,34 @@
 
 本页是新环境的执行入口，按顺序操作。历史审查和操作记录用于排错，不应按时间顺序全部重新执行。
 
-本流程对应已经验证的 **Windows 11 + WSL2 + Ubuntu 24.04 + amd64 + NAT 网络 + systemd**，以及 sing-box **1.14.4**。其他发行版、ARM64 或 mirrored 网络需要另外适配；不能直接假定这份控制器适用。
+本流程对应已经验证的 **Windows 11 + WSL2 + Ubuntu 24.04 + amd64 + NAT 网络 + systemd**，以及 sing-box **1.14.4**、Ubuntu 软件源的 conntrack **1.4.8**。其他发行版、ARM64 或 mirrored 网络需要另外适配；不能直接假定这份控制器适用。
 
-目标行为：美式英语、洛杉矶时区；完整启动 Ubuntu/WSL 默认 OFF；手动 ON 后启用 WSL 全流量 TUN、代理 DNS 和防直连；同一环境中新开终端不改变状态；没有健康定时器。普通 OFF 网络可以联网，但具体网站是否可达由原网络决定。
+目标行为：美式英语、洛杉矶时区；完整启动 Ubuntu/WSL 默认 OFF；手动 ON 后启用 WSL 全流量 TUN、代理 DNS 和防直连，其中应用 DNS 在网络层接管，不改写 `/etc/resolv.conf`；同一环境中新开终端不改变状态；没有健康定时器。普通 OFF 网络可以联网，但具体网站是否可达由原网络决定。
 
-## 1. 复制材料，不复制运行状态
+## 1. 获取材料，不复制运行状态
 
-把整个 `WIKI` 目录复制到目标 Linux 用户的 `~/WIKI`。建议使用 Linux 主目录，不在 Windows 挂载盘中运行安装器。
-
-若使用打包文件，目标 WSL 中解压：
+在目标 WSL 的 Linux 主目录克隆本仓库，不在 Windows 挂载盘中运行安装器。下文引用这些材料的命令都通过变量 `XQ_WSL_TUN` 指向仓库中的 `WIKI/WSL_TUN` 目录：
 
 ```bash
-tar -xzf /path/to/WIKI-WSL-replay-2026-11-13.tar.gz -C "$HOME"
-cd "$HOME/WIKI"
+git clone https://github.com/soloxyq/vpsinit.git "$HOME/vpsinit"
+XQ_WSL_TUN="$HOME/vpsinit/WIKI/WSL_TUN"
+cd "$XQ_WSL_TUN"
 sha256sum -c SHA256SUMS
 ```
 
-不要覆盖目标机器已有的同名 Wiki，先备份或换目录。此迁移包仅含文档和程序副本；不要复制原机器的 `/var/lib/xq-proxy`、`/run` 标记、现成 DNS 备份、`.credentials.json`、`auth.json`、完整私人 Codex 配置或整个用户主目录。
+`SHA256SUMS` 中的路径相对 `WSL_TUN` 目录，因此要在该目录执行校验。`XQ_WSL_TUN` 是普通 shell 变量：重新打开终端后（包括第 3 节完整重启之后），先重新执行上面第二行；仓库放在其他位置时，按实际路径设置。
+
+材料最早在第 6 节使用。若目标 WSL 暂时无法直连 GitHub，可先完成第 2–4 节，再让克隆显式使用第 4 节的 Karing 入口，随后照常执行上面其余三行；目标系统没有 `git` 时，可把 `git` 加入第 4 节的安装命令：
+
+```bash
+git -c "http.proxy=$XQ_BOOTSTRAP_PROXY" clone https://github.com/soloxyq/vpsinit.git "$HOME/vpsinit"
+```
+
+从其他机器复制时，复制在 Linux 中得到的完整克隆；Windows 版 Git 可能把换行改为 CRLF，导致校验失败。
+
+`WSL_TUN` 中的控制器是 2026-11-14 的本地 DNS 接管版本，见 [配套脚本说明](scripts/xq-proxy/README.md)。不要改用 `WIKI-WSL-replay-2026-11-13.tar.gz` 迁移包或其他旧副本：旧控制器 ON 时改写 `/etc/resolv.conf`，WSL 重建该文件后，DNS 会被它自己的防直连规则拒绝。
+
+不要覆盖目标机器上已有的同名目录，先备份或换目录。仓库只含文档和程序副本；不要复制原机器的 `/var/lib/xq-proxy`、`/run` 标记、现成 DNS 备份、`.credentials.json`、`auth.json`、完整私人 Codex 配置或整个用户主目录。
 
 如果“另一套 WSL”是在**同一台 Windows 上的第二个发行版**，先确认网络是否与原发行版共享。共享同一网络命名空间时不要重复部署第二套，应使用唯一的管理入口或先建立独立网络；原发行版暂时 OFF 不代表重复部署安全。检测到现有 `xq-tun`、XQ 防火墙或保留路由时，安装器会拒绝；不要删除这些冲突来强行安装第二套，它们可能属于原发行版。
 
@@ -99,11 +110,11 @@ printf '%s\n' "$PATH" | tr ':' '\n'
 
 如果 Windows 侧已有 `.wslconfig` 将网络改为 mirrored，不要直接套用本控制器；切换 NAT 会影响该 Windows 主机上的 WSL 网络，应先评估再手动修改并完整重启。[微软 WSL 配置](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
 
-不需要因为禁用互操作就取消 Windows 磁盘挂载。不要把 `WSLInterop` 的共享 binfmt 注册状态单独当作是否允许 Windows 程序的证明；详见 [已有部署记录](WSL-全流量代理部署记录.md)。
+不需要因为禁用互操作就取消 Windows 磁盘挂载。不要把 `WSLInterop` 的共享 binfmt 注册状态单独当作是否允许 Windows 程序的证明；详见 [2026-11-13 复查报告](2026-11-13-复查报告.md) 的“WSL 互操作检查标准更正”一节。
 
 ## 4. 先建立安装用代理，再安装依赖
 
-TUN 尚未安装，因此下载阶段显式指定 Karing，不依赖 `sudo` 继承代理变量。每次重新打开终端后，如还在安装阶段，重新执行本段变量设置：
+TUN 尚未安装，因此下载阶段显式指定 Karing，不依赖 `sudo` 继承代理变量。每次重新打开终端后，如还在安装阶段，重新执行本段变量设置以及第 1 节的 `XQ_WSL_TUN`：
 
 ```bash
 XQ_BOOTSTRAP_HOST="$(ip -4 route show default | awk '{for (i=1;i<NF;i++) if ($i=="via") {print $(i+1); exit}}')"
@@ -118,8 +129,10 @@ printf 'Karing 安装入口：%s:4066\n' "$XQ_BOOTSTRAP_HOST"
 
 ```bash
 sudo apt-get -o "Acquire::http::Proxy=$XQ_BOOTSTRAP_PROXY" -o "Acquire::https::Proxy=$XQ_BOOTSTRAP_PROXY" update
-sudo apt-get -o "Acquire::http::Proxy=$XQ_BOOTSTRAP_PROXY" -o "Acquire::https::Proxy=$XQ_BOOTSTRAP_PROXY" install -y ca-certificates curl python3 iproute2 nftables locales tzdata util-linux passwd file
+sudo apt-get -o "Acquire::http::Proxy=$XQ_BOOTSTRAP_PROXY" -o "Acquire::https::Proxy=$XQ_BOOTSTRAP_PROXY" install -y ca-certificates curl python3 iproute2 nftables conntrack locales tzdata util-linux passwd file
 ```
+
+`iproute2` 提供 `ip` 和 `ss`；`conntrack` 提供控制器固定调用的 `/usr/sbin/conntrack`，用于 ON 前检查连接跟踪资源、OFF 时精确清理本功能的 DNS 映射。缺少它时控制器拒绝开启。
 
 通过 Karing 查询一次出口，确认代理可达以及所选线路符合你的需求：
 
@@ -184,7 +197,7 @@ readlink -f /etc/localtime
 当前归档已验证的包是 amd64 的 sing-box **1.14.4**。下载器通过显式 Karing 代理下载官方资产，验证固定 SHA256 和 Debian 包名/版本/架构；它不会安装或更改网络。
 
 ```bash
-python3 "$HOME/WIKI/scripts/xq-proxy/download-core.py" --proxy "$XQ_BOOTSTRAP_PROXY"
+python3 "$XQ_WSL_TUN/scripts/xq-proxy/download-core.py" --proxy "$XQ_BOOTSTRAP_PROXY"
 ```
 
 然后安装已经校验的本地包：
@@ -203,21 +216,34 @@ ARM64 不能安装这个 amd64 包；本指南尚未在 ARM64 上验收，需另
 先运行无需 root、无需网络的离线回归测试：
 
 ```bash
-python3 "$HOME/WIKI/scripts/xq-proxy/test_dns_reliability.py"
+python3 -I "$XQ_WSL_TUN/scripts/xq-proxy/test_dns_reliability.py"
 ```
+
+它只使用临时文件和模拟命令层，最后应显示 `OK`。
+
+建议再运行隔离网络命名空间测试。它需要 root，在新建的、只有 `lo` 的临时网络命名空间中用 `scripts/xq-proxy` 里的控制器安装真实的 nftables 规则，检查当前内核能否完成 DNS 接管、DNS 映射清理和故障时防直连。它不改宿主的路由、resolver 或服务，但首次运行可能加载 dummy 内核模块，在宿主留下一个未启用、无地址的 `dummy0` 网卡（不影响流量）；可先用 `ip -br link show dummy0` 记下它是否已存在，原本没有的话测试后用 `sudo ip link del dummy0` 删除：
+
+```bash
+cd "$XQ_WSL_TUN/scripts/xq-proxy"
+sudo unshare --net python3 -I tests/netns-check.py
+```
+
+每组检查通过时输出一行 `PASS:`；任何一项失败都会报错退出。失败时不要继续安装，先确认内核以及 `nft`、`conntrack` 是否可用。
 
 再从目标用户的终端运行只读前置检查：
 
 ```bash
-sudo python3 "$HOME/WIKI/scripts/xq-proxy/install.py" --check
+sudo python3 "$XQ_WSL_TUN/scripts/xq-proxy/install.py" --check
 ```
 
-安装器会检查版本、systemd、NAT、TUN、内核防火墙能力、原 DNS、网卡 MTU、路由资源冲突和旧安装残留。它采用首次安装模式，拒绝覆盖原控制器、同名服务、已有 `.bashrc` 函数或运行状态；不要通过删除冲突项来绕过检查。
+安装器会检查版本、systemd、NAT、TUN、依赖命令（含 `ss` 和 `/usr/sbin/conntrack`）、内核防火墙能力（含 DNS 接管所需的 conntrack zone/mark 和 inet NAT）、原 DNS（至少一个 IPv4 nameserver）、网卡 MTU、路由资源冲突、DNS 接管资源冲突和旧安装残留。它采用首次安装模式，拒绝覆盖原控制器、同名服务、已有 `.bashrc` 函数或运行状态；不要通过删除冲突项来绕过检查。
+
+DNS 接管资源是指：其他 nft 规则不能使用 conntrack mark/zone（iptables 规则不在自动检测范围内，包括 iptables-nft 兼容层的 CONNMARK、CT --zone、connmark，需自行确认），conntrack zone `20262` 在首次安装时必须为空，本地 DNS 端口 `1053`（TCP/UDP）不能被其他程序占用。每次 ON 在改动网络之前也会做同类检查，冲突时拒绝开启；同样不要删除其他程序的规则或进程来强行开启。
 
 检查通过后安装：
 
 ```bash
-sudo python3 "$HOME/WIKI/scripts/xq-proxy/install.py"
+sudo python3 "$XQ_WSL_TUN/scripts/xq-proxy/install.py"
 source ~/.bashrc
 xq_proxystatus
 ```
@@ -232,7 +258,7 @@ xq_proxystatus
 
 安装失败时按输出的 `/var/backups/xq-proxy-before-install-.../installation.json` 检查已完成的文件步骤和原 `.bashrc` 备份。安装器不做破坏性的自动清理；部分安装后应先核对清单，不直接反复运行首次安装。
 
-首次 ON 会按目标机器动态生成 `/etc/xq-proxy/sing-box.json` 和运行状态。**不要从旧机器复制这些已生成文件。**
+首次 ON 会按目标机器动态生成 `/etc/xq-proxy/sing-box.json`（含本地 DNS 入口 `127.0.0.1:1053`）和运行状态。**不要从旧机器复制这些已生成文件。**
 
 ## 8. 在目标机完成 ON/OFF 验收
 
@@ -240,9 +266,13 @@ xq_proxystatus
 
 ```bash
 xq_proxystatus
+ls -l /etc/resolv.conf
+cat /etc/resolv.conf
 getent ahostsv4 ip.sb
 curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
 ```
+
+记下 resolver 的链接和 `nameserver`。它由 WSL 管理，ON 和 OFF 都不应把它改成 `172.30.255.2`。
 
 开启并验证：
 
@@ -250,23 +280,41 @@ curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
 xq_proxyon
 xq_proxystatus
 ip -4 route get 1.1.1.1
+ls -l /etc/resolv.conf
 cat /etc/resolv.conf
+getent ahostsv4 ip.sb
 curl --disable -4 --proxy '' --noproxy '*' --connect-timeout 5 --max-time 15 https://www.cloudflare.com/cdn-cgi/trace
 ```
 
-预期：普通用户访问公网走 `xq-tun` / 表 20260，DNS 为 `172.30.255.2`，状态检查正常；即使 curl 不读取代理变量，服务端报告的出口仍为所选代理出口。不要要求新机器的 IP 必须等于本机历史 IP。
+`xq_proxystatus` 正常时返回 0，关键行如下（IP 行因机器而异，默认 DNS 地址取自目标机的 `/etc/resolv.conf`）：
+
+```text
+代理状态：已开启（WSL 全流量）
+防直连：已开启
+DNS 接管：应用 IPv4 TCP/UDP 53 → 127.0.0.1:1053 → 代理 DoH；WSL 继续管理 resolver
+配置检查：DNS 入口、接管规则、路由和运行版本正常
+默认 DNS 连通性：成功（默认 DNS 10.255.255.254，example.com A）
+```
+
+预期：普通用户访问公网走 `xq-tun` / 表 20260；`/etc/resolv.conf` 与 OFF 时相同，仍是 WSL 自己的配置（例如指向 `/mnt/wsl/resolv.conf`、`nameserver 10.255.255.254`），**不是** `172.30.255.2`；`getent` 能解析；即使 curl 不读取代理变量，服务端报告的出口仍为所选代理出口。不要要求新机器的 IP 必须等于本机历史 IP。
+
+ON 时，应用发往该 resolver 的 IPv4 TCP/UDP DNS 会在网络层改送本地 `127.0.0.1:1053`，再经 Karing 向 Cloudflare DoH 查询。只存在于 Windows hosts 文件或内网 DNS 的名称在 ON 时不能解析。`xq_proxyon` 只有在控制器报告配置完整且默认 DNS 探测成功时，才查询并显示公网出口；否则返回 1。
 
 下面的检查需要管理员读取规则，但不会切换网络：
 
 ```bash
 sudo nft list table inet xq_proxy
 ip -6 route show table 20260
+ss -H -l -n -t -u sport = :1053
+sudo conntrack -L -f ipv4 --zone 20262
 ```
 
-IPv6 应为 unreachable；当前实现明确阻断 IPv6。保持 ON，用普通用户运行 UDP 出口诊断：
+nft 表应有 `dns_zone_output`、`dns_nat_output`（含 `dnat ip to 127.0.0.1:1053`）、`output` 和 `forward` 四条链；`ss` 应显示 `127.0.0.1:1053` 上的 TCP `LISTEN` 和 UDP `UNCONN`；刚有 DNS 查询时，conntrack 能列出本功能 zone 中回复方向为 `127.0.0.1` 端口 `1053` 的映射，没有近期查询时为空也正常。
+
+IPv6 应为 unreachable；当前实现明确阻断 IPv6，IPv6 DNS 也不接管。保持 ON，用普通用户运行 UDP 出口诊断：
 
 ```bash
-python3 "$HOME/WIKI/scripts/xq-proxy/check-udp.py"
+python3 "$XQ_WSL_TUN/scripts/xq-proxy/check-udp.py"
 ```
 
 脚本通过普通 UDP socket 查询公开 STUN 服务，不使用应用代理变量；网络由 TUN 接管。对比它显示的 UDP 公网出口与上面的 HTTPS 出口，确认两者符合所选线路。TCP 和 UDP 可能使用不同出口，不能仅凭地址不同判定泄漏。
@@ -278,11 +326,12 @@ UDP 的端到端能力取决于目标 Windows 防火墙、代理节点和 STUN �
 ```bash
 xq_proxyoff
 xq_proxystatus
+cat /etc/resolv.conf
 getent ahostsv4 ip.sb
 curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
 ```
 
-预期 TUN 核心停止，自有策略规则和 guard 被移除，原 DNS 恢复，普通网络可用。`ip link show xq-tun` 此时应报设备不存在，这是期望结果。
+预期 TUN 核心停止；本功能的 DNS 接管规则、DNS 连接映射、自有策略规则和 guard 被移除；`/etc/resolv.conf` 没有被改动，查询直接回到 WSL/Windows DNS，普通网络可用。状态显示 `代理状态：已关闭（恢复原网络）`，不再显示 DNS 行，也不做 DNS 探测。`ip link show xq-tun` 此时应报设备不存在，这是期望结果；`sudo nft list table inet xq_proxy` 应报表不存在，`ss -H -l -n -t -u sport = :1053` 应无输出。
 
 ## 9. 必做的完整重启验收
 
@@ -298,11 +347,12 @@ wsl --terminate Ubuntu
 xq_proxystatus
 getent ahostsv4 ip.sb
 curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
+sudo journalctl -b -t xq-proxyctl --no-pager
 ```
 
-预期默认 OFF 且普通联网可用。再手动 ON，新开第二个终端，状态应仍为 ON；新终端不能自动关闭代理。
+预期默认 OFF 且普通联网可用；本次启动的 `xq-proxyctl` 日志包含 `boot-off completed: owned DNS mappings, routes and guard removed`。再手动 ON，新开第二个终端，状态应仍为 ON；新终端不能自动关闭代理。在第二个终端也运行 `xq_proxystatus` 和 `getent ahostsv4 ip.sb`：WSL 新会话可能重建 `/etc/resolv.conf`，但 DNS 接管在 nftables 中完成，状态应仍返回 0，解析应成功。
 
-这里只关闭终端窗口并不能证明 WSL 已完整停止。原机器已验证启动复位单元的动作，但此前没有完成整台 WSL 重启验收；因此新机器必须执行这一节，不能省略。
+这里只关闭终端窗口并不能证明 WSL 已完整停止。原机器已验证启动复位单元的动作，但此前没有完成整台 WSL 重启验收；2026-11-14 的 DNS 接管修复也只模拟了 resolver 重建，没有实际新建 WSL 会话。因此新机器必须执行这一节，不能省略。
 
 ## 10. 故障定位与恢复
 
@@ -310,11 +360,17 @@ curl --disable -4 --connect-timeout 5 --max-time 15 https://icanhazip.com
 xq_proxystatus
 sudo journalctl -u xq-proxy.service -n 80 --no-pager
 sudo journalctl -u xq-proxy-boot.service -n 40 --no-pager
+sudo journalctl -t xq-proxyctl -n 80 --no-pager
 ```
 
-- `ON，但配置异常`：按具体提示检查 DNS、路由或备份；手动 `xq_proxyon` 可重新应用所选模式。
-- 代理不可用：保持 ON 时，防直连规则会阻止回落；需要普通网络时明确执行 OFF。
-- 原机器曾在 ON 时发现 resolver 被改回 WSL 默认值。新状态检查能够报告这类覆盖，但没有定时自动修复；若目标机重复出现，要采集当时文件及日志再定位。
+`xq-proxyctl` 标签记录控制器的启停结果、默认 DNS 探测失败和控制器报错；核心的连接错误仍看 `xq-proxy.service`。
+
+- `ON，但配置异常`：按每行 `检查异常：` 的具体项目检查，例如核心、本地 DNS TCP/UDP 1053 监听、接管规则摘要、路由或恢复备份；手动 `xq_proxyon` 可重新应用所选模式，需要时会重启核心。
+- `配置完整，但默认 DNS 探测失败`：规则和路由完整，但向默认 resolver 发出的探测查询（经本地入口和 Karing 的 DoH，最多 4 秒）没有得到成功答案。先检查 Karing 节点和全代理端口，再看 `xq-proxy.service` 日志；此时状态返回 1，`xq_proxyon` 不显示公网出口。
+- 代理不可用：保持 ON 时，防直连规则会阻止回落，DNS 也不会回落到 WSL 原 DNS；需要普通网络时明确执行 OFF。
+- WSL 改写或重建 `/etc/resolv.conf` 不再影响 ON：控制器不写这个文件，也不把 WSL 默认 resolver 报告为异常。原机器 2026-11-14 的断网，正是旧控制器在 resolver 被改回 WSL 默认值后拒绝该 DNS 所致。只有 resolver 没有 IPv4 DNS，或残留旧版 TUN resolver（`172.30.255.2` 或旧管理标记）时才报告；后者在下一次 `xq_proxyon` 时迁移回原 DNS。
+- ON 被拒绝，并提示 conntrack、DNS 端口 1053 或 conntrack zone/mark：这些检查都在改动网络之前。缺少 conntrack 时按第 4 节安装；端口、zone 或 mark 被其他程序使用时，先找出使用者，不要删除它们来强行开启。
+- OFF 中途报错：状态可能显示 `OFF，但存在残留配置`，防直连规则可能仍在。排除报错原因后再次执行 OFF，会继续清理本功能资源。ON 期间不要卸载 conntrack；OFF 需要它清理本功能的 DNS 映射。
 - 不用 `ping` 单独证明远端连接或代理出口；以 DNS、HTTPS 服务端出口、路由和 UDP 实测为准。
 
 即使函数没有加载，恢复入口仍可直接调用：
@@ -323,7 +379,7 @@ sudo journalctl -u xq-proxy-boot.service -n 40 --no-pager
 sudo /usr/local/sbin/xq-proxyctl off
 ```
 
-不要清空全机 nftables 规则或删除所有策略路由。若需撤销安装，先 OFF，再根据安装清单只移除本方案文件、`.bashrc` 加载段及专用用户；不要恢复旧机器的状态文件。
+不要清空全机 nftables 规则、conntrack 表或删除所有策略路由。若需撤销安装，先 OFF，再根据安装清单只移除本方案文件、`.bashrc` 加载段及专用用户；不要恢复旧机器的状态文件。
 
 ## 11. 可选：Codex、Claude Code 和 MCP
 

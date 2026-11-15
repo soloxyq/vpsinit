@@ -1,18 +1,15 @@
 [Unit]
-Description=Restore explicitly enabled XQ WSL proxy mode before user sessions
+Description=Reset XQ WSL proxy to OFF on distribution startup
 DefaultDependencies=no
 After=local-fs.target nftables.service
 Before=network.target network-online.target systemd-user-sessions.service shutdown.target
 Conflicts=shutdown.target
-ConditionPathExists=/var/lib/xq-proxy/enabled
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/xq-proxyctl on
+ExecStart=/usr/local/sbin/xq-proxyctl boot-off
 RemainAfterExit=yes
 TimeoutStartSec=90
-Restart=on-failure
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

@@ -66,9 +66,9 @@
 
 继续遵守用户要求：没有定时回滚，故障不自动 OFF，不自动恢复公网直连。
 
-## 2026-11-15 补充：便携包的固定值与 DNS 入口归属（待部署）
+## 2026-11-15 补充：便携包的固定值与 DNS 入口归属
 
-以上各节记录的是 Mico-system 上已部署的固定版本，至今没有变化：它的专属 DNS 入口仍是 `127.0.0.1:1053`，并带有[其说明](scripts/xq-user-proxy/README.md)开头列出的缺陷。以下内容只适用于仓库中[便携安装包](scripts/xq-user-tun/README.md)的当前版本，**尚未部署到任何机器**。
+以上各节记录的是 2026-11-14 部署在 Mico-system 上的固定版本，它的专属 DNS 入口是 `127.0.0.1:1053`。2026-11-15 本机已[原地升级](scripts/xq-user-proxy/README.md#2026-11-15-原地升级为便携包版本)为[便携安装包](scripts/xq-user-tun/README.md)的版本，以下内容自那时起也是本机的现状。
 
 新增或改变的固定值：
 
@@ -79,6 +79,9 @@
 | 核心单元能力 | `CAP_NET_ADMIN`、`CAP_NET_RAW`，新增 `CAP_NET_BIND_SERVICE`（绑定特权端口所需） |
 | 端口门槛 | `net.ipv4.ip_unprivileged_port_start` 必须大于 40；内核没有这个 sysctl 时按固定门槛 1024 处理 |
 | 默认 resolver | 只判断 `/etc/resolv.conf` 中 glibc 实际使用的前 3 个 nameserver；分类所用的直连范围就是生成 nft 规则的同一组常量 |
+| DNS 改写范围 | 只改写发往本机地址的查询；哪些地址属于本机在运行时向内核查询（`fib daddr type local`），不写死。发往公网 DNS 的查询不改写，进入 TUN |
+| 从 TUN 进入的包 | `tun_input`/`from_tun` 两条链：必须是 owner 已有连接的回复，或发给本机的 RST |
+| 启动记录 | `/run/xq-user-proxy/core.json`：核心这次启动加载的配置摘要、上游和 DNS 入口端口，由服务单元的 `prepare`/`attach` 写入 |
 
 入口归属的保证：
 

@@ -4,11 +4,11 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [另一台 VPS：用户级 TUN 一键部署](VPS-用户级TUN一键部署.md) | 提供代理 IP 和端口，为当前普通用户首次安装；自动获取 UID/GID，不绑定 Mico-system。含各类 DNS 的实际路径、关闭失败后的继续、status/check 退出码和 nftables 被清空时的边界（2026-11-15 版本，待部署） |
-| [便携用户级 TUN 安装包](scripts/xq-user-tun/README.md) | 新机器使用的安装入口、参数、部署包与验证范围；离线生命周期测试和隔离测试的运行方式 |
-| [TUN 固定值与访问权限审计](VPS-TUN固定值与访问权限审计.md) | 动态本机信息、保留的配置常量、owner 专属入口、root/其他 UID 拒绝测试与管理员权限边界；2026-11-15 补充便携包的新固定值和 DNS 入口归属 |
+| [另一台 VPS：用户级 TUN 一键部署](VPS-用户级TUN一键部署.md) | 提供代理 IP 和端口，为当前普通用户首次安装；自动获取 UID/GID，不绑定 Mico-system。含各类 DNS 的实际路径、关闭失败后的继续、修改上游后的重载、status/check 退出码、没有 socket 的包和 nftables 被清空时的边界（2026-11-15 版本，Mico-system 已升级到它） |
+| [便携用户级 TUN 安装包](scripts/xq-user-tun/README.md) | 新机器使用的安装入口、参数、部署包与验证范围；离线生命周期测试、隔离测试和真实核心测试的运行方式。Mico-system 自 2026-11-15 起运行这里的控制器和服务单元 |
+| [TUN 固定值与访问权限审计](VPS-TUN固定值与访问权限审计.md) | 动态本机信息、保留的配置常量、owner 专属入口、root/其他 UID 拒绝测试与管理员权限边界；2026-11-15 补充便携包的新固定值和 DNS 入口归属，当天已随原地升级在本机生效 |
 | [用户级 TUN 修复后验收](VPS-用户级TUN验收记录.md) | 已完成不停服验收；原 shell 保留、新会话继承、其他 UID 检查和无定时回滚 |
-| [用户级 TUN 代理说明](scripts/xq-user-proxy/README.md) | Mico-system 已部署版本的 xq_proxyon/off/proxystatus：xuqian 全部宿主会话开关、局域网直连、公网代理、DNS 与 ping 行为。2026-11-15 起为冻结归档，不再维护，已确认的缺陷列在其开头 |
+| [用户级 TUN 代理说明](scripts/xq-user-proxy/README.md) | Mico-system 2026-11-14 部署的冻结版本及其已确认的 7 项缺陷；2026-11-15 原地升级为便携包版本的过程、本机文件变化、验证结果和备份位置 |
 | [TUN 流量链路图解](VPS-TUN图解/index.html) | 浏览器打开的入门图解：流量怎么分拣和改道、一次请求的往返、DNS 改送、conntrack zone、核心停止时不漏、换 IP 与 `xq_tun run` 模式 |
 | [TUN 改动文件清单](VPS-TUN图解/files.html) | 浏览器打开：本方案在本机新增、改过、运行时生成和特意没动的文件，改动时间线与备份位置，以及仍写着 16791 的个人文件 |
 | [用户级代理断网诊断与恢复](2026-11-14-用户代理断网诊断.md) | 2026-11-14 恢复记录；直接停核心留下黑洞保护的原因、正确 on/off 命令，以及源码与安装版入口差异 |
@@ -23,7 +23,7 @@
 | [Mico-system TUN 安装包](scripts/xq-tun/README.md) | 已部署版本的安装器、控制器、自动验收及日常操作；开机自启未开启 |
 | [WSL 代理函数最终版](scripts/xq-proxy-wsl.bash) | 当前由 `.bashrc` 加载的 TUN 开关；需配套 Linux 控制脚本与服务，见部署记录 |
 
-在另一台 VPS 上安装用户级 TUN，请先阅读 **用户级 TUN 一键部署**。复现其余开发环境时阅读 **VPS 复现指南**；需要复现 Codex、Context7 配置时，再参照当天操作记录。`scripts/xq-user-proxy` 和 `scripts/xq-tun` 保留本机历史部署，不是新机器的一键安装入口；其中 `scripts/xq-user-proxy` 自 2026-11-15 起停止维护，Mico-system 在重新部署之前仍带有其说明中列出的缺陷。
+在另一台 VPS 上安装用户级 TUN，请先阅读 **用户级 TUN 一键部署**。复现其余开发环境时阅读 **VPS 复现指南**；需要复现 Codex、Context7 配置时，再参照当天操作记录。`scripts/xq-user-proxy` 和 `scripts/xq-tun` 保留本机历史部署，不是新机器的一键安装入口；其中 `scripts/xq-user-proxy` 自 2026-11-15 起停止维护：Mico-system 已在当天原地升级为 `scripts/xq-user-tun` 的版本，该目录只保留升级前的记录和升级脚本。
 
 记录没有包含密码、API Key、登录令牌或完整认证文件。示例中的占位符需要在新机器上自行填写；本机配置备份可能包含密钥，不要把这些备份直接作为 Wiki 附件传播。
 

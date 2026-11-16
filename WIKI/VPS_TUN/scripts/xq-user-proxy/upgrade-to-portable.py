@@ -84,8 +84,19 @@ query=(struct.pack('>HHHHHH',0x5151,0x0100,1,0,0,0)
        +b''.join(bytes([len(label)])+label.encode() for label in name.rstrip('.').split('.'))+b'\0'+struct.pack('>HH',1,1))
 with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
     s.settimeout(8);s.connect((server,53));port=s.getsockname()[1];s.send(query);data=s.recv(1500)
-if data[3]&15 or not data[7]: raise SystemExit('no answer record (rcode %d)'%(data[3]&15))
-print(socket.inet_ntoa(data[-4:]),port)
+if data[3]&15: raise SystemExit('rcode %d'%(data[3]&15))
+def skip(at):
+    while data[at]:
+        if data[at]&0xc0==0xc0: return at+2
+        at+=data[at]+1
+    return at+1
+at=skip(12)+4
+for _ in range(struct.unpack('>H',data[6:8])[0]):
+    at=skip(at);kind,_,_,size=struct.unpack('>HHIH',data[at:at+10]);at+=10
+    if kind==1 and size==4:
+        print(socket.inet_ntoa(data[at:at+4]),port);break
+    at+=size
+else: raise SystemExit('no address record in the answer')
 '''
 RESOLVE = 'import socket,sys;print(socket.getaddrinfo(sys.argv[1],443,socket.AF_INET,socket.SOCK_STREAM)[0][4][0])'
 

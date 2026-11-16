@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TUN 流量链路图解</title>
-<meta name="description" content="Mico-system 上 xuqian 用户级 TUN 的流量链路与转发细节，按 2026-11-14 的实测配置和抓包绘制。">
+<meta name="description" content="Mico-system 上 xuqian 用户级 TUN 的流量链路与转发细节，按 2026-11-14 的实测配置和抓包绘制，2026-11-15 升级后更新。">
 <style>
 /* Layout: a transit map read top to bottom. Each chapter is one large map plate
    and one sentence; technical names ride beside the stations in mono.
@@ -217,7 +217,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <a href="index.html" aria-current="page">流量链路</a>
       <a href="files.html">动了哪些文件</a>
     </nav>
-    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 实测</p>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 实测 · 2026-11-15 更新</p>
     <h1>你的流量走另一条路</h1>
     <p class="lede">同一台机器、同一张网卡。内核只把你（xuqian，UID 1006）发往公网的连接改道，交给 Windows 上的代理；别人一切照常。</p>
     <ul class="legend" aria-label="线路颜色">
@@ -321,7 +321,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
     <h2 id="c-sort">分拣：先看是谁，再看去哪</h2>
     <figure class="plate">
       <div class="scroll">
-        <svg viewBox="0 0 1000 430" role="img" aria-label="每个新连接依次判断：不是 UID 1006 照常走；是你且查询的不是局域网 DNS（包括 127.0.0.53 和公网 DNS），改送 127.0.0.1:1053；去局域网或本机则直连；公网 TCP 打标记进 TUN 交给代理；公网 UDP、ping 和 IPv6 被拦下。">
+        <svg viewBox="0 0 1000 430" role="img" aria-label="每个新连接依次判断：不是 UID 1006 照常走；是你且 DNS 查询发往本机地址（如 127.0.0.53），改送 127.0.0.1:40；去局域网或本机则直连；公网 TCP 和发往公网 DNS 的查询打标记进 TUN 交给代理；其余公网 UDP、ping 和 IPv6 被拦下。">
           <!-- spine -->
           <path d="M68 220 H120 M260 220 H300 M440 220 H480" class="ln thin c-ink"/>
           <path d="M550 250 V284 Q550 300 566 300 H590" class="ln thin c-ink"/>
@@ -341,8 +341,8 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <text x="460" y="209" text-anchor="middle" class="s-note">不是</text>
           <text x="690" y="209" text-anchor="middle" class="s-note">局域网 / 本机</text>
           <text x="540" y="280" text-anchor="end" class="s-note">公网</text>
-          <text x="745" y="290" text-anchor="middle" class="s-mono">TCP</text>
-          <text x="648" y="362" text-anchor="end" class="s-note">UDP · ping · IPv6</text>
+          <text x="745" y="290" text-anchor="middle" class="s-mono">TCP · DNS</text>
+          <text x="648" y="362" text-anchor="end" class="s-note">其他 UDP · ping · IPv6</text>
 
           <!-- questions -->
           <rect x="120" y="190" width="140" height="60" rx="30" class="box"/>
@@ -351,7 +351,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
 
           <rect x="300" y="190" width="140" height="60" rx="30" class="box"/>
           <text x="370" y="216" text-anchor="middle" class="s-text s-bold">是 DNS 吗？</text>
-          <text x="370" y="236" text-anchor="middle" class="s-mono">53 · 非局域网</text>
+          <text x="370" y="236" text-anchor="middle" class="s-mono">53 · 发往本机</text>
 
           <rect x="480" y="190" width="140" height="60" rx="30" class="box"/>
           <text x="550" y="216" text-anchor="middle" class="s-text s-bold">去哪里？</text>
@@ -370,7 +370,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <rect x="760" y="114" width="230" height="52" rx="26" class="pill c-dns"/>
           <circle cx="786" cy="140" r="8" class="f-dns"/>
           <text x="804" y="137" class="s-text s-bold">改送本机 DNS</text>
-          <text x="804" y="155" class="s-mono">127.0.0.1:1053</text>
+          <text x="804" y="155" class="s-mono">127.0.0.1:40</text>
 
           <rect x="760" y="194" width="230" height="52" rx="26" class="pill c-lan"/>
           <circle cx="786" cy="220" r="8" class="f-lan"/>
@@ -441,7 +441,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
     <h2 id="c-dns">问路（DNS）也走代理</h2>
     <figure class="plate">
       <div class="scroll">
-        <svg viewBox="0 0 1000 320" role="img" aria-label="你的程序向 127.0.0.53 发 DNS 查询，内核把它改送到 sing-box 的 127.0.0.1:1053，再经 SOCKS5 代理用加密 HTTPS 发给 Cloudflare 1.1.1.1；其他用户的查询原样交给 systemd-resolved，再发往 8.8.8.8。">
+        <svg viewBox="0 0 1000 320" role="img" aria-label="你的程序向 127.0.0.53 发 DNS 查询，内核把它改送到 sing-box 的 127.0.0.1:40，再经 SOCKS5 代理用加密 HTTPS 发给 Cloudflare 1.1.1.1；其他用户的查询原样交给 systemd-resolved，再发往 8.8.8.8。">
           <rect x="214" y="36" width="76" height="258" rx="14" class="band"/>
           <text x="252" y="60" text-anchor="middle" class="s-note">内核</text>
 
@@ -461,7 +461,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
 
           <rect x="330" y="80" width="170" height="60" rx="12" class="box"/>
           <text x="415" y="106" text-anchor="middle" class="s-text s-bold">sing-box DNS</text>
-          <text x="415" y="126" text-anchor="middle" class="s-mono">127.0.0.1:1053</text>
+          <text x="415" y="126" text-anchor="middle" class="s-mono">127.0.0.1:40</text>
 
           <rect x="570" y="80" width="140" height="60" rx="12" class="box-proxy"/>
           <text x="640" y="106" text-anchor="middle" class="s-text s-bold">Windows 代理</text>
@@ -492,7 +492,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <text x="890" y="256" text-anchor="middle" class="s-mono">Google DNS</text>
         </svg>
       </div>
-      <figcaption>你的 DNS 查询在内核里被改送给 sing-box，再经代理加密发给 Cloudflare，答案原路返回。别人的查询照常交给系统解析器和 8.8.8.8。</figcaption>
+      <figcaption>你的 DNS 查询在内核里被改送给 sing-box，再经代理加密发给 Cloudflare，答案原路返回。别人的查询照常交给系统解析器和 8.8.8.8。你直接发往公网 DNS（如 1.1.1.1）的查询不改写，和其他公网流量一样进虚拟网卡，同样由 sing-box 应答（11-15 起）。</figcaption>
     </figure>
 
     <figure class="plate">
@@ -530,16 +530,16 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <circle cx="586" cy="96" r="6" class="f-dns"/>
           <text x="600" y="101" class="s-text">你</text>
           <text x="656" y="101" class="s-mono-ink">40002</text>
-          <text x="710" y="101" class="s-mono-ink">→ 127.0.0.53:53 ⇒ 1053</text>
+          <text x="710" y="101" class="s-mono-ink">→ 127.0.0.53:53 ⇒ 40</text>
           <circle cx="586" cy="134" r="6" class="f-dns"/>
           <text x="600" y="139" class="s-text">你</text>
           <text x="656" y="139" class="s-mono-ink">38841</text>
-          <text x="710" y="139" class="s-mono-ink">→ 1.1.1.1:53 ⇒ 1053</text>
+          <text x="710" y="139" class="s-mono-ink">→ 127.0.0.1:53 ⇒ 40</text>
 
           <text x="500" y="236" text-anchor="middle" class="s-note">同一个源端口 40002，分记在两本账里，互不干扰</text>
         </svg>
       </div>
-      <figcaption>全机只有一张连接表。以前你的 DNS 改写也记在里面，别人碰巧用了同一个端口会被拒一次；现在单独记在 20261 号账本（11-14 修复）。你的普通连接仍记在账本 0，只带标记，不改地址。</figcaption>
+      <figcaption>全机只有一张连接表。以前你的 DNS 改写也记在里面，别人碰巧用了同一个端口会被拒一次；现在单独记在 20261 号账本（11-14 修复）。你的普通连接仍记在账本 0，只带标记，不改地址；直接发往公网 DNS 的查询也是这样（11-15 起）。</figcaption>
     </figure>
   </section>
 
@@ -552,12 +552,12 @@ footer code { font-family: var(--mono); font-size: .92em; }
         <li><span class="prio">−300</span><span class="hook">raw</span><b>你的 DNS 单独记账</b><code>dns_zone_<wbr>output</code></li>
         <li class="kernel-own"><span class="prio">−200</span><span class="hook">内核</span><b>连接记账</b><code>conntrack</code></li>
         <li><span class="prio">−110</span><span class="hook">filter</span><b>认出你</b><code>classify_<wbr>output</code></li>
-        <li><span class="prio">−100</span><span class="hook">nat</span><b>DNS 改送 1053</b><code>dns_output</code></li>
+        <li><span class="prio">−100</span><span class="hook">nat</span><b>DNS 改送 40</b><code>dns_output</code></li>
         <li><span class="prio">−90</span><span class="hook">route</span><b>贴标记，重查路由</b><code>route_output</code></li>
-        <li><span class="prio">−80</span><span class="hook">filter</span><b>1053 只许你用</b><code>private_dns_<wbr>output</code></li>
+        <li><span class="prio">−80</span><span class="hook">filter</span><b>40 只许你用</b><code>private_dns_<wbr>output</code></li>
         <li class="guard"><span class="prio">−10</span><span class="hook">postrouting</span><b>出门守卫</b><code>output</code></li>
       </ol>
-      <figcaption>最后一道守卫：进 TUN 只许你；你的公网包想不经 TUN 直接出网，一律丢弃。过关后才从 <code>xq-utun</code>、<code>ens160</code> 或 <code>lo</code> 离开。</figcaption>
+      <figcaption>最后一道守卫：进 TUN 只许你；你的公网包想不经 TUN 直接出网，一律丢弃。过关后才从 <code>xq-utun</code>、<code>ens160</code> 或 <code>lo</code> 离开。回程另有一道（11-15 新增，<code>tun_input</code>）：从 <code>xq-utun</code> 进来的包必须是你已有连接的回复，否则丢弃。</figcaption>
     </figure>
   </section>
 
@@ -714,7 +714,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <dt>虚拟网卡</dt><dd><code>xq-utun</code> · <code>172.30.254.1/32</code> · MTU 1280 · IPv6 关闭</dd>
       <dt>核心</dt><dd>sing-box 1.14.4 · root · gVisor 用户态协议栈 · <code>xq-user-proxy.service</code></dd>
       <dt>上游代理</dt><dd>SOCKS5 <code>192.168.5.34:4066</code>，只承载 TCP</dd>
-      <dt>你的 DNS</dt><dd><code>127.0.0.1:1053</code> → DoH <code>1.1.1.1:443</code>（cloudflare-dns.com），经上游；只解析 IPv4</dd>
+      <dt>你的 DNS</dt><dd>发往本机地址的查询改送 <code>127.0.0.1:40</code>，发往公网 DNS 的查询进虚拟网卡；都由 sing-box 走 DoH <code>1.1.1.1:443</code>（cloudflare-dns.com），经上游；只解析 IPv4</dd>
       <dt>别人的 DNS</dt><dd><code>127.0.0.53</code> → systemd-resolved → <code>8.8.8.8</code></dd>
       <dt>标记位</dt><dd>本人 <code>0x10000000</code> · DNS <code>0x20000000</code> · 改道 <code>0x40000000</code></dd>
       <dt>策略路由</dt><dd>规则 <code>18410</code> → 表 <code>20261</code>：TUN（metric 10）/ 黑洞（metric 32760）；IPv6 为 unreachable</dd>
@@ -722,11 +722,11 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <dt>直连范围</dt><dd><code>10.0.0.0/8</code> <code>172.16.0.0/12</code> <code>192.168.0.0/16</code> <code>169.254.0.0/16</code> <code>224.0.0.0/4</code> <code>255.255.255.255</code> · <code>fc00::/7</code> <code>fe80::/10</code> <code>ff00::/8</code></dd>
       <dt>回包检查</dt><dd><code>rp_filter=2</code>（宽松，允许回包从 TUN 进来）</dd>
       <dt>房间模式</dt><dd>netns <code>xq-tun</code> · <code>xq-tun0 172.30.255.1/30</code> · 表 <code>2022</code> · DNS <code>172.30.255.2</code> · <code>xq-tun.service</code></dd>
-      <dt>控制器</dt><dd><code>/usr/local/sbin/xq-user-proxyctl</code> · 配置 <code>/etc/xq-user-proxy/sing-box.json</code></dd>
+      <dt>控制器</dt><dd><code>/usr/local/sbin/xq-user-proxyctl</code> · 配置 <code>/etc/xq-user-proxy/sing-box.json</code> 和 <code>settings.json</code></dd>
     </dl>
   </section>
 
-  <footer>依据本机 2026-11-14 的配置、路由表和一次抓包绘制。源码在 WIKI 的 <code>scripts/xq-user-proxy</code> 与 <code>scripts/xq-tun</code>。</footer>
+  <footer>依据本机 2026-11-14 的配置、路由表和一次抓包绘制；2026-11-15 本机升级后更新了 DNS 部分。用户级模式的源码在 WIKI 的 <code>scripts/xq-user-tun</code>，房间模式在 <code>scripts/xq-tun</code>。</footer>
 </main>
 </body>
 </html>

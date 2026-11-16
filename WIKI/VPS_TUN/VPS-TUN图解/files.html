@@ -221,7 +221,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <a href="index.html">流量链路</a>
       <a href="files.html" aria-current="page">动了哪些文件</a>
     </nav>
-    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对</p>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对 · 2026-11-15 更新</p>
     <h1>动了哪些文件</h1>
     <p class="lede">系统原有的设置文件一个没改。新文件都放在名字带 xq 的独立位置；被改过的旧文件只有两个，都在你的家目录。</p>
     <ul class="legend" aria-label="标记含义">
@@ -263,14 +263,15 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <ul class="tree">
             <li><span class="dir">systemd/system/</span>
               <ul>
-                <li><div class="row"><span class="nm">xq-user-proxy.service</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心的服务定义；不开机自启</span></li>
+                <li><div class="row"><span class="nm">xq-user-proxy.service</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心的服务定义；不开机自启（11-15 换成便携包版本）</span></li>
                 <li><div class="row"><span class="nm">xq-tun-netns.service</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">建房间和守卫；未设开机自启</span></li>
                 <li><div class="row"><span class="nm">xq-tun.service</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">房间的核心；未设开机自启</span></li>
               </ul>
             </li>
             <li><span class="dir">xq-user-proxy/</span>
               <ul>
-                <li><div class="row"><span class="nm">sing-box.json</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心配置：TUN、DNS、上游 4066</span></li>
+                <li><div class="row"><span class="nm">sing-box.json</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心配置：TUN、DNS 入口 40、上游 4066（11-15 更新）</span></li>
+                <li><div class="row"><span class="nm">settings.json</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">用户 xuqian 和上游 .34:4066（11-15）</span></li>
                 <li><div class="row"><span class="nm">managed-by</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">归属标记，防止误覆盖</span></li>
               </ul>
             </li>
@@ -306,13 +307,13 @@ footer code { font-family: var(--mono); font-size: .92em; }
             </li>
             <li><span class="dir">lib/xq-tun/</span>
               <ul>
-                <li><div class="row"><span class="nm">sing-box-1.14.4/sing-box</span><span class="b new">新增</span><span class="md">共用</span></div><span class="ds">核心程序，两种模式都用它</span></li>
+                <li><div class="row"><span class="nm">sing-box-1.14.4/sing-box</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">核心程序；用户级 11-15 起用自己的副本</span></li>
                 <li><div class="row"><span class="nm">verify.py</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">验收脚本</span></li>
               </ul>
             </li>
             <li><span class="dir">lib/xq-user-proxy/</span>
               <ul>
-                <li><div class="row"><span class="nm">verify.py</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">不停服验收脚本</span></li>
+                <li><div class="row"><span class="nm">bin/sing-box</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">核心程序的副本（11-15）。原来的 verify.py 已删除，备份中保留</span></li>
               </ul>
             </li>
             <li><span class="dir">share/xq-tun/</span>
@@ -332,6 +333,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
               <ul>
                 <li><div class="row"><span class="nm">enabled</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">开关标记：有它就是 ON</span></li>
                 <li><div class="row"><span class="nm">state.json</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">当前阶段和守卫状态</span></li>
+                <li><div class="row"><span class="nm">core.json</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">核心这次启动加载的配置（11-15）</span></li>
                 <li><div class="row"><span class="nm">before.json</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">开启前的路由、规则、DNS 快照</span></li>
                 <li><div class="row"><span class="nm">lock</span><span class="b tmp">运行时</span><span class="md">用户级</span></div><span class="ds">防止两个操作同时进行</span></li>
               </ul>
@@ -358,19 +360,20 @@ footer code { font-family: var(--mono); font-size: .92em; }
             <li><span class="dir">lib/</span>
               <ul>
                 <li><div class="row"><span class="nm">xq-user-proxy/latest-backup</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">记下最近一次安装备份在哪</span></li>
+                <li><div class="row"><span class="nm">xq-user-proxy/upgrade-backup</span><span class="b new">新增</span><span class="md">用户级</span></div><span class="ds">记下 11-15 升级的备份在哪</span></li>
                 <li><div class="row"><span class="nm">xq-tun/latest-backup</span><span class="b new">新增</span><span class="md">房间</span></div><span class="ds">同上</span></li>
               </ul>
             </li>
             <li><span class="dir">backups/</span>
               <ul>
-                <li><div class="row"><span class="nm">xq-*/（10 个目录）</span><span class="b bak">备份</span></div><span class="ds">每次安装、更新前的快照，见下方时间线</span></li>
+                <li><div class="row"><span class="nm">xq-*/（11 个目录）</span><span class="b bak">备份</span></div><span class="ds">每次安装、更新前的快照，见下方时间线</span></li>
               </ul>
             </li>
           </ul>
         </section>
 
       </div>
-      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。装进系统的 13 个脚本和配置，与 <code>~/WIKI/scripts/</code> 下的源码逐字节一致（11-14 核对）。</figcaption>
+      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。用户级的控制器和服务定义与 <code>~/WIKI/vpsinit/WIKI/VPS_TUN/scripts/xq-user-tun/</code> 下的源码逐字节一致（11-15 核对）；房间模式和共用的文件没有被这次升级改动。</figcaption>
     </figure>
   </section>
 
@@ -424,7 +427,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
         <li><b>防火墙表（nft）</b><code>inet xq_user_proxy</code><span>分拣、DNS 改送、出门守卫</span></li>
         <li><b>策略路由</b><code>规则 18410 → 表 20261</code><span>改道进 TUN，或落进黑洞</span></li>
         <li><b>虚拟网卡</b><code>xq-utun</code><span>随核心出现和消失；IPv6 关闭</span></li>
-        <li><b>连接账本（conntrack）</b><code>zone 20261</code><span>只记你的 DNS 改写</span></li>
+        <li><b>连接账本（conntrack）</b><code>zone 20261</code><span>只记你发往本机地址的 DNS 改写</span></li>
         <li class="wide"><b>房间（命名空间）</b><code>netns xq-tun</code><span>里面有网卡 xq-tun0、规则 9000–9010、路由表 2022、nft 表 inet xq_tun_guard</span></li>
       </ul>
       <figcaption>这些只存在于内核内存里。<code>xq_proxyoff</code> 会撤掉前四项，重启后全部清空。开机配置（<code>/etc/nftables.conf</code>、网卡配置）里一条也没写，所以重启后默认是关的。</figcaption>
@@ -482,6 +485,15 @@ footer code { font-family: var(--mono); font-size: .92em; }
                 <p class="bk">备份 settings.json.before-remove-16791-20261114-031708</p></div></li>
           </ol>
         </section>
+        <section class="day" aria-labelledby="day-15">
+          <h3 id="day-15">11-15 晚上</h3>
+          <ol class="tl">
+            <li><time>20:23</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>用户级升级为便携包版本</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>xq-user-proxy.service</li><li>sing-box.json</li><li>settings.json</li><li>managed-by</li><li>bin/sing-box</li><li>删 verify.py</li></ul>
+                <p class="bk">备份 xq-user-proxy-upgrade-20261115-202339-hgiljq0u</p></div></li>
+          </ol>
+        </section>
       </div>
       <figcaption>服务器时间（America/Los_Angeles）。蓝色是系统里本方案自己的文件，橙色是你家目录里的文件。系统备份都在 <code>/var/backups/</code>，每一步的“改了哪些”是比对备份里各版本的哈希得出的。</figcaption>
     </figure>
@@ -521,7 +533,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
   <section class="chapter" aria-labelledby="c-check">
     <h2 id="c-check">自己核对</h2>
 <pre class="cmd"><span class="c"># 装进系统的文件和 WIKI 源码是否一致（两行哈希应相同）</span>
-sha256sum /usr/local/sbin/xq-user-proxyctl ~/WIKI/scripts/xq-user-proxy/xq-user-proxyctl
+sha256sum /usr/local/sbin/xq-user-proxyctl ~/WIKI/vpsinit/WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl
 <span class="c"># 服务定义</span>
 systemctl cat xq-user-proxy.service
 <span class="c"># 内核里的设置（ON 时才有）</span>
@@ -531,7 +543,7 @@ ip rule show | grep 18410; ip route show table 20261
 sudo ls -l /run/xq-user-proxy</pre>
   </section>
 
-  <footer>依据 2026-11-14 在本机的逐项核对：文件属性、内容哈希，以及 <code>/var/backups</code> 里各次备份的版本。时间为服务器时间（America/Los_Angeles）。</footer>
+  <footer>依据 2026-11-14 在本机的逐项核对：文件属性、内容哈希，以及 <code>/var/backups</code> 里各次备份的版本；2026-11-15 升级后按升级脚本的记录和实际文件更新。时间为服务器时间（America/Los_Angeles）。</footer>
 </main>
 </body>
 </html>

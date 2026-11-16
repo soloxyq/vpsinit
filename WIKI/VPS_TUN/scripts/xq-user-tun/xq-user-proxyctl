@@ -330,8 +330,9 @@ def firewall(active=True):
     # conntrack no longer knows) would make the kernel reply with a RST or an
     # ICMP error that belongs to no socket and to no marked flow, and such a
     # reply leaves by the uplink. A flow first seen from this side would also
-    # be recorded backwards, which turns the owner's own packets of it into
-    # replies, and replies keep the host route. A RST for this host is let in
+    # be recorded backwards and never get the owner mark, which classify_output
+    # gives to flows the owner began: what the kernel later sent for it without
+    # a socket would be nobody's as well. A RST for this host is let in
     # regardless: it is never answered, and it ends a connection conntrack has
     # forgotten.
     # (The drop counter reads 1 after every start of the core: sing-box probes
@@ -347,22 +348,23 @@ def firewall(active=True):
     # ends at once and nothing is retransmitted.
     #
     # Reply direction. An owner packet that conntrack calls a reply is given no
-    # exception: owner traffic to a public address enters the TUN whatever the
-    # direction (IPv4), or the guard drops it (IPv6), the same as a packet of
-    # the original direction. This is what closes the pre-seed bypass for every
-    # protocol. A packet from an outside address to a port of this host leaves a
-    # conntrack entry even when no socket has that port (a spoofed datagram, a
-    # SYN whose RST the kernel suppresses, a mid-stream segment under loose TCP
-    # tracking); an owner packet later sent from that same port to that address
-    # is then the reply of the entry. Were replies allowed to keep the host
-    # route, that owner packet would leave by the uplink and expose the real
-    # egress. Sending it into the TUN instead lets the core carry it through the
-    # proxy like all owner traffic, so the flow still works and nothing leaks.
-    # The cost is that an owner server cannot answer a public client off the
-    # uplink: its reply goes through the proxy too. LAN and loopback replies
-    # keep the host route through their own rules, and the core's own loopback
-    # DNS replies are handled before this chain; DNS to port 53 of a public
-    # address is already forced into the TUN in both directions.
+    # exception: for a public address it takes the TUN route (IPv4) or is
+    # dropped by the guard (IPv6), like a packet of the original direction.
+    # A flow somebody else began is enough to make an owner packet a reply: a
+    # packet from outside for a port of this host leaves a conntrack entry even
+    # when no socket has that port (a datagram; a SYN in a broadcast frame, for
+    # which the kernel sends no RST), and what the owner sends from that port
+    # to that sender while the entry lives is the reply direction of it. With
+    # an exception for replies such a packet left by the uplink.
+    # Not leaving is all that is achieved for such a flow; it does not work.
+    # The core's answer is, for conntrack, a packet of the direction the
+    # stranger began, and from_tun drops it. The flow stays unanswered while
+    # the entry lives (conntrack's timeouts: 30 to 120 seconds for UDP, 60 to
+    # 120 for a TCP handshake; every attempt renews it). A flow from another
+    # port is not concerned.
+    # The other cost: a server the owner runs cannot answer a client at a
+    # public address, since its replies enter the TUN and answer nothing there.
+    # LAN and loopback destinations keep the host route by their own rules.
     return f'''table inet {TABLE} {{
   set lan_v4 {{
     type ipv4_addr; flags interval;

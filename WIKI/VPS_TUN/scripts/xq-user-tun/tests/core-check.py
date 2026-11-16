@@ -29,6 +29,7 @@ sysctl, service or DNS setting is touched. The one sysctl written besides those
 of the test's own TUN, ip_unprivileged_port_start, is this namespace's own.
 """
 import contextlib
+import fcntl
 import io
 import ipaddress
 import json
@@ -39,6 +40,7 @@ import select
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,9 @@ UPSTREAM = ('198.51.100.10', 1080)
 # Resolvers of every class. Each stand-in answers with its own address record.
 STUB, HOST_LOCAL, LAN, ANY = '127.0.0.53', '203.0.113.99', '10.77.0.53', '0.0.0.0'
 PUBLIC = '203.0.113.53'      # not on this host: only the uplink or the TUN leads there
+# A public address "from" which somebody sends this host a packet before the owner turns to it,
+# the device such packets arrive by, and this host's address on it.
+SEEDED, SEED_TAP, SEED_LOCAL = '203.0.113.81', 'xq-seed-tap', '198.18.2.2'
 V6_LOOPBACK = '::1'
 CORE_ANSWER, FORGED = '192.0.2.99', '192.0.2.66'
 STAND_INS = {STUB: '192.0.2.53', HOST_LOCAL: '192.0.2.54', LAN: '192.0.2.55', '127.0.0.1': '192.0.2.56'}
@@ -512,6 +517,136 @@ def check_forgotten_connection(scope):
           'nothing of it is retransmitted and nothing leaves by the uplink', flush=True)
 
 
+def checksum(data):
+    data += b'\0' * (len(data) % 2)
+    total = sum(struct.unpack(f'>{len(data) // 2}H', data))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return ~total & 0xffff
+
+
+def packet(protocol, source, dest, payload):
+    """An IPv4 packet; for TCP the payload is a bare segment whose checksum is filled in here."""
+    if protocol == socket.IPPROTO_TCP:
+        pseudo = socket.inet_aton(source) + socket.inet_aton(dest) + struct.pack('>BBH', 0, protocol, len(payload))
+        payload = payload[:16] + struct.pack('>H', checksum(pseudo + payload)) + payload[18:]
+    header = struct.pack('>BBHHHBBH4s4s', 0x45, 0, 20 + len(payload), 0, 0, 64, protocol, 0,
+                         socket.inet_aton(source), socket.inet_aton(dest))
+    return header[:10] + struct.pack('>H', checksum(header)) + header[12:] + payload
+
+
+class Outside:
+    """A second uplink, towards SEEDED only, whose far end this test holds.
+
+    A TAP device: the test writes the frames that arrive from outside and
+    reads every IPv4 packet the host sends that way, whoever sent it.
+    """
+
+    def __init__(self):
+        self.fd = os.open('/dev/net/tun', os.O_RDWR)
+        fcntl.ioctl(self.fd, 0x400454ca, struct.pack('16sH22x', SEED_TAP.encode(), 0x1002))   # TUNSETIFF: IFF_TAP | IFF_NO_PI
+        run([IP, 'address', 'add', SEED_LOCAL + '/24', 'dev', SEED_TAP])
+        run([IP, 'link', 'set', SEED_TAP, 'up'])
+        run([IP, 'route', 'add', SEEDED + '/32', 'dev', SEED_TAP])
+        run([IP, 'neigh', 'replace', SEEDED, 'lladdr', '02:00:00:00:00:81', 'dev', SEED_TAP, 'nud', 'permanent'])
+        self.mac = bytes.fromhex(json.loads(run([IP, '-j', 'link', 'show', 'dev', SEED_TAP]))[0]['address'].replace(':', ''))
+        os.set_blocking(self.fd, False)
+
+    def arrives(self, protocol, payload, broadcast=False):
+        os.write(self.fd, (b'\xff' * 6 if broadcast else self.mac) + bytes.fromhex('020000000081') + b'\x08\x00'
+                 + packet(protocol, SEEDED, SEED_LOCAL, payload))
+
+    def sent(self, wait=0.4):
+        """The IPv4 packets the host sent to SEEDED by this uplink since the last call, as
+        (protocol number, source port); the port is None for what is neither TCP nor UDP."""
+        time.sleep(wait)
+        seen = []
+        while True:
+            try:
+                frame = os.read(self.fd, 4096)
+            except BlockingIOError:
+                return seen
+            if frame[12:14] == b'\x08\x00' and socket.inet_ntoa(frame[30:34]) == SEEDED:
+                transport = 14 + (frame[14] & 15) * 4
+                ported = frame[23] in (socket.IPPROTO_TCP, socket.IPPROTO_UDP)
+                seen.append((frame[23], struct.unpack('>H', frame[transport:transport + 2])[0] if ported else None))
+
+    def close(self):
+        os.close(self.fd)
+
+
+def check_preseeded_flows(scope):
+    """An owner flow whose conntrack entry somebody else began: not by the uplink, and not answered.
+
+    A packet from outside for a port of this host leaves a conntrack entry even
+    when no socket has that port. What the owner later sends from that port to
+    that sender is the reply direction of the entry. It enters the TUN like
+    every owner packet for a public address. The core's answer, however, is for
+    conntrack a packet of the direction the stranger began, and what the TUN
+    delivers must answer a flow the owner started: the answer is dropped on
+    arrival. The flow fails for as long as the entry lives; it does not leave
+    by the uplink, and a flow from any other port is not concerned.
+    """
+    outside, before = Outside(), stray()
+    try:
+        outside.sent(0.3)
+
+        def begun_outside(mode, peer, port):
+            return [line for line in run([CONNTRACK, '-L', '-p', mode]).splitlines()
+                    if f'src={SEEDED} dst={SEED_LOCAL} sport={peer} dport={port} ' in line]
+
+        def seed(mode, peer, port):
+            if mode == 'udp':
+                outside.arrives(socket.IPPROTO_UDP, struct.pack('>HHHH', peer, port, 8 + 4, 0) + b'seed')
+            else:
+                # In a broadcast frame: the kernel sends no RST for such a SYN, and a RST would end the entry.
+                outside.arrives(socket.IPPROTO_TCP, struct.pack('>HHIIBBHHH', peer, port, 1000, 0, 5 << 4, 0x02, 65535, 0, 0),
+                                broadcast=True)
+            outside.sent()                      # what the kernel itself answers the stranger is not the owner's
+            assert len(begun_outside(mode, peer, port)) == 1, f'the {mode} packet from outside left no conntrack entry'
+
+        def owners(port, wait=0.4):
+            return [item for item in outside.sent(wait) if item[1] == port]
+
+        # DNS for a public resolver: the core answers it inside the TUN, so a flow that works is told
+        # from one that does not.
+        for mode, port in (('udp', 47011), ('tcp', 47031)):
+            expect(probe(OWNER, SEEDED, mode, source=port - 1), CORE_ANSWER, f'owner DNS ({mode}) to a peer nobody seeded')
+            seed(mode, 53, port)
+            dropped = hits('from_tun', 'drop')
+            result = probe(OWNER, SEEDED, mode, source=port)
+            left = owners(port)
+            assert not left, f'owner DNS ({mode}) taken for a reply left by the uplink: {left}'
+            assert result['answer'] is None and result['error'] == 'TimeoutError', \
+                f'the owner flow ({mode}) from the seeded port was expected to stay unanswered: {result!r}'
+            assert hits('from_tun', 'drop') > dropped, f'the scenario did not happen: no answer of the core ({mode}) was dropped'
+            expect(probe(OWNER, SEEDED, mode, source=port + 1), CORE_ANSWER, f'owner DNS ({mode}) from another port')
+        # Any other port. Nobody answers such a flow in this namespace either way (public UDP is
+        # refused by the core, and its outbound, direct here, reaches no one: what root's socket
+        # sends for it is the core's own connection). What counts is where the owner's packets go.
+        for mode, port in (('udp', 47051), ('tcp', 47061)):
+            seed(mode, 443, port)
+            routed = count('tun_all')
+            assert probe(OWNER, SEEDED, mode, port=443, source=port)['answer'] is None
+            left = owners(port)
+            assert not left, f'owner {mode} packets for port 443 taken for replies left by the uplink: {left}'
+            assert count('tun_all') > routed, f'the owner {mode} packet for port 443 did not enter the TUN'
+        # Once the entry is gone (it expires; deleted here), the same port serves again. Shown for
+        # UDP only: how long the core keeps the half-open TCP connection is the core's own matter.
+        run([CONNTRACK, '-D', '-p', 'udp', '--orig-src', SEEDED, '--orig-port-dst', '47011'], check=False)
+        assert not begun_outside('udp', 53, 47011)
+        expect(probe(OWNER, SEEDED, 'udp', source=47011), CORE_ANSWER, 'owner DNS (udp) from the seeded port once the entry is gone')
+        late = [item for item in outside.sent(1.0) if item[1] in (47011, 47031, 47051, 47061)]
+        assert not late and stray() == before, f'packets left by an uplink afterwards: {late}, {stray() - before} on {WAN}'
+    finally:
+        outside.close()
+    owner_dns_works(scope, 'after the seeded flows')
+    print('PASS: an owner flow whose conntrack entry somebody else began from outside (DNS and port 443, UDP and TCP) '
+          'enters the TUN and nothing of it leaves by the uplink; the core\'s answer is dropped at the TUN entry, so '
+          'that flow stays unanswered while the entry lives, a flow from another port is answered at once, and so is '
+          'the same port once the entry is gone', flush=True)
+
+
 def check_bystanders(scope):
     port = scope['DNS_PORT']
     for uid, who, sent in ((0, 'root', 'wan_root'), (OTHER, 'another UID', 'wan_other')):
@@ -684,6 +819,7 @@ def exercise(scope, unit):
     check_owner_paths(scope)
     check_closed_sockets(scope)
     check_forgotten_connection(scope)
+    check_preseeded_flows(scope)
     check_bystanders(scope)
     check_core_down(scope, unit)
     check_forged_answers(scope, unit)

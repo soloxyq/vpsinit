@@ -98,7 +98,7 @@ class PortableTests(unittest.TestCase):
                 controller.check_config()
                 rules = controller.firewall()
             self.assertIn(f'meta skuid {uid} ', rules)
-            self.assertIn(f'meta skuid {uid} meta nfproto ipv4 ip daddr != @lan_v4', rules)
+            self.assertIn(f'meta skuid {uid} ip daddr != @lan_v4 fib daddr type local', rules)
             self.assertEqual(rules.count(f'ct zone set {controller.DNS_ZONE}'), 4)
             self.assertNotIn('1006', rules)
             self.assertNotIn('16791', rules)

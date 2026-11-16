@@ -22,6 +22,7 @@ change. Every controller path is redirected to a temporary directory, and the
 controller may only run ip, nft and conntrack, which act on this namespace. The
 one sysctl written, ip_unprivileged_port_start, is this namespace's own.
 """
+import fcntl
 import ipaddress
 import json
 import os
@@ -29,9 +30,11 @@ from pathlib import Path
 import runpy
 import select
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 BASE = Path(__file__).resolve().parents[1]
 OWNER = 23456  # Deliberately unrelated to the development server's account.
@@ -43,8 +46,15 @@ CONNTRACK = '/usr/sbin/conntrack'
 SETPRIV = '/usr/bin/setpriv'
 TABLE = 'xq_user_proxy'
 THRESHOLD = Path('/proc/sys/net/ipv4/ip_unprivileged_port_start')  # per network namespace
-# Resolvers of every class, each with its own listener (REMOTE: an address nobody answers).
+# Resolvers of every class, each with its own listener. PUBLIC is a public address this host
+# itself has; REMOTE is a public address elsewhere, where nobody answers: by the uplink for
+# everybody else, through the TUN for the owner.
 STUB, PUBLIC, REMOTE, LAN = '127.0.0.53', '203.0.113.53', '203.0.113.54', '10.77.0.53'
+STRANGER = '203.0.113.80'   # a public address no flow of this test goes to
+WAN_ADDRESS = '198.18.0.2'
+# A public resolver "from" whose port 53 somebody sends this host a datagram before the owner
+# asks it, the interface that datagram arrives by, and this host's address on it.
+SEEDED, SEED_UPLINK, SEED_LOCAL = '203.0.113.81', 'xq-seed-up', '198.18.1.2'
 V6_LOOPBACK, ULA, V6_PUBLIC = '::1', 'fd00:77::53', '2001:db8::53'
 RESOLVERS = {STUB: 'stub', PUBLIC: 'public', REMOTE: None, LAN: 'lan',
              V6_LOOPBACK: 'v6-loopback', ULA: 'ula', V6_PUBLIC: 'v6-public'}
@@ -148,24 +158,41 @@ def hits(chain, verdict):
                for expr in item.get('rule', {}).get('expr', []) if 'counter' in expr)
 
 
-# The test's own counters of where one kind of probe leaves the host. Interface
+# The test's own counters of where its probes leave the host. Interface
 # statistics would also count the kernel's IPv6 housekeeping packets.
-EXITS = '''table inet xq_netns_check {
-  counter tun { }
-  counter wan { }
-  chain postrouting {
+EXITS = f'''table inet xq_netns_check {{
+  counter tun {{ }}
+  counter wan {{ }}
+  counter dns_tun {{ }}
+  counter dns_wan {{ }}
+  counter stranger {{ }}
+  counter seeded {{ }}
+  chain postrouting {{
     type filter hook postrouting priority 100; policy accept;
     udp dport 9999 oifname "xq-utun" counter name tun
     udp dport 9999 oifname "test-wan" counter name wan
-  }
-}
+    ip daddr {REMOTE} meta l4proto {{ tcp, udp }} th dport 53 oifname "xq-utun" counter name dns_tun
+    ip daddr {REMOTE} meta l4proto {{ tcp, udp }} th dport 53 oifname "test-wan" counter name dns_wan
+    ip daddr {STRANGER} oifname "test-wan" counter name stranger
+    ip daddr {SEEDED} udp dport 53 oifname "{SEED_UPLINK}" counter name seeded
+  }}
+}}
 '''
+
+
+def counted(*names):
+    return tuple(json.loads(run([NFT, '-j', 'list', 'counter', 'inet', 'xq_netns_check', name]))
+                 ['nftables'][-1]['counter']['packets'] for name in names)
 
 
 def exits():
     """Probes to UDP port 9999 that left through (the TUN, the uplink) so far."""
-    return tuple(json.loads(run([NFT, '-j', 'list', 'counter', 'inet', 'xq_netns_check', name]))
-                 ['nftables'][-1]['counter']['packets'] for name in ('tun', 'wan'))
+    return counted('tun', 'wan')
+
+
+def dns_exits():
+    """DNS packets for REMOTE that left through (the TUN, the uplink) so far."""
+    return counted('dns_tun', 'dns_wan')
 
 
 def refuse_unsafe_namespace():
@@ -274,13 +301,22 @@ def check_owner(scope, owner):
         expect(probe(owner, '127.0.0.1', port, tcp), 'private', 'owner asking the private entry directly')
         for address, original in RESOLVERS.items():
             kind = scope['nameserver_path'](ipaddress.ip_address(address))[0]
-            reply = {'proxied': 'private', 'lan': original, 'blocked': None}[kind]
+            # Nothing answers inside this test's TUN; where the query left is counted instead.
+            reply = {'proxied': 'private', 'tunnel': None, 'lan': original, 'blocked': None}[kind]
+            before = dns_exits()
             expect(probe(owner, address, tcp=tcp), reply, f'owner DNS to {address} ({kind}, tcp={tcp})')
+            entered, leaked = (now - then for now, then in zip(dns_exits(), before))
+            assert (entered > 0, leaked) == (kind == 'tunnel', 0), \
+                f'owner DNS to {address} ({kind}, tcp={tcp}): {entered} packets into the TUN, {leaked} by the uplink'
     kinds = {address: scope['nameserver_path'](ipaddress.ip_address(address))[0] for address in RESOLVERS}
-    assert kinds == {STUB: 'proxied', PUBLIC: 'proxied', REMOTE: 'proxied', LAN: 'lan',
+    assert kinds == {STUB: 'proxied', PUBLIC: 'proxied', REMOTE: 'tunnel', LAN: 'lan',
                      V6_LOOPBACK: 'blocked', ULA: 'lan', V6_PUBLIC: 'blocked'}, kinds
-    print(f'PASS: owner DNS over UDP and TCP: loopback stub and public IPv4 go to 127.0.0.1:{port}; '
-          'LAN and ULA resolvers are reached directly; ::1 and public IPv6 are blocked; '
+    flows = run([CONNTRACK, '-L'])
+    remote = [line for line in flows.splitlines() if f'dst={REMOTE} ' in line]
+    assert remote and not any('zone=' in line or f'sport={port} ' in line for line in remote), remote
+    print(f'PASS: owner DNS over UDP and TCP: the loopback stub and a public address of this host go to '
+          f'127.0.0.1:{port}; a public resolver elsewhere enters the TUN untranslated, in the default zone, and '
+          'never the uplink; LAN and ULA resolvers are reached directly; ::1 and public IPv6 are blocked; '
           'the classifier says the same', flush=True)
 
 
@@ -367,14 +403,12 @@ def check_forged_reply(scope, owner, squatter, who):
 
 def check_flushed_ruleset(scope, owner):
     """A5: selection lives in nft, so without the table the owner's new connections go direct."""
-    run([NFT, '-f', '-'], data=EXITS)
     probe(owner, '203.0.113.10', 9999)
     assert exits() == (1, 0), f'an owner packet should enter the TUN: {exits()}'
     run([NFT, 'delete', 'table', 'inet', TABLE])        # what `nft flush ruleset` does to this table
     assert not scope['table_exists']()
     probe(owner, '203.0.113.10', 9999)
     assert exits() == (1, 1), f'without the table an owner packet should leave by the main route: {exits()}'
-    run([NFT, 'delete', 'table', 'inet', 'xq_netns_check'])
     expect(probe(owner, STUB), 'stub', 'owner DNS without the table')
     print('PASS: once the table is gone, a new owner connection leaves by the main route and owner DNS '
           'reaches the system resolver directly; table_exists() sees it', flush=True)
@@ -397,7 +431,7 @@ def check_tun_acl():
     print('PASS: marked traffic of a non-owner is denied at the TUN ACL', flush=True)
 
 
-def check_core_loss(scope, bystander):
+def check_core_loss(scope, owner, core, bystander):
     # Simulate core/TUN loss: only the test namespace changes, guard stays.
     run([IP, 'link', 'delete', 'xq-utun'])
     result = subprocess.run([IP, '-j', 'route', 'get', '203.0.113.10', 'mark', '0x40000000'],
@@ -409,23 +443,157 @@ def check_core_loss(scope, bystander):
     root_route = json.loads(run([IP, '-j', 'route', 'get', '203.0.113.10']))
     assert root_route[0]['dev'] == 'test-wan'
     expect(probe(bystander, STUB), 'stub', 'non-owner DNS after the TUN disappeared')
-    print('PASS: core loss leaves the owner blackhole while unmarked routing/DNS of others remain available',
-          flush=True)
+    cast(scope, owner, core)
+    before = dns_exits()
+    result = probe(owner, REMOTE)
+    assert result['reply'] is None and result['error'] and result['seconds'] < 0.5, \
+        f'an owner datagram for the TUN must fail at once in the blackhole: {result!r}'
+    # A TCP connection is blackholed like every public connection of the owner: until the program gives up.
+    assert probe(owner, REMOTE, tcp=True)['reply'] is None
+    assert dns_exits() == before, f'owner DNS for the lost TUN left the host: {dns_exits()} after {before}'
+    print('PASS: core loss leaves the owner blackhole, for its DNS to a public resolver as for the rest, '
+          'while unmarked routing/DNS of others remain available', flush=True)
+
+
+def checksum(data):
+    data += b'\0' * (len(data) % 2)
+    total = sum(struct.unpack(f'>{len(data) // 2}H', data))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return ~total & 0xffff
+
+
+def packet(protocol, source, dest, payload):
+    """An IPv4 packet; for TCP the payload is a bare segment whose checksum is filled in here."""
+    if protocol == socket.IPPROTO_TCP:
+        pseudo = socket.inet_aton(source) + socket.inet_aton(dest) + struct.pack('>BBH', 0, protocol, len(payload))
+        payload = payload[:16] + struct.pack('>H', checksum(pseudo + payload)) + payload[18:]
+    header = struct.pack('>BBHHHBBH4s4s', 0x45, 0, 20 + len(payload), 0, 0, 64, protocol, 0,
+                         socket.inet_aton(source), socket.inet_aton(dest))
+    return header[:10] + struct.pack('>H', checksum(header)) + header[12:] + payload
+
+
+def check_preseeded_dns(scope, owner, core):
+    """An owner query that conntrack takes for a reply still does not leave by the uplink.
+
+    A datagram from a resolver's port 53 to a port of this host leaves a
+    conntrack entry even when no socket has that port. An owner query sent from
+    that port while the entry lives is the reply direction of it, and replies
+    keep the host route and pass the guard. The core is absent here, so a query
+    that is sent towards the TUN ends in the blackhole.
+    """
+    cast(scope, owner, core)
+    route = [line for line in scope['firewall']().splitlines() if 'th dport 53' in line and 'meta mark set' in line]
+    guard = [line for line in scope['firewall']().splitlines() if 'th dport 53 ip daddr' in line and 'counter drop' in line]
+    assert len(route) == 1 and len(guard) == 1, (route, guard)
+
+    def load(*without):
+        text = '\n'.join(line for line in scope['firewall']().splitlines() if line not in without) + '\n'
+        run([NFT, '-f', '-'], data=f'delete table inet {TABLE}\n' + text)
+
+    fd = os.open('/dev/net/tun', os.O_RDWR)
+    try:
+        fcntl.ioctl(fd, 0x400454ca, struct.pack('16sH22x', SEED_UPLINK.encode(), 0x1001))   # TUNSETIFF: IFF_TUN | IFF_NO_PI
+        run([IP, 'address', 'add', SEED_LOCAL + '/32', 'dev', SEED_UPLINK])
+        run([IP, 'link', 'set', SEED_UPLINK, 'up'])
+        run([IP, 'route', 'add', SEEDED + '/32', 'dev', SEED_UPLINK])
+
+        def left_by_the_uplink(port):
+            os.write(fd, packet(socket.IPPROTO_UDP, SEEDED, SEED_LOCAL, struct.pack('>HHHH', 53, port, 8 + 4, 0) + b'seed'))
+            time.sleep(0.3)
+            seeded = [line for line in run([CONNTRACK, '-L', '-p', 'udp']).splitlines()
+                      if f'src={SEEDED} dst={SEED_LOCAL} sport=53 dport={port} ' in line]
+            assert len(seeded) == 1, f'the datagram left no conntrack entry: {seeded}'
+            before = counted('seeded')[0]
+            result = probe(owner, SEEDED, source=port)
+            assert result['reply'] is None and result['source'] == port, result
+            return counted('seeded')[0] - before
+
+        outcomes = {'both rules': left_by_the_uplink(45001)}
+        load(guard[0])
+        outcomes['only the route rule'] = left_by_the_uplink(45002)
+        load(route[0])
+        outcomes['only the guard rule'] = left_by_the_uplink(45003)
+        dropped = hits('target_output', 'drop')
+        load(route[0], guard[0])
+        outcomes['neither rule (control)'] = left_by_the_uplink(45004)
+    finally:
+        os.close(fd)
+    scope['install_firewall']({})
+    assert dropped >= 1, 'the guard rule did not meet the query'
+    assert outcomes == {'both rules': 0, 'only the route rule': 0, 'only the guard rule': 0, 'neither rule (control)': 1}, outcomes
+    print('PASS: an owner DNS query that conntrack takes for the reply of a flow somebody else began from the '
+          'resolver\'s port 53 does not leave by the uplink: it is sent towards the TUN, and the guard drops it '
+          'anywhere else (control without both rules: it left by the uplink)', flush=True)
+
+
+def check_unsolicited_tun_packets(scope):
+    """What the TUN delivers without answering an owner flow gets no reply from the kernel.
+
+    Such a reply (a RST, an ICMP error quoting the packet) belongs to no socket
+    and to no marked flow, so nothing would keep it off the uplink. Here the
+    test holds a real TUN of the core's name and writes the packets itself.
+    """
+    fd = os.open('/dev/net/tun', os.O_RDWR)
+    try:
+        fcntl.ioctl(fd, 0x400454ca, struct.pack('16sH22x', b'xq-utun', 0x1001))   # TUNSETIFF: IFF_TUN | IFF_NO_PI
+        # As the controller leaves the core's TUN: its address, loose reverse path filtering.
+        run([IP, 'address', 'add', scope['ADDRESS'], 'dev', 'xq-utun'])
+        run([IP, 'link', 'set', 'xq-utun', 'up'])
+        Path('/proc/sys/net/ipv4/conf/xq-utun/rp_filter').write_text('2\n')
+        unsolicited = [
+            # a TCP segment of a connection nobody has: the kernel would answer with a RST
+            packet(socket.IPPROTO_TCP, STRANGER, WAN_ADDRESS,
+                   struct.pack('>HHIIBBHHH', 443, 40001, 1000, 2000, 5 << 4, 0x10, 65535, 0, 0)),
+            # a datagram for a port nobody listens on: the kernel would answer with an ICMP error quoting it
+            packet(socket.IPPROTO_UDP, STRANGER, WAN_ADDRESS, struct.pack('>HHHH', 53, 40002, 8 + 11, 0) + b'late answer'),
+        ]
+        # A RST is let in: the kernel never answers one.
+        reset = packet(socket.IPPROTO_TCP, STRANGER, WAN_ADDRESS,
+                       struct.pack('>HHIIBBHHH', 443, 40003, 1000, 0, 5 << 4, 0x04, 0, 0, 0))
+        dropped, passed = hits('from_tun', 'drop'), hits('from_tun', 'return')
+        for item in (*unsolicited, reset):
+            os.write(fd, item)
+        time.sleep(0.5)
+        assert hits('from_tun', 'drop') == dropped + len(unsolicited), 'the packets did not arrive from the TUN'
+        assert hits('from_tun', 'return') == passed + 1, 'the RST was not let in'
+        assert counted('stranger') == (0,), f'the kernel answered {counted("stranger")[0]} unsolicited TUN packets by the uplink'
+        assert STRANGER not in run([CONNTRACK, '-L']), 'a flow that started from the TUN was recorded'
+        # The same packets with that one rule taken away, to know the check above can fail.
+        run([NFT, 'flush', 'chain', 'inet', TABLE, 'tun_input'])
+        for item in unsolicited:
+            os.write(fd, item)
+        time.sleep(0.5)
+        answered = counted('stranger')[0]
+        assert answered == len(unsolicited), f'control: expected {len(unsolicited)} kernel replies on the uplink, saw {answered}'
+    finally:
+        os.close(fd)
+    for _ in range(50):
+        if subprocess.run([IP, 'link', 'show', 'xq-utun'], capture_output=True).returncode:
+            break
+        time.sleep(0.1)
+    print('PASS: a TCP segment and a datagram arriving from the TUN that answer no owner flow are dropped on '
+          'arrival: no RST or ICMP error goes out by the uplink and no backwards flow is recorded '
+          f'(control without the rule: the kernel sent {answered} such replies by the uplink); a RST is let in '
+          'and answered by nothing', flush=True)
 
 
 def check_shutdown(scope, owner, core):
     """OFF's own steps in OFF's order, and what status would find before and after."""
-    scope.update(UID=owner, GID=owner, CORE_UID=core)
+    cast(scope, owner, core)
+    expect(probe(owner, STUB), 'private', 'owner DNS before the shutdown')
     found, unchecked = scope['kernel_leftovers']()
-    # The table, two rules and two routes (the TUN route left with its device). The
-    # three-identity run also still has the owner's last DNS mappings (the single-identity
-    # run flushed them when it recast the rules), and OFF's conntrack step below must remove them.
+    # The table, two rules and two routes (the TUN route left with its device), and the
+    # mapping of the query above, which OFF's conntrack step below must remove.
     fixed = [item for item in found if 'DNS conntrack' not in item]
-    assert (len(fixed), len(found) - len(fixed), unchecked) in ((5, 0, []), (5, 1, [])), found
+    assert (len(fixed), len(found) - len(fixed), unchecked) == (5, 1, []), found
     scope['install_firewall']({}, active=False)          # stop translating before the mappings are deleted
     assert 'dnat' not in run([NFT, 'list', 'table', 'inet', TABLE])
+    before = dns_exits()
     for tcp in (False, True):
         expect(probe(owner, STUB, tcp=tcp), None, 'owner DNS while only the guard is left')
+        expect(probe(owner, REMOTE, tcp=tcp), None, 'owner DNS to a public resolver while only the guard is left')
+    assert dns_exits() == before, f'with only the guard left, owner DNS left the host: {dns_exits()} after {before}'
     for _ in range(2):                                   # the second round finds nothing left to do
         scope['delete_dns_connections']()
         scope['remove_routes']()
@@ -453,6 +621,7 @@ def exercise(scope, single):
         run([IP, '-6', 'address', 'add', address + '/128', 'dev', 'lo', 'nodad'])
 
     check_route_cleanup(scope)
+    run([NFT, '-f', '-'], data=EXITS)
     port = scope['DNS_PORT']
     scope['install_routes']()
     run(scope['route_command'](scope['TUN_ROUTE'], 'replace'))
@@ -501,7 +670,9 @@ def exercise(scope, single):
         for uid, name in bystanders:
             check_bystander(scope, uid, name)
     check_tun_acl()
-    check_core_loss(scope, bystanders[0][0])
+    check_core_loss(scope, owner, me, bystanders[0][0])
+    check_preseeded_dns(scope, owner, me)
+    check_unsolicited_tun_packets(scope)
     check_shutdown(scope, owner, me)
     if single:
         print('SKIPPED (needs a second UID at the same time; run as root): borrowing an owner conntrack tuple, '

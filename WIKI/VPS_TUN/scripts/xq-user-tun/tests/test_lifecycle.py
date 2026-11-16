@@ -233,11 +233,13 @@ class FakeSockets:
     """socket as the controller gets it: parsing is real, binding is only recorded."""
     AF_INET, AF_INET6 = socket.AF_INET, socket.AF_INET6
     SOCK_STREAM, SOCK_DGRAM = socket.SOCK_STREAM, socket.SOCK_DGRAM
+    SOL_SOCKET, SO_REUSEADDR = socket.SOL_SOCKET, socket.SO_REUSEADDR
     inet_aton, inet_pton = staticmethod(socket.inet_aton), staticmethod(socket.inet_pton)
     inet_ntop = staticmethod(socket.inet_ntop)
 
     def __init__(self):
         self.binds, self.bind_error = [], None
+        self.options = []                      # (kind, level, option, value) set before a bind
 
     def socket(self, family, kind):
         return FakeSocket(self, family, kind)
@@ -255,6 +257,9 @@ class FakeSocket:
 
     def __exit__(self, *exc):
         return False
+
+    def setsockopt(self, level, option, value):
+        self.owner.options.append((self.kind, level, option, value))
 
     def bind(self, address):
         self.owner.binds.append((self.family, self.kind, address))
@@ -276,6 +281,7 @@ class FakeKernel:
         self.routes = {'-4': [], '-6': []}     # routes in table 20261
         self.fib = {'-4': False, '-6': False}  # the table exists once it has held a route
         self.links = {'lo', 'eth0'}
+        self.addresses = {'lo': [('127.0.0.1', 8)], 'eth0': [('203.0.113.77', 24)]}
         self.core = False                      # unit active; the TUN exists exactly as long
         self.flows = []                        # conntrack entries as (mark, zone)
         self.conntrack_error = None            # (exit code, stderr) for every conntrack call
@@ -283,7 +289,9 @@ class FakeKernel:
         self.nscd = False
         self.start_error = False               # ExecStartPre or the core itself fails
         self.before = None                     # called with each command before it is answered
-        self.attach = self.marker = None       # the unit's ExecStartPost and ConditionPathExists
+        self.prepare = self.attach = None      # the unit's ExecStartPre and ExecStartPost
+        self.marker = None                     # the unit's ConditionPathExists
+        self.starting = None                   # called between ExecStartPre and the core's own start
 
     def run(self, args, *, check=True, data=None, timeout=30):
         if args[0] not in TOOLS:
@@ -390,6 +398,11 @@ class FakeKernel:
         if a == ('-j', '-4', 'route', 'get', UPSTREAM[0]):
             return 0, json.dumps([{'dst': UPSTREAM[0], 'gateway': '203.0.113.1', 'dev': 'eth0',
                                    'prefsrc': '203.0.113.77', 'flags': [], 'uid': 0, 'cache': []}]) + '\n', ''
+        if a == ('-j', '-4', 'address', 'show'):
+            found = dict(self.addresses, **({TUN: [('172.30.254.1', 32)]} if TUN in self.links else {}))
+            return 0, json.dumps([{'ifname': name, 'addr_info': [
+                {'family': 'inet', 'local': local, 'prefixlen': length} for local, length in items]}
+                for name, items in found.items()]) + '\n', ''
         if a == ('link', 'show', TUN):
             return (0, f'7: {TUN}: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280\n', '') if TUN in self.links else missing
         if a == ('-j', '-4', 'address', 'show', 'dev', TUN):
@@ -525,7 +538,13 @@ class FakeKernel:
                 return 0, '', ''
             if self.start_error:
                 return 1, '', self.say(JOB_FAILED)
-            self.bring_up()
+            try:
+                self.prepare()              # ExecStartPre=/usr/local/sbin/xq-user-proxyctl prepare
+            except (Crash, *REFUSALS):
+                return 1, '', self.say(JOB_FAILED)
+            if self.starting:
+                self.starting()
+            self.bring_up()                 # the core reads its configuration here
             try:
                 self.attach()               # ExecStartPost=/usr/local/sbin/xq-user-proxyctl attach
             except (Crash, *REFUSALS):
@@ -557,6 +576,7 @@ class Offline(unittest.TestCase):
         self.write('/etc/nsswitch.conf', 'hosts:          files mdns4_minimal [NOTFOUND=return] dns\n')
         self.write('/etc/resolv.conf', 'nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n')
         self.write('/usr/sbin/conntrack', '#!/bin/sh\nexit 99\n', 0o755)   # present; never run
+        self.write('/usr/sbin/ip', '#!/bin/sh\nexit 99\n', 0o755)
         self.config = json.loads((BASE / 'sing-box.template.json').read_text())
         self.config['outbounds'][0].update(server=UPSTREAM[0], server_port=UPSTREAM[1])
         self.write('/etc/xq-user-proxy/sing-box.json', json.dumps(self.config, indent=2) + '\n', 0o600)
@@ -598,7 +618,7 @@ class Offline(unittest.TestCase):
                  time=SimpleNamespace(time=lambda: 1763200000.0, sleep=self.sleeps.append),
                  pwd=SimpleNamespace(getpwnam=account), trusted=trusted,
                  run=self.kernel.run, atomic=atomic)
-        self.kernel.attach, self.kernel.marker = g['attach'], g['ENABLED']
+        self.kernel.prepare, self.kernel.attach, self.kernel.marker = g['prepare'], g['attach'], g['ENABLED']
         g['load_settings']()
 
     def write(self, path, text, mode=0o644):
@@ -670,6 +690,8 @@ class Offline(unittest.TestCase):
             left.append('DNS conntrack mappings')
         if 'enabled' in self.state_files():
             left.append('enabled marker')
+        if 'core.json' in self.state_files():
+            left.append('record of a core that no longer runs')
         if self.phase() not in (None, 'off'):
             left.append('phase ' + self.phase())
         code, text = self.status()
@@ -1001,8 +1023,13 @@ class ResolverTests(Offline):
         cases = [
             # resolv.conf, [(address, kind)], warnings, refused
             ('nameserver 127.0.0.53\n', [('127.0.0.53', 'proxied')], 0, False),
-            ('nameserver 8.8.8.8\nnameserver 1.1.1.1\n', [('8.8.8.8', 'proxied'), ('1.1.1.1', 'proxied')], 0, False),
-            ('nameserver 100.100.100.100\n', [('100.100.100.100', 'proxied')], 0, False),
+            ('nameserver 8.8.8.8\nnameserver 1.1.1.1\n', [('8.8.8.8', 'tunnel'), ('1.1.1.1', 'tunnel')], 0, False),
+            ('nameserver 100.100.100.100\n', [('100.100.100.100', 'tunnel')], 0, False),
+            # An address of this host outside the direct ranges is delivered locally: translated.
+            ('nameserver 203.0.113.77\nnameserver 203.0.113.78\n',
+             [('203.0.113.77', 'proxied'), ('203.0.113.78', 'tunnel')], 0, False),
+            ('nameserver 127.0.0.1\nnameserver 127.255.255.254\n',
+             [('127.0.0.1', 'proxied'), ('127.255.255.254', 'proxied')], 0, False),
             ('nameserver 192.168.1.1\n', [('192.168.1.1', 'lan')], 1, False),
             ('nameserver 10.255.255.254\n', [('10.255.255.254', 'lan')], 1, False),
             ('nameserver 172.31.0.2\nnameserver 169.254.169.253\n',
@@ -1013,13 +1040,13 @@ class ResolverTests(Offline):
             ('nameserver fe80::1%eth0\n', [('fe80::1%eth0', 'lan')], 1, False),
             ('nameserver ::1\nnameserver 127.0.0.53\n', [('::1', 'blocked'), ('127.0.0.53', 'proxied')], 1, False),
             ('nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n',
-             [('1.1.1.1', 'proxied'), ('2606:4700:4700::1111', 'blocked')], 0, False),
+             [('1.1.1.1', 'tunnel'), ('2606:4700:4700::1111', 'blocked')], 0, False),
             ('options rotate\nnameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n',
-             [('1.1.1.1', 'proxied'), ('2606:4700:4700::1111', 'blocked')], 1, False),
+             [('1.1.1.1', 'tunnel'), ('2606:4700:4700::1111', 'blocked')], 1, False),
             # glibc asks only the first three: a usable fourth does not help.
             (four, [('::1', 'blocked'), ('2001:db8::1', 'blocked'), ('2606:4700:4700::1111', 'blocked'),
                     ('9.9.9.9', 'unused')], 0, True),
-            ('nameserver 9.9.9.9\n' + four, [('9.9.9.9', 'proxied'), ('::1', 'blocked'), ('2001:db8::1', 'blocked'),
+            ('nameserver 9.9.9.9\n' + four, [('9.9.9.9', 'tunnel'), ('::1', 'blocked'), ('2001:db8::1', 'blocked'),
                                              ('2606:4700:4700::1111', 'unused'), ('9.9.9.9', 'unused')], 0, False),
             # No usable line at all: glibc falls back to 127.0.0.1.
             ('', [('127.0.0.1', 'proxied')], 0, False),
@@ -1029,11 +1056,12 @@ class ResolverTests(Offline):
             (None, [('127.0.0.1', 'proxied')], 0, False),
             # glibc parses IPv4 with inet_aton and ignores the rest of the line.
             ('nameserver 127.1\nnameserver\t9.9.9.9 # trailing text\n',
-             [('127.0.0.1', 'proxied'), ('9.9.9.9', 'proxied')], 0, False),
+             [('127.0.0.1', 'proxied'), ('9.9.9.9', 'tunnel')], 0, False),
             ('nameserver 0.0.0.0\n', [('0.0.0.0', 'proxied')], 0, False),
             # An IPv4-mapped address is reached with IPv4 packets and meets the IPv4 rules.
             ('nameserver ::ffff:8.8.8.8\nnameserver ::ffff:192.168.1.1\n',
-             [('::ffff:8.8.8.8', 'proxied'), ('::ffff:192.168.1.1', 'lan')], 1, False),
+             [('::ffff:8.8.8.8', 'tunnel'), ('::ffff:192.168.1.1', 'lan')], 1, False),
+            ('nameserver ::ffff:127.0.0.53\n', [('::ffff:127.0.0.53', 'proxied')], 0, False),
             # glibc reads the whole token as IPv4 and what precedes a '%' as IPv6: the CR of a
             # CRLF file makes an entry invalid, except behind a '%', where a bad scope is ignored.
             ('nameserver ::1\r\nnameserver 192.168.1.1\r\n', [('127.0.0.1', 'proxied')], 0, False),
@@ -1047,9 +1075,9 @@ class ResolverTests(Offline):
             ('nameserver ::1\0junk\n', [('::1', 'blocked')], 0, True),
             ('nameserver 192.168.1.1\0junk\n', [('192.168.1.1', 'lan')], 1, False),
             ('nameserver ::1%lo\0junk\nnameserver 9.9.9.9\0\n',
-             [('::1%lo', 'blocked'), ('9.9.9.9', 'proxied')], 1, False),
+             [('::1%lo', 'blocked'), ('9.9.9.9', 'tunnel')], 1, False),
             ('nameserver\0 ::1\noptions\0 rotate\nnameserver 9.9.9.9\nnameserver ::1\n',
-             [('9.9.9.9', 'proxied'), ('::1', 'blocked')], 0, False),
+             [('9.9.9.9', 'tunnel'), ('::1', 'blocked')], 0, False),
             ('nameserver 224.0.0.251\n', [('224.0.0.251', 'lan')], 1, False),
         ]
         for text, expected, warnings, refused in cases:
@@ -1074,9 +1102,87 @@ class ResolverTests(Offline):
         for network in (*self.g['LAN_V4'], *self.g['LAN_V6']):
             self.assertIn(network, rules)
         self.resolver('nameserver 198.18.0.53\nnameserver fd00::53\n')
-        self.assertEqual([kind for _, kind, _ in self.g['resolver_paths']()], ['proxied', 'lan'])
+        self.assertEqual([kind for _, kind, _ in self.g['resolver_paths']()], ['tunnel', 'lan'])
         self.g.update(LAN_V4=(*self.g['LAN_V4'], '198.18.0.0/15'), LAN_V6=('fe80::/10',))
         self.assertEqual([kind for _, kind, _ in self.g['resolver_paths']()], ['lan', 'blocked'])
+
+    def test_which_addresses_are_this_hosts_is_asked_of_the_host(self):
+        self.resolver('nameserver 198.51.100.7\n')
+        self.assertEqual(self.g['resolver_paths']()[0][1], 'tunnel')
+        self.kernel.addresses['eth1'] = [('198.51.100.7', 32)]
+        self.assertEqual(self.g['resolver_paths']()[0][1], 'proxied')
+        # The direct ranges win, as in the rules: the host's own LAN address is asked directly.
+        self.kernel.addresses['eth1'] = [('192.168.1.1', 24)]
+        self.resolver('nameserver 192.168.1.1\n')
+        self.assertEqual(self.g['resolver_paths']()[0][1], 'lan')
+        # The installer classifies before it has installed iproute2; loopback needs no lookup.
+        pathlib.Path(self.box.inside('/usr/sbin/ip')).unlink()
+        calls = len(self.kernel.calls)
+        self.resolver('nameserver 127.0.0.53\nnameserver 198.51.100.7\n')
+        self.assertEqual([kind for _, kind, _ in self.g['resolver_paths']()], ['proxied', 'tunnel'])
+        self.assertEqual(self.kernel.calls[calls:], [])
+
+    def test_only_dns_to_this_host_is_translated_and_public_dns_may_enter_the_tun(self):
+        port = self.dns_port()
+        rules = chains(self.g['firewall']())
+        local = 'ip daddr != @lan_v4 fib daddr type local'
+        # One translating rule, for the owner's flows to this host only, and its zone chosen the same way.
+        self.assertEqual([rule for rule in rules['dns_output'] if 'dnat' in rule], [
+            f'{local} ct mark & {OWNER_MARK:#x} != 0 ct direction original meta l4proto {{ tcp, udp }} th dport 53 '
+            f'ct mark set ct mark | {DNS_MARK:#x} dnat ip to 127.0.0.1:{port}'])
+        self.assertEqual(len(rules['dns_output']), 2)
+        self.assertEqual(rules['dns_zone_output'][1],
+                         f'meta skuid {OWNER.uid} {local} meta l4proto {{ tcp, udp }} th dport 53 ct zone set {ZONE}')
+        self.assertEqual([rule for rule in rules['dns_zone_output'] if 'th dport 53' in rule],
+                         [rules['dns_zone_output'][1]], 'DNS to any other address must stay in the default zone')
+        for active in (True, False):
+            egress = chains(self.g['firewall'](active))['target_output']
+            tun = f'meta nfproto ipv4 oifname "{TUN}" counter accept'
+            dns = 'meta l4proto { tcp, udp } th dport 53 counter drop'
+            loopback = 'oifname "lo" counter accept'
+            # Into the TUN first; then no DNS anywhere else, not even to the stub on loopback.
+            self.assertEqual(egress[-4:], [tun, dns, loopback, 'counter drop'])
+            self.assertEqual([rule for rule in egress if 'accept' in rule and 'oifname' not in rule],
+                             ['ct direction reply counter accept', 'ip daddr @lan_v4 counter accept',
+                              'ip6 daddr @lan_v6 counter accept'])
+
+    def test_the_tun_may_only_deliver_answers_to_flows_the_owner_started(self):
+        for active in (True, False):
+            rules = chains(self.g['firewall'](active))
+            self.assertEqual(rules['tun_input'], ['type filter hook prerouting priority -150; policy accept;',
+                                                  f'iifname "{TUN}" jump from_tun'])
+            # A RST for this host is never answered, so letting it in opens nothing; one for
+            # another address would be forwarded where the host forwards.
+            self.assertEqual(rules['from_tun'], ['ct direction reply counter return',
+                                                 'tcp flags & rst == rst fib daddr type local counter return',
+                                                 'counter drop'])
+
+    def test_owner_dns_for_a_public_address_enters_the_tun_whatever_conntrack_calls_it(self):
+        """A flow somebody else began from a resolver's port 53 makes the owner's query a reply.
+
+        Replies keep the host route and pass the guard. A query must not.
+        """
+        elsewhere = [f'meta l4proto {{ tcp, udp }} th dport 53 ip daddr != @lan_v4 fib daddr type != local '
+                     f'oifname != "{TUN}" counter drop',
+                     'meta l4proto { tcp, udp } th dport 53 ip6 daddr != @lan_v6 fib daddr type != local counter drop']
+        for active in (True, False):
+            egress = chains(self.g['firewall'](active))['target_output']
+            self.assertEqual(egress[:3], elsewhere + ['ct direction reply counter accept'])
+        route = chains(self.g['firewall']())['target_route']
+        self.assertEqual(route[0], 'meta l4proto { tcp, udp } th dport 53 ip daddr != @lan_v4 fib daddr type != local '
+                                   f'meta mark set meta mark | {self.g["ROUTE_BIT"]:#x} return')
+        self.assertTrue(route[1].startswith('ct direction reply '), route[1])
+
+    def test_owner_fin_of_a_connection_conntrack_does_not_know_is_reset_locally(self):
+        # Its answer could not come back in, and the orphaned socket's retransmissions would be nobody's.
+        rule = (f'meta skuid {OWNER.uid} ip daddr != @lan_v4 fib daddr type != local tcp flags & fin == fin '
+                'ct state invalid counter reject with tcp reset')
+        active = chains(self.g['firewall']())
+        self.assertEqual(active['classify_output'][2], rule)
+        # Before the nat and route chains: it must also act while the TUN is gone and the reroute fails.
+        self.assertIn('priority -110', active['classify_output'][0])
+        self.assertEqual([line for lines in active.values() for line in lines if 'reject with tcp reset' in line], [rule])
+        self.assertNotIn('classify_output', chains(self.g['firewall'](False)))
 
     def test_fresh_on_refuses_an_unusable_default_resolver_before_any_change(self):
         self.resolver('nameserver ::1\nnameserver 2001:4860:4860::8888\n')
@@ -1096,8 +1202,10 @@ class ResolverTests(Offline):
         self.assertIn('警告', text)
         self.assertNotIn('默认系统 DNS 和公网 DNS 查询经代理解析', text)
         # LAN-direct stays policy: nothing in the rules intercepts it.
-        nat = chains(self.kernel.table)['dns_output']
-        self.assertEqual(nat[1], 'ip daddr @lan_v4 meta l4proto { tcp, udp } th dport 53 return')
+        rules = chains(self.kernel.table)
+        for rule in (rules['dns_output'][1], rules['dns_zone_output'][1]):
+            self.assertIn('ip daddr != @lan_v4 fib daddr type local', rule)
+        self.assertEqual(rules['target_output'][3], 'ip daddr @lan_v4 counter accept')
 
     def test_status_shows_the_path_of_every_default_nameserver(self):
         self.resolver('nameserver 127.0.0.53\nnameserver fd00::53\n'
@@ -1116,6 +1224,17 @@ class ResolverTests(Offline):
             self.assertIn('阻断', lines['2001:4860:4860::8888'])
             self.assertIn('不会被查询', lines['9.9.9.9'])
             self.assertNotIn('默认系统 DNS 和公网 DNS 查询经代理解析', text)
+
+    def test_public_default_resolver_is_shown_entering_the_tun(self):
+        self.resolver('nameserver 9.9.9.9\nnameserver 127.0.0.53\n')
+        self.healthy_on()
+        code, text = self.status()
+        self.assertEqual(code, 0, text)
+        line = self.path_line(text, '9.9.9.9')
+        self.assertIn(TUN, line)
+        self.assertIn('DoH', line)
+        self.assertNotIn(f'127.0.0.1:{self.dns_port()}', line)
+        self.assertNotIn('警告', text)
 
     def test_resolver_that_becomes_unusable_while_on_is_reported(self):
         self.healthy_on()
@@ -1172,6 +1291,9 @@ class DnsEndpointTests(Offline):
         self.assertEqual(self.sockets.binds, [
             (socket.AF_INET, socket.SOCK_STREAM, ('127.0.0.1', port)),
             (socket.AF_INET, socket.SOCK_DGRAM, ('127.0.0.1', port))])
+        # Like the core's listener: closing connections of a core that just stopped are no
+        # obstacle (tests/core-check.py shows it on a real kernel). The UDP probe stays strict.
+        self.assertEqual(self.sockets.options, [(socket.SOCK_STREAM, socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)])
         self.build()
         self.sockets.bind_error = OSError(errno.EADDRINUSE, 'Address already in use')
         self.assert_refused_unchanged('on', f'127.0.0.1:{port}')
@@ -1218,6 +1340,245 @@ class DnsEndpointTests(Offline):
         self.threshold(1024)
         self.call('on')
         self.assertEqual(self.status()[0], 0)
+
+
+class LoadedConfigurationTests(Offline):
+    """Item 6: status and check speak of what the running core loaded, and ON reloads what changed."""
+
+    def edit_upstream(self, port):
+        self.config['outbounds'][0]['server_port'] = port
+        self.write('/etc/xq-user-proxy/sing-box.json', json.dumps(self.config, indent=2) + '\n', 0o600)
+        self.write('/etc/xq-user-proxy/settings.json', json.dumps(dict(
+            schema=1, user=OWNER.name, uid=OWNER.uid, gid=OWNER.gid,
+            proxy_ip=UPSTREAM[0], proxy_port=port)) + '\n', 0o600)
+        self.g['load_settings']()               # every invocation of the controller reads them anew
+
+    def record(self):
+        data = self.state_files().get('core.json')
+        return json.loads(data) if data else None
+
+    def restarts(self, since):
+        return [call[1] for call in self.kernel.calls[since:] if call[0] == 'systemctl' and call[1] in ('start', 'stop')]
+
+    def test_start_records_what_the_core_loaded_and_off_removes_the_record(self):
+        self.assertIsNone(self.record())
+        self.healthy_on()
+        record = self.record()
+        self.assertEqual((record['loaded'], record['upstream'], record['dns_port']),
+                         (True, f'{UPSTREAM[0]}:{UPSTREAM[1]}', self.dns_port()))
+        calls = len(self.kernel.calls)
+        self.call('on')                                        # healthy and current: nothing to do
+        self.assertEqual(self.restarts(calls), [])
+        self.assertEqual(self.record(), record)
+        self.call('off')
+        self.assertIsNone(self.record())
+        self.assert_clean()
+
+    def test_edited_upstream_is_not_claimed_and_on_reloads_it(self):
+        self.healthy_on()
+        old, new = f'{UPSTREAM[0]}:{UPSTREAM[1]}', f'{UPSTREAM[0]}:{UPSTREAM[1] + 1}'
+        self.edit_upstream(UPSTREAM[1] + 1)
+        before, writes = self.host(), len(self.kernel.writes)
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        for word in (old, '尚未加载', 'xq_proxyon'):
+            self.assertIn(word, str(caught.exception))
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertIn(f'上游：SOCKS5 {old}（运行中的核心实际使用', text)
+        self.assertIn(f'磁盘上的配置已改为 SOCKS5 {new}，尚未加载', text)
+        self.assertEqual((self.host(), self.kernel.writes[writes:]), (before, []), 'reporting it changes nothing')
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.assertIsNotNone(self.kernel.table, 'the guard stays while the core is restarted')
+        self.assertEqual(self.record()['upstream'], new)
+        self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 0, text)
+        self.assertIn(f'上游：SOCKS5 {new}（仅 TCP', text)
+        self.assertNotIn('尚未加载', text)
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), [])
+
+    def test_guard_is_never_absent_while_on_reloads_the_core(self):
+        self.healthy_on()
+        self.edit_upstream(UPSTREAM[1] + 1)
+        seen = []
+
+        def watching(argv):
+            if argv[0] == 'systemctl' and argv[1] in ('stop', 'start'):
+                kernel = self.kernel
+                seen.append((argv[1], kernel.table is not None and 'counter drop' in kernel.table,
+                             route_of(BLACKHOLE) in kernel.routes['-4'], OWN_RULE_JSON in kernel.rules['-4']))
+        self.kernel.before = watching
+        self.call('on')
+        self.assertEqual(seen, [('stop', True, True, True), ('start', True, True, True)])
+
+    def test_core_restarted_by_systemd_is_recorded_with_what_it_then_loaded(self):
+        self.healthy_on()
+        self.edit_upstream(UPSTREAM[1] + 1)
+        self.kernel.take_down()                                # the core crashed
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 0)   # Restart=on-failure
+        self.assertEqual(self.record()['upstream'], f'{UPSTREAM[0]}:{UPSTREAM[1] + 1}')
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_configuration_edited_while_the_core_starts_is_not_confirmed(self):
+        self.kernel.starting = lambda: self.edit_upstream(UPSTREAM[1] + 1)
+        seen = []
+        self.kernel.before = lambda argv: seen.append(argv) if argv[0] == 'ip' and 'replace' in argv and TUN in argv else None
+        error = self.attempt('on')
+        self.kernel.before = None
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(seen, [], 'a core whose configuration cannot be vouched for gets no route')
+        self.assertFalse(self.kernel.core, 'systemd stops a unit whose ExecStartPost failed')
+        self.assertIsNotNone(self.kernel.table, 'the guard stays')
+        self.assertFalse((self.record() or {}).get('loaded'))
+        self.assertEqual(self.status()[0], 1)
+        self.kernel.starting = None
+        self.call('on')                                        # the next start loads the edited files
+        self.call('check')
+        self.assertEqual(self.record()['upstream'], f'{UPSTREAM[0]}:{UPSTREAM[1] + 1}')
+
+    def test_prepare_and_attach_refuse_without_an_enabled_switch(self):
+        for verb in ('prepare', 'attach'):
+            with self.subTest(verb=verb):
+                self.build()
+                self.assertIsInstance(self.attempt(verb), REFUSALS)       # never switched on: no state
+                self.healthy_on()
+                self.call('off')
+                with self.assertRaisesRegex(RuntimeError, '已关闭'):
+                    self.call(verb)
+                self.assertIsNone(self.record())
+
+    def test_restart_with_the_entry_where_it_was_keeps_the_translations_and_needs_no_conntrack(self):
+        self.healthy_on()
+        self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+        flows = list(self.kernel.flows)
+        self.edit_upstream(UPSTREAM[1] + 1)
+        pathlib.Path(self.box.inside('/usr/sbin/conntrack')).unlink()
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.assertEqual(self.kernel.flows, flows)
+        self.assertNotIn('conntrack', [call[0] for call in self.kernel.calls[calls:]])
+
+    def test_core_whose_entry_may_have_moved_is_not_stopped_while_conntrack_is_unusable(self):
+        self.healthy_on()
+        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+        pathlib.Path(self.box.inside('/usr/sbin/conntrack')).unlink()
+        calls = len(self.kernel.calls)
+        with self.assertRaisesRegex(RuntimeError, 'conntrack'):
+            self.call('on')
+        self.assertEqual(self.restarts(calls), [], 'refused before anything is stopped')
+        self.assertTrue(self.kernel.core)
+        self.assertIsNotNone(self.kernel.table)
+
+    def test_start_record_that_cannot_be_read_is_a_fault_that_on_repairs(self):
+        self.healthy_on()
+        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).write_text('{ not json')
+        with self.assertRaisesRegex(RuntimeError, '无法读取'):
+            self.call('check')
+        self.assertEqual(self.status()[0], 1)
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.call('check')
+
+    def test_core_that_lost_its_tun_is_restarted_by_on(self):
+        self.healthy_on()
+        kernel = self.kernel
+        kernel.take_down()                                     # the interface and its routes are gone...
+        kernel.core = True                                     # ...while the unit still counts as active
+        with self.assertRaisesRegex(RuntimeError, 'TUN'):
+            self.call('check')
+        self.assertEqual(self.status()[0], 1)
+        calls = len(kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.call('check')
+
+    def test_rules_reloaded_by_the_earlier_controller_are_not_taken_for_current(self):
+        """The earlier controller, run once more, loads its table and records that table's digest.
+
+        It knows nothing of guard_source and leaves it as this controller wrote it.
+        """
+        self.healthy_on()
+        state = pathlib.Path(self.box.inside('/run/xq-user-proxy/state.json'))
+        self.kernel.load_table(self.kernel.table.replace('fib daddr type local ', ''))
+        data = json.loads(state.read_text())
+        data['guard_digest'] = self.g['firewall_digest']()
+        state.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, '不是当前'):
+            self.call('check')
+        self.call('on')
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.call('check')
+
+    def test_core_without_a_start_record_is_restarted_by_on(self):
+        self.healthy_on()
+        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+        with self.assertRaisesRegex(RuntimeError, '记录'):
+            self.call('check')
+        self.assertEqual(self.status()[0], 1)
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.call('check')
+
+    def test_rules_of_another_controller_version_are_replaced_and_a_current_core_is_kept(self):
+        self.healthy_on()
+        state = pathlib.Path(self.box.inside('/run/xq-user-proxy/state.json'))
+        older = self.kernel.table.replace('counter drop\n  }\n  chain private_dns_output', 'drop\n  }\n  chain private_dns_output')
+        self.assertNotEqual(older, self.kernel.table)
+        self.kernel.load_table(older)                          # loaded by another version, and recorded by it
+        data = json.loads(state.read_text())
+        data.update(guard_digest=self.g['firewall_digest'](), guard_source='another version')
+        state.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, '不是当前'):
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertIn('防直连仍然有效', text)
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.assertEqual(self.restarts(calls), [], 'a core that runs the current configuration is kept')
+        self.call('check')
+
+    def test_state_left_by_the_controller_before_this_one_is_taken_over_by_on(self):
+        """An installation switched on by the previous controller, upgraded in place while ON."""
+        self.healthy_on()
+        state = pathlib.Path(self.box.inside('/run/xq-user-proxy/state.json'))
+        earlier = self.kernel.table.replace('fib daddr type local ', '')        # its rules translated all DNS
+        self.kernel.load_table(earlier)
+        data = json.loads(state.read_text())
+        del data['guard_source']                               # it recorded neither of these
+        data['guard_digest'] = self.g['firewall_digest']()
+        state.write_text(json.dumps(data))
+        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+        flows = list(self.kernel.flows)
+        self.assertEqual(self.status()[0], 1)
+        seen = []
+        self.kernel.before = lambda argv: seen.append(self.kernel.table is not None) if changes_host(argv) else None
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.kernel.before = None
+        self.assertTrue(all(seen), 'the upgrade never leaves the owner without a guard')
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        # The translations lead to the earlier core's entry, which the rules no longer send to:
+        # they go, between the old core and the new one, and nothing else in conntrack does.
+        self.assertTrue([flow for flow in flows if flow[0] & DNS_MARK], 'the scenario needs a translation')
+        self.assertEqual(self.kernel.flows, [flow for flow in flows if not flow[0] & DNS_MARK])
+        steps = (('systemctl', 'stop'), ('conntrack', '-D'), ('systemctl', 'start'))
+        self.assertEqual([call[:2] for call in self.kernel.calls[calls:] if call[:2] in steps], list(steps))
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+        self.call('off')
+        self.assert_clean()
 
 
 class FailureInjectionTests(Offline):
@@ -1277,6 +1638,17 @@ class FailureInjectionTests(Offline):
             self.kernel.table = None
             self.kernel.rules['-4'] = []
         self.survive(flushed, 'on')
+
+    def test_failure_at_every_step_of_an_on_that_reloads_an_edited_configuration(self):
+        def edited():
+            self.healthy_on()
+            self.config['outbounds'][0]['server_port'] = UPSTREAM[1] + 1
+            self.write('/etc/xq-user-proxy/sing-box.json', json.dumps(self.config, indent=2) + '\n', 0o600)
+            self.write('/etc/xq-user-proxy/settings.json', json.dumps(dict(
+                schema=1, user=OWNER.name, uid=OWNER.uid, gid=OWNER.gid,
+                proxy_ip=UPSTREAM[0], proxy_port=UPSTREAM[1] + 1)) + '\n', 0o600)
+            self.g['load_settings']()
+        self.survive(edited, 'on')
 
     def test_failure_at_every_step_of_off(self):
         self.survive(self.healthy_on, 'off')

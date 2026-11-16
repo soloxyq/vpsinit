@@ -14,6 +14,8 @@ Group=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 ExecStartPre=/usr/local/lib/xq-user-proxy/bin/sing-box check -c /etc/xq-user-proxy/sing-box.json
+# prepare notes what the core is about to load; attach confirms it once the core is up.
+ExecStartPre=/usr/local/sbin/xq-user-proxyctl prepare
 ExecStart=/usr/local/lib/xq-user-proxy/bin/sing-box run -c /etc/xq-user-proxy/sing-box.json
 ExecStartPost=/usr/local/sbin/xq-user-proxyctl attach
 Restart=on-failure

@@ -12,7 +12,8 @@ SOURCE = ROOT / 'scripts/xq-user-tun'
 DIST = ROOT / 'dist'
 FILES = ('install.sh', 'install.py', 'xq-user-proxyctl', 'xq-user-proxy.bash',
          'xq-user-proxy.service', 'sing-box.template.json', 'README.md',
-         'tests/test_portable.py', 'tests/test_lifecycle.py', 'tests/netns-check.py')
+         'tests/test_portable.py', 'tests/test_lifecycle.py', 'tests/netns-check.py',
+         'tests/core-check.py')
 
 
 def main():

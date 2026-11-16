@@ -2,11 +2,21 @@
 """Host-network TUN restricted to the identity in root-owned settings.json.
 
 Only controller-owned nftables/routing objects are changed. New owner outbounds
-are marked after conntrack/DNAT; replies keep the original host route. Owner DNS
-translations live in a dedicated conntrack zone, so a reused source port never
-makes another user's flow share them. The private DNS entry is a privileged
-loopback port that only the core identity may answer from. No host resolver,
-forwarding sysctl, or unrelated user's rules are replaced.
+are marked after conntrack/DNAT; replies keep the original host route.
+
+Owner DNS takes one of two paths. A query to an address of this host itself
+(the loopback stub, 127.0.0.1) cannot be routed into the TUN, so it is
+translated to the private DNS entry: a privileged loopback port that only the
+core identity may answer from. These translations live in a dedicated conntrack
+zone, so a reused source port never makes another user's flow share them. A
+query to any other address outside the direct ranges is not translated: it
+enters the TUN like the rest of the owner's public traffic and the core answers
+it there. Such a flow stays in the default zone with the owner mark, which is
+what lets packets the kernel sends for an already closed socket (RST, ICMP
+errors) follow it into the TUN; a translated flow cannot offer that, because
+its zone has to be chosen from the socket before conntrack is consulted.
+
+No host resolver, forwarding sysctl, or unrelated user's rules are replaced.
 """
 import contextlib
 import fcntl
@@ -54,6 +64,8 @@ SERVICE = 'xq-user-proxy.service'
 STATE = Path('/run/xq-user-proxy')
 STATEFILE = STATE / 'state.json'
 ENABLED = STATE / 'enabled'
+# What the running core loaded: written by the unit around each start of the core.
+CORE_RECORD = STATE / 'core.json'
 CONFIG = Path('/etc/xq-user-proxy/sing-box.json')
 SETTINGS = Path('/etc/xq-user-proxy/settings.json')
 RESOLV = Path('/etc/resolv.conf')
@@ -268,11 +280,11 @@ def firewall(active=True):
   chain classify_output {{
     type filter hook output priority -110; policy accept;
     meta skuid {UID} ct direction original ct mark set ct mark | {OWNER_BIT:#x}
+    meta skuid {UID} ip daddr != @lan_v4 fib daddr type != local tcp flags & fin == fin ct state invalid counter reject with tcp reset
   }}
   chain dns_output {{
     type nat hook output priority -100; policy accept;
-    ip daddr @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 return
-    ct mark & {OWNER_BIT:#x} != 0 ct direction original meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_BIT:#x} dnat ip to 127.0.0.1:{DNS_PORT}
+    ip daddr != @lan_v4 fib daddr type local ct mark & {OWNER_BIT:#x} != 0 ct direction original meta l4proto {{ tcp, udp }} th dport 53 ct mark set ct mark | {DNS_BIT:#x} dnat ip to 127.0.0.1:{DNS_PORT}
   }}
   chain route_output {{
     type route hook output priority -90; policy accept;
@@ -281,6 +293,7 @@ def firewall(active=True):
     ct mark & {OWNER_BIT:#x} != 0 goto target_route
   }}
   chain target_route {{
+    meta l4proto {{ tcp, udp }} th dport 53 ip daddr != @lan_v4 fib daddr type != local meta mark set meta mark | {ROUTE_BIT:#x} return
     ct direction reply meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
     oifname "lo" meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
     ip daddr @lan_v4 meta mark set meta mark & {0xffffffff ^ ROUTE_BIT:#x} return
@@ -289,16 +302,62 @@ def firewall(active=True):
   }}
 '''
     # Before conntrack lookup, put both directions of every flow involving the
-    # private listener in their own zone: the owner's translatable DNS queries,
+    # private listener in their own zone: the owner's translated DNS queries,
     # the owner's direct queries to the entry, the listener's replies, and ICMP
     # errors about packets sent to the entry (so a stopped core still fails
     # fast). All users share the host conntrack table; without the zone a
     # reused UDP source port could make another user's query match the owner's
     # DNAT entry (or the reverse).
+    # Only DNS to an address of this host is translated, and so zoned. The zone
+    # is chosen from the socket's UID, which a packet the kernel sends for a
+    # closed socket does not have: such a packet misses the zone and travels to
+    # the untranslated destination. For a destination on this host that is the
+    # host itself. It would be the uplink for a public resolver, which is why
+    # DNS to any other address is left untranslated and enters the TUN.
     # A reply from the entry counts only when the core's socket sent it: one
     # from any other socket is dropped before it can match the owner's query.
     # The kernel's own RST and ICMP errors have no socket, match neither skuid
     # test and pass.
+    #
+    # Packets without a socket. What the kernel sends for a socket that is
+    # closed (a RST, an ICMP error) or orphaned (retransmissions of what a
+    # closed program left unacknowledged) has no UID to select it by. Its flow
+    # can still select it: the owner mark on the conntrack entry is the second
+    # test of route_output and output. Two rules keep such packets from
+    # existing where there is no marked flow to go by:
+    #
+    # tun_input: what the TUN delivers must answer a flow the owner started.
+    # Anything else (an answer arriving after its flow expired, a flow that
+    # conntrack no longer knows) would make the kernel reply with a RST or an
+    # ICMP error that belongs to no socket and to no marked flow, and such a
+    # reply leaves by the uplink. A flow first seen from this side would also
+    # be recorded backwards, which turns the owner's own packets of it into
+    # replies, and replies keep the host route. A RST for this host is let in
+    # regardless: it is never answered, and it ends a connection conntrack has
+    # forgotten.
+    # (The drop counter reads 1 after every start of the core: sing-box probes
+    # its new TUN with one packet from the TUN's address to itself, which the
+    # kernel discards as martian anyway.)
+    #
+    # classify_output, second rule: the owner closes a public connection that
+    # conntrack does not know (begun under rules that tracked it elsewhere, or
+    # dropped from the table). The FIN cannot start an entry, so the answer to
+    # it would not come back in, and the retransmissions of the then orphaned
+    # socket would be nobody's. The FIN is refused with a reset to the local
+    # socket instead, while that socket still names its owner: the connection
+    # ends at once and nothing is retransmitted.
+    #
+    # DNS in reply direction. Replies keep the host route (target_route) and
+    # pass the guard (target_output), so that the owner's servers can answer
+    # whoever reached them. But a flow somebody else began is enough to make an
+    # owner packet a reply: a datagram from a resolver's port 53 to a port of
+    # this host leaves a conntrack entry even when no socket has that port, and
+    # an owner query sent from that port within its lifetime is then the reply
+    # of it. No answer of the owner's own goes to port 53 of a public address,
+    # so such a packet enters the TUN whatever its direction, and the guard
+    # drops it anywhere else. The core's answer arrives as a packet of the
+    # other direction and is dropped by from_tun: the query fails, it does not
+    # leave by the uplink. For every other port the reply rule stands.
     return f'''table inet {TABLE} {{
   set lan_v4 {{
     type ipv4_addr; flags interval;
@@ -310,11 +369,20 @@ def firewall(active=True):
   }}
   chain dns_zone_output {{
     type filter hook output priority raw; policy accept;
-    meta skuid {UID} meta nfproto ipv4 ip daddr != @lan_v4 meta l4proto {{ tcp, udp }} th dport 53 ct zone set {DNS_ZONE}
+    meta skuid {UID} ip daddr != @lan_v4 fib daddr type local meta l4proto {{ tcp, udp }} th dport 53 ct zone set {DNS_ZONE}
     meta skuid {UID} ip daddr 127.0.0.1 meta l4proto {{ tcp, udp }} th dport {DNS_PORT} ct zone set {DNS_ZONE}
     ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport {DNS_PORT} meta skuid != {CORE_UID} counter drop
     ip saddr 127.0.0.1 meta l4proto {{ tcp, udp }} th sport {DNS_PORT} ct zone set {DNS_ZONE}
     ip saddr 127.0.0.1 icmp type destination-unreachable @th,240,16 {DNS_PORT} ct zone set {DNS_ZONE}
+  }}
+  chain tun_input {{
+    type filter hook prerouting priority -150; policy accept;
+    iifname "{TUN}" jump from_tun
+  }}
+  chain from_tun {{
+    ct direction reply counter return
+    tcp flags & rst == rst fib daddr type local counter return
+    counter drop
   }}
   chain private_dns_output {{
     type filter hook output priority -80; policy accept;
@@ -341,12 +409,14 @@ def firewall(active=True):
     counter drop
   }}
   chain target_output {{
+    meta l4proto {{ tcp, udp }} th dport 53 ip daddr != @lan_v4 fib daddr type != local oifname != "{TUN}" counter drop
+    meta l4proto {{ tcp, udp }} th dport 53 ip6 daddr != @lan_v6 fib daddr type != local counter drop
     ct direction reply counter accept
     ip daddr @lan_v4 counter accept
     ip6 daddr @lan_v6 counter accept
+    meta nfproto ipv4 oifname "{TUN}" counter accept
     meta l4proto {{ tcp, udp }} th dport 53 counter drop
     oifname "lo" counter accept
-    meta nfproto ipv4 oifname "{TUN}" counter accept
     counter drop
   }}
 {extra}}}
@@ -358,11 +428,22 @@ def firewall_digest():
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def guard_source(loaded, active=True):
+    """Identifies the rules this controller would load now, as the kernel listed them once loaded.
+
+    `loaded` is that listing's digest. Tied to it, a table that something else
+    loads later is not taken for these rules, even when that something writes
+    the new listing's digest into the state and leaves this value alone.
+    """
+    return hashlib.sha256((firewall(active) + loaded).encode()).hexdigest()
+
+
 def install_firewall(state, active=True):
     source = (f'delete table inet {TABLE}\n' if table_exists() else '') + firewall(active)
     run([NFT, '--check', '-f', '-'], data=source)
     run([NFT, '-f', '-'], data=source)
     state['guard_digest'] = firewall_digest()
+    state['guard_source'] = guard_source(state['guard_digest'], active)
     state['guard_active'] = active
     save(state)
 
@@ -435,7 +516,16 @@ def parse_nameserver(token):
         return None
 
 
-def nameserver_path(address):
+def host_addresses():
+    """The IPv4 addresses on this host's interfaces: with 127.0.0.0/8, what `fib daddr type local` matches."""
+    if not os.access(IP, os.X_OK):
+        return set()        # the installer asks before it has installed iproute2; `on` asks again
+    dump = json.loads(run([IP, '-j', '-4', 'address', 'show']).stdout)
+    return {ipaddress.IPv4Address(item['local']) for link in dump
+            for item in link.get('addr_info', []) if item.get('family') == 'inet'}
+
+
+def nameserver_path(address, local=None):
     """(kind, description): where firewall() sends an owner query to this resolver."""
     # A query to an IPv4-mapped address leaves as IPv4 and meets the IPv4 rules.
     address = address.ipv4_mapped if address.version == 6 and address.ipv4_mapped else address
@@ -444,7 +534,10 @@ def nameserver_path(address):
     if address.version == 4:
         if direct:
             return 'lan', '直连范围内的 IPv4：按宿主路由直连该服务器，不经代理'
-        return 'proxied', f'改送专用入口 127.0.0.1:{DNS_PORT}，经代理 DoH 解析'
+        # The kernel sends a query for 0.0.0.0 to 127.0.0.1.
+        if address.is_loopback or address.is_unspecified or address in (host_addresses() if local is None else local):
+            return 'proxied', f'本机地址：改送专用入口 127.0.0.1:{DNS_PORT}，经代理 DoH 解析'
+        return 'tunnel', f'与其他公网流量一样进入 {TUN}，由核心应答，经代理 DoH 解析'
     if direct:
         return 'lan', '直连范围内的 IPv6（ULA/链路本地）：按宿主路由直连该服务器，不经代理'
     return 'blocked', '阻断：本方案不代理 IPv6 DNS，只有 ULA/链路本地地址可以直连'
@@ -453,14 +546,17 @@ def nameserver_path(address):
 def resolver_paths():
     """(address, kind, description) for every nameserver glibc accepts, in its order.
 
-    kind is 'proxied' (taken over and resolved through the proxy), 'lan'
-    (direct, not proxied), 'blocked', or 'unused' beyond glibc's first MAXNS.
-    Without any nameserver glibc asks 127.0.0.1.
+    kind is 'proxied' (an address of this host: translated to the private
+    entry), 'tunnel' (another address outside the direct ranges: answered by
+    the core inside the TUN), 'lan' (direct, not proxied), 'blocked', or
+    'unused' beyond glibc's first MAXNS. The first two are resolved through
+    the proxy. Without any nameserver glibc asks 127.0.0.1.
     """
     servers = nameservers()[0] or [(ipaddress.IPv4Address('127.0.0.1'), '')]
+    local = host_addresses()
     paths = []
     for index, (address, scope) in enumerate(servers):
-        kind, text = nameserver_path(address)
+        kind, text = nameserver_path(address, local)
         if index >= MAXNS:
             kind, text = 'unused', f'glibc 只使用前 {MAXNS} 个 nameserver，此项不会被查询'
         # inet_ntop keeps an IPv4-mapped address readable on every Python version.
@@ -554,6 +650,11 @@ def preflight():
             raise RuntimeError('专用 conntrack zone 已占用或无法核验')
     for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
         with socket.socket(socket.AF_INET, kind) as sock:
+            if kind == socket.SOCK_STREAM:
+                # Ask what the core's own listener asks. A TCP connection that a
+                # stopped core left in its closing states lingers for a minute
+                # or two and does not occupy the entry; a listener does.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(('127.0.0.1', DNS_PORT))
             except OSError as error:
@@ -572,7 +673,92 @@ def install_routes():
             run(rule_args(family))
 
 
+def disk_identity():
+    """What a core started now would load, and where it would take its DNS entry."""
+    return {'config': hashlib.sha256(CONFIG.read_bytes()).hexdigest(),
+            'settings': hashlib.sha256(SETTINGS.read_bytes()).hexdigest(),
+            'upstream': f'{HOST}:{PORT}', 'dns_port': DNS_PORT}
+
+
+def core_record():
+    """The unit's note about the running core, or None when there is none."""
+    if not os.path.lexists(CORE_RECORD):
+        return None
+    trusted(CORE_RECORD)
+    data = json.loads(CORE_RECORD.read_text())
+    return data if isinstance(data, dict) else None
+
+
+def core_fault():
+    """Why the running core cannot be taken to run what is on disk now, or None.
+
+    The core reads its configuration once, when it starts. Whatever is edited
+    afterwards changes nothing until the core is started again.
+    """
+    try:
+        record = core_record()
+    except (RuntimeError, OSError, ValueError) as error:
+        return f'核心启动记录无法读取（{error}），无法确认它运行的是磁盘上的配置'
+    if record is None:
+        return '没有这次核心启动所加载配置的记录（核心不是由当前版本的服务单元启动的），无法确认它运行的是磁盘上的配置'
+    if not record.get('loaded'):
+        return '核心的这次启动没有完成确认（服务单元的启动后步骤未成功），无法确认它运行的是磁盘上的配置'
+    if any(record.get(key) != value for key, value in disk_identity().items()):
+        return (f'核心启动时加载的是上游 {record.get("upstream")}、DNS 入口端口 {record.get("dns_port")} 的配置；'
+                '磁盘上的配置此后已被修改，新配置尚未加载')
+    return None
+
+
+def prepare():
+    """ExecStartPre: note what the core is about to load.
+
+    Written before the core reads its configuration and confirmed by attach()
+    once the core is up, so the note is what the core read even if the files
+    are edited while it starts.
+    """
+    check_config()
+    state = load()
+    if not ENABLED.exists() or not state.get('guard_active'):
+        raise RuntimeError('用户代理已关闭；拒绝启动核心')
+    atomic(CORE_RECORD, json.dumps(dict(disk_identity(), loaded=False), ensure_ascii=False, indent=2) + '\n')
+
+
 def attach():
+    """ExecStartPost: make sure of what the started core loaded, give it its route, then confirm.
+
+    A core whose configuration cannot be vouched for gets no route: the owner
+    stays on the blackhole until the unit has started it again.
+    """
+    if not ENABLED.exists() or not load().get('guard_active'):
+        raise RuntimeError('用户代理已关闭；拒绝附加路由')
+    try:
+        record = core_record()
+    except ValueError:
+        record = None
+    if record is None or {key: record.get(key) for key in disk_identity()} != disk_identity():
+        raise RuntimeError('核心启动期间配置被修改，无法确认它加载的内容；保留 guard，请重新执行 xq_proxyon')
+    attach_routes()
+    atomic(CORE_RECORD, json.dumps(dict(record, loaded=True), ensure_ascii=False, indent=2) + '\n')
+
+
+def tun_exists():
+    return run([IP, 'link', 'show', TUN], check=False).returncode == 0
+
+
+def entry_may_have_moved():
+    """Whether DNS translations in conntrack may lead somewhere else than the current private entry.
+
+    They lead to the entry of the core that made them. Only a core whose start
+    was recorded with the current port is known to have used this one.
+    """
+    try:
+        record = core_record()
+    except (RuntimeError, OSError, ValueError):
+        record = None
+    return record is None or record.get('dns_port') != DNS_PORT
+
+
+def attach_routes():
     check_config()
     # ExecStartPost must not acquire the lock held by `on` waiting on systemctl.
     state = load()
@@ -625,8 +811,17 @@ def check():
                            f'清空）；{USER} 的新连接和 DNS 可能正在直连。请执行 xq_proxyon 重建')
     if not core_active():
         raise RuntimeError('核心未运行；guard 和黑洞路由保留')
-    if firewall_digest() != state.get('guard_digest'):
+    loaded = firewall_digest()
+    if loaded != state.get('guard_digest'):
         raise RuntimeError('guard 与记录不一致')
+    if state.get('guard_source') != guard_source(loaded):
+        raise RuntimeError('已加载的防直连规则不是当前控制器和配置生成的版本；防直连仍然有效，'
+                           '请执行 xq_proxyon 换成当前版本')
+    fault = core_fault()
+    if fault:
+        raise RuntimeError(fault + '。请执行 xq_proxyon 重新加载（会重启核心，已有的公网连接需要重连）')
+    if not tun_exists():
+        raise RuntimeError(f'核心在运行，但它的 TUN {TUN} 不存在；guard 和黑洞路由保留')
     if (SYSCTL / f'ipv4/conf/{TUN}/rp_filter').read_text().strip() != '2':
         raise RuntimeError('自有 TUN 的 rp_filter 设置异常')
     for family in ('-4', '-6'):
@@ -651,13 +846,28 @@ def on():
                 check()
                 status()
                 return
-            except RuntimeError:
+            except (RuntimeError, OSError, ValueError):
                 check_nss()
                 install_firewall(state)
                 install_routes()
-                if core_active():
-                    attach()
+                if core_active() and core_fault() is None and tun_exists():
+                    attach_routes()
                 else:
+                    # A core that loaded something else than what is on disk, or
+                    # that lost its TUN, is started again. The guard and the
+                    # blackhole stay throughout: until the new core is up the
+                    # owner is blocked, not direct.
+                    moved = entry_may_have_moved()
+                    if moved:
+                        dns_connections()       # conntrack must be usable before anything is stopped
+                    if core_active():
+                        run([SYSTEMCTL, 'stop', SERVICE], timeout=45)
+                    if moved:
+                        # Translations made for the core that is gone lead to its
+                        # entry, which the rules no longer send to. A program that
+                        # keeps one socket for its queries would stay tied to it,
+                        # and that port may be one any user can listen on.
+                        delete_dns_connections()
                     run([SYSTEMCTL, 'reset-failed', SERVICE], check=False)
                     run([SYSTEMCTL, 'start', SERVICE], timeout=60)
         else:
@@ -790,6 +1000,7 @@ def off():
         # The output guard remains present throughout shutdown.
         install_firewall(state, active=False)
         run([SYSTEMCTL, 'stop', SERVICE], timeout=45)
+        CORE_RECORD.unlink(missing_ok=True)
         delete_dns_connections()
         remove_routes()
         if table_exists():
@@ -802,7 +1013,16 @@ def off():
 def status():
     enabled = ENABLED.exists()
     print(f'作用范围：宿主网络中 {USER}（UID {UID}）的所有会话及程序')
-    print(f'上游：SOCKS5 {HOST}:{PORT}（仅 TCP；被接管的 DNS 经它走 DoH）')
+    try:
+        loaded = core_record() if core_active() else None
+    except (RuntimeError, OSError, ValueError):
+        loaded = None
+    if loaded and loaded.get('loaded') and loaded.get('upstream') != f'{HOST}:{PORT}':
+        # The core keeps what it read when it started; say which one is in effect.
+        print(f'上游：SOCKS5 {loaded.get("upstream")}（运行中的核心实际使用；仅 TCP；被接管的 DNS 经它走 DoH）')
+        print(f'      磁盘上的配置已改为 SOCKS5 {HOST}:{PORT}，尚未加载')
+    else:
+        print(f'上游：SOCKS5 {HOST}:{PORT}（仅 TCP；被接管的 DNS 经它走 DoH）')
     result = run([IP, '-j', '-4', 'route', 'get', HOST], check=False)
     if result.returncode == 0:
         data = json.loads(result.stdout)[0]
@@ -814,7 +1034,7 @@ def status():
         try:
             check()
             print('路由和 DNS 接管规则：完整；未在 status 中发起公网探测')
-        except (RuntimeError, OSError) as error:
+        except (RuntimeError, OSError, ValueError) as error:
             print('异常：' + str(error))
             return 1
     else:
@@ -844,8 +1064,9 @@ def status():
         print('  ' + line)
     for warning in ([fault + '；按当前配置 xq_proxyon 会拒绝开启'] if fault else warnings):
         print('警告：' + warning)
-    print(f'显式查询其他 DNS：公网 IPv4 同样改送 127.0.0.1:{DNS_PORT}；直连范围内的地址直连、不经代理；其余 IPv6 阻断。')
-    print(f'DNS 改写使用独立 conntrack zone {DNS_ZONE}，不与其他用户的连接共用跟踪条目。')
+    print(f'显式查询其他 DNS：公网 IPv4 进入 {TUN} 由核心应答；本机地址改送 127.0.0.1:{DNS_PORT}；'
+          '直连范围内的地址直连、不经代理；其余 IPv6 阻断。')
+    print(f'只有发往本机地址的 DNS 被改写，改写记录在独立 conntrack zone {DNS_ZONE}，不与其他用户的连接共用跟踪条目。')
     print('公网：TCP 经代理；ICMP/ping、普通 UDP 和 IPv6 主动出站被阻断。')
     print('连通性验证请使用 HTTPS；公网 ping 失败不代表 HTTPS 代理不可用。')
     print('NSS 的 mdns4_minimal 仅保留本地域名发现，不属于公网 DNS 查询。')
@@ -859,10 +1080,10 @@ def main(argv):
     load_settings()
     if os.environ.get('SUDO_UID', '0') not in ('0', str(UID)):
         raise RuntimeError(f'此入口仅授权给 {USER}；root 仅用于管理维护')
-    if len(argv) != 1 or argv[0] not in ('on', 'off', 'status', 'check', 'attach'):
-        raise RuntimeError('用法：xq-user-proxyctl {on|off|status|check|attach}')
+    if len(argv) != 1 or argv[0] not in ('on', 'off', 'status', 'check', 'prepare', 'attach'):
+        raise RuntimeError('用法：xq-user-proxyctl {on|off|status|check}（prepare、attach 只由服务单元调用）')
     here = os.stat('/proc/self/ns/net')
-    if argv[0] == 'attach':
+    if argv[0] in ('prepare', 'attach'):
         # The core service intentionally lacks CAP_SYS_PTRACE. Comparing its
         # own netns with a trusted saved identity avoids opening PID 1's ns fd.
         host_identity = load()['host_netns']

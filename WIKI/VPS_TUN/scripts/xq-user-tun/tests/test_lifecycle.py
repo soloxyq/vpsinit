@@ -1143,8 +1143,7 @@ class ResolverTests(Offline):
             # Into the TUN first; then no DNS anywhere else, not even to the stub on loopback.
             self.assertEqual(egress[-4:], [tun, dns, loopback, 'counter drop'])
             self.assertEqual([rule for rule in egress if 'accept' in rule and 'oifname' not in rule],
-                             ['ct direction reply counter accept', 'ip daddr @lan_v4 counter accept',
-                              'ip6 daddr @lan_v6 counter accept'])
+                             ['ip daddr @lan_v4 counter accept', 'ip6 daddr @lan_v6 counter accept'])
 
     def test_the_tun_may_only_deliver_answers_to_flows_the_owner_started(self):
         for active in (True, False):
@@ -1157,21 +1156,32 @@ class ResolverTests(Offline):
                                                  'tcp flags & rst == rst fib daddr type local counter return',
                                                  'counter drop'])
 
-    def test_owner_dns_for_a_public_address_enters_the_tun_whatever_conntrack_calls_it(self):
-        """A flow somebody else began from a resolver's port 53 makes the owner's query a reply.
+    def test_owner_traffic_to_a_public_address_takes_the_tun_whatever_conntrack_calls_it(self):
+        """A flow somebody else began makes the owner's packet a reply to the entry.
 
-        Replies keep the host route and pass the guard. A query must not.
+        A reply is given no uplink exception: owner DNS to a public resolver is
+        forced into the TUN by the destination rule, and every other owner
+        packet to a public address reaches the TUN by the default route rule and
+        the guard, in both directions. Were the reply direction allowed to keep
+        the host route, a pre-seeded entry would carry the owner's packet out by
+        the uplink. There must be no such rule.
         """
         elsewhere = [f'meta l4proto {{ tcp, udp }} th dport 53 ip daddr != @lan_v4 fib daddr type != local '
                      f'oifname != "{TUN}" counter drop',
                      'meta l4proto { tcp, udp } th dport 53 ip6 daddr != @lan_v6 fib daddr type != local counter drop']
         for active in (True, False):
-            egress = chains(self.g['firewall'](active))['target_output']
-            self.assertEqual(egress[:3], elsewhere + ['ct direction reply counter accept'])
+            rules = chains(self.g['firewall'](active))
+            egress = rules['target_output']
+            # The two DNS guards first, then LAN; no reply exception anywhere.
+            self.assertEqual(egress[:3], elsewhere + ['ip daddr @lan_v4 counter accept'])
+            self.assertEqual([rule for rule in egress if 'ct direction reply' in rule], [])
+        # DNS to a public resolver is forced into the TUN in either direction; nothing else
+        # in the route chain returns for a public destination before the final mark.
         route = chains(self.g['firewall']())['target_route']
         self.assertEqual(route[0], 'meta l4proto { tcp, udp } th dport 53 ip daddr != @lan_v4 fib daddr type != local '
                                    f'meta mark set meta mark | {self.g["ROUTE_BIT"]:#x} return')
-        self.assertTrue(route[1].startswith('ct direction reply '), route[1])
+        self.assertEqual([rule for rule in route if 'ct direction reply' in rule], [])
+        self.assertEqual(route[-1], f'meta mark set meta mark | {self.g["ROUTE_BIT"]:#x}')
 
     def test_owner_fin_of_a_connection_conntrack_does_not_know_is_reset_locally(self):
         # Its answer could not come back in, and the orphaned socket's retransmissions would be nobody's.
@@ -1205,7 +1215,7 @@ class ResolverTests(Offline):
         rules = chains(self.kernel.table)
         for rule in (rules['dns_output'][1], rules['dns_zone_output'][1]):
             self.assertIn('ip daddr != @lan_v4 fib daddr type local', rule)
-        self.assertEqual(rules['target_output'][3], 'ip daddr @lan_v4 counter accept')
+        self.assertEqual(rules['target_output'][2], 'ip daddr @lan_v4 counter accept')
 
     def test_status_shows_the_path_of_every_default_nameserver(self):
         self.resolver('nameserver 127.0.0.53\nnameserver fd00::53\n'

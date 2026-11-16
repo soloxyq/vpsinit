@@ -55,6 +55,7 @@ WAN_ADDRESS = '198.18.0.2'
 # A public resolver "from" whose port 53 somebody sends this host a datagram before the owner
 # asks it, the interface that datagram arrives by, and this host's address on it.
 SEEDED, SEED_UPLINK, SEED_LOCAL = '203.0.113.81', 'xq-seed-up', '198.18.1.2'
+SEEDED6, SEED_LOCAL6 = '2001:db8:5eed::81', '2001:db8:5eed::2'
 V6_LOOPBACK, ULA, V6_PUBLIC = '::1', 'fd00:77::53', '2001:db8::53'
 RESOLVERS = {STUB: 'stub', PUBLIC: 'public', REMOTE: None, LAN: 'lan',
              V6_LOOPBACK: 'v6-loopback', ULA: 'ula', V6_PUBLIC: 'v6-public'}
@@ -167,6 +168,8 @@ EXITS = f'''table inet xq_netns_check {{
   counter dns_wan {{ }}
   counter stranger {{ }}
   counter seeded {{ }}
+  counter seeded_tcp {{ }}
+  counter seeded6 {{ }}
   chain postrouting {{
     type filter hook postrouting priority 100; policy accept;
     udp dport 9999 oifname "xq-utun" counter name tun
@@ -174,7 +177,9 @@ EXITS = f'''table inet xq_netns_check {{
     ip daddr {REMOTE} meta l4proto {{ tcp, udp }} th dport 53 oifname "xq-utun" counter name dns_tun
     ip daddr {REMOTE} meta l4proto {{ tcp, udp }} th dport 53 oifname "test-wan" counter name dns_wan
     ip daddr {STRANGER} oifname "test-wan" counter name stranger
-    ip daddr {SEEDED} udp dport 53 oifname "{SEED_UPLINK}" counter name seeded
+    ip daddr {SEEDED} udp dport {{ 53, 443, 40000-49999 }} oifname "{SEED_UPLINK}" counter name seeded
+    ip daddr {SEEDED} tcp dport 443 tcp flags & (syn | rst) == syn oifname "{SEED_UPLINK}" counter name seeded_tcp
+    ip6 daddr {SEEDED6} udp dport 443 oifname "{SEED_UPLINK}" counter name seeded6
   }}
 }}
 '''
@@ -473,58 +478,92 @@ def packet(protocol, source, dest, payload):
     return header[:10] + struct.pack('>H', checksum(header)) + header[12:] + payload
 
 
-def check_preseeded_dns(scope, owner, core):
-    """An owner query that conntrack takes for a reply still does not leave by the uplink.
+def packet6(source, dest, sport, dport, data):
+    """An IPv6 UDP datagram."""
+    src, dst = socket.inet_pton(socket.AF_INET6, source), socket.inet_pton(socket.AF_INET6, dest)
+    udp = struct.pack('>HHHH', sport, dport, 8 + len(data), 0) + data
+    value = checksum(src + dst + struct.pack('>I3xB', len(udp), socket.IPPROTO_UDP) + udp) or 0xffff
+    return (struct.pack('>IHBB', 6 << 28, len(udp), socket.IPPROTO_UDP, 64) + src + dst
+            + udp[:6] + struct.pack('>H', value) + udp[8:])
 
-    A datagram from a resolver's port 53 to a port of this host leaves a
-    conntrack entry even when no socket has that port. An owner query sent from
-    that port while the entry lives is the reply direction of it, and replies
-    keep the host route and pass the guard. The core is absent here, so a query
-    that is sent towards the TUN ends in the blackhole.
+
+def check_preseeded_flows(scope, owner, core):
+    """An owner packet that conntrack takes for a reply still does not leave by the uplink.
+
+    A packet from outside to a port of this host leaves a conntrack entry even
+    when no socket has that port. What the owner then sends from that port to
+    that sender is the reply direction of the entry. The core is absent here,
+    so whatever is sent towards the TUN ends in the blackhole.
     """
     cast(scope, owner, core)
-    route = [line for line in scope['firewall']().splitlines() if 'th dport 53' in line and 'meta mark set' in line]
-    guard = [line for line in scope['firewall']().splitlines() if 'th dport 53 ip daddr' in line and 'counter drop' in line]
-    assert len(route) == 1 and len(guard) == 1, (route, guard)
 
-    def load(*without):
-        text = '\n'.join(line for line in scope['firewall']().splitlines() if line not in without) + '\n'
-        run([NFT, '-f', '-'], data=f'delete table inet {TABLE}\n' + text)
+    def left_by_the_uplink(counter, seed, flow, ask, stays=True):
+        os.write(fd, seed)
+        time.sleep(0.3)
+        known = ' '.join((run([CONNTRACK, '-L']) + run([CONNTRACK, '-L', '-f', 'ipv6'])).split())
+        assert (flow in known) == stays, f'conntrack entry of the packet from outside: expected {stays} for {flow}'
+        before = counted(counter)[0]
+        result = ask()
+        assert result['reply'] is None, result
+        return counted(counter)[0] - before
+
+    def outcomes(first):
+        udp = lambda port, to: packet(socket.IPPROTO_UDP, SEEDED, SEED_LOCAL, struct.pack('>HHHH', to, port, 8 + 4, 0) + b'seed')
+        syn = packet(socket.IPPROTO_TCP, SEEDED, SEED_LOCAL,
+                     struct.pack('>HHIIBBHHH', 443, first + 3, 1000, 0, 5 << 4, 0x02, 65535, 0, 0))
+        return {
+            'DNS over UDP': left_by_the_uplink(
+                'seeded', udp(first, 53), f'src={SEEDED} dst={SEED_LOCAL} sport=53 dport={first} ',
+                lambda: probe(owner, SEEDED, source=first)),
+            'UDP to port 443': left_by_the_uplink(
+                'seeded', udp(first + 1, 443), f'src={SEEDED} dst={SEED_LOCAL} sport=443 dport={first + 1} ',
+                lambda: probe(owner, SEEDED, port=443, source=first + 1)),
+            'UDP to port 443 over IPv6': left_by_the_uplink(
+                'seeded6', packet6(SEEDED6, SEED_LOCAL6, 443, first + 2, b'seed'),
+                f'src={SEEDED6} dst={SEED_LOCAL6} sport=443 dport={first + 2} ',
+                lambda: probe(owner, SEEDED6, port=443, source=first + 2)),
+            # The kernel answers a SYN for a closed port with a RST, and conntrack drops an entry
+            # whose only answer was a RST: a connection the owner then opens from that port is a
+            # new one of its own.
+            'TCP to port 443': left_by_the_uplink(
+                'seeded_tcp', syn, f'src={SEEDED} dst={SEED_LOCAL} sport=443 dport={first + 3} ',
+                lambda: probe(owner, SEEDED, port=443, tcp=True, source=first + 3), stays=False),
+        }
+
+    # The ruleset as it was before this leak was fixed: the reply direction kept
+    # the host route (target_route) and passed the guard (target_output).
+    bit = scope['ROUTE_BIT']
+    before_fix = scope['firewall']()
+    before_fix = before_fix.replace(
+        f'meta mark set meta mark | {bit:#x} return\n',
+        f'meta mark set meta mark | {bit:#x} return\n    ct direction reply meta mark set meta mark & {0xffffffff ^ bit:#x} return\n', 1)
+    before_fix = before_fix.replace(
+        'fib daddr type != local counter drop\n    ip daddr @lan_v4 counter accept',
+        'fib daddr type != local counter drop\n    ct direction reply counter accept\n    ip daddr @lan_v4 counter accept', 1)
+    assert before_fix.count('ct direction reply') == 4, before_fix   # from_tun, private_dns_access, and the two restored
 
     fd = os.open('/dev/net/tun', os.O_RDWR)
     try:
         fcntl.ioctl(fd, 0x400454ca, struct.pack('16sH22x', SEED_UPLINK.encode(), 0x1001))   # TUNSETIFF: IFF_TUN | IFF_NO_PI
         run([IP, 'address', 'add', SEED_LOCAL + '/32', 'dev', SEED_UPLINK])
+        run([IP, '-6', 'address', 'add', SEED_LOCAL6 + '/128', 'dev', SEED_UPLINK, 'nodad'])
         run([IP, 'link', 'set', SEED_UPLINK, 'up'])
         run([IP, 'route', 'add', SEEDED + '/32', 'dev', SEED_UPLINK])
-
-        def left_by_the_uplink(port):
-            os.write(fd, packet(socket.IPPROTO_UDP, SEEDED, SEED_LOCAL, struct.pack('>HHHH', 53, port, 8 + 4, 0) + b'seed'))
-            time.sleep(0.3)
-            seeded = [line for line in run([CONNTRACK, '-L', '-p', 'udp']).splitlines()
-                      if f'src={SEEDED} dst={SEED_LOCAL} sport=53 dport={port} ' in line]
-            assert len(seeded) == 1, f'the datagram left no conntrack entry: {seeded}'
-            before = counted('seeded')[0]
-            result = probe(owner, SEEDED, source=port)
-            assert result['reply'] is None and result['source'] == port, result
-            return counted('seeded')[0] - before
-
-        outcomes = {'both rules': left_by_the_uplink(45001)}
-        load(guard[0])
-        outcomes['only the route rule'] = left_by_the_uplink(45002)
-        load(route[0])
-        outcomes['only the guard rule'] = left_by_the_uplink(45003)
-        dropped = hits('target_output', 'drop')
-        load(route[0], guard[0])
-        outcomes['neither rule (control)'] = left_by_the_uplink(45004)
+        run([IP, '-6', 'route', 'add', SEEDED6 + '/128', 'dev', SEED_UPLINK])
+        found = outcomes(45000)
+        assert not any(found.values()), f'owner packets taken for replies left by the uplink: {found}'
+        # Control: restore the reply exception exactly as it was before the fix; the same
+        # owner UDP and IPv6 packets now leave by the uplink. This proves the check can fail.
+        run([NFT, '-f', '-'], data=f'delete table inet {TABLE}\n' + before_fix)
+        leaked = outcomes(45010)
     finally:
         os.close(fd)
     scope['install_firewall']({})
-    assert dropped >= 1, 'the guard rule did not meet the query'
-    assert outcomes == {'both rules': 0, 'only the route rule': 0, 'only the guard rule': 0, 'neither rule (control)': 1}, outcomes
-    print('PASS: an owner DNS query that conntrack takes for the reply of a flow somebody else began from the '
-          'resolver\'s port 53 does not leave by the uplink: it is sent towards the TUN, and the guard drops it '
-          'anywhere else (control without both rules: it left by the uplink)', flush=True)
+    assert leaked['UDP to port 443'] == 1 and leaked['UDP to port 443 over IPv6'] == 1, \
+        f'control did not reproduce the leak with the reply exception restored: {leaked}'
+    print('PASS: owner packets that conntrack takes for the reply of a flow somebody else began (DNS, other UDP, '
+          'UDP over IPv6, TCP) do not leave by the uplink; with the old reply exception restored the UDP and IPv6 '
+          'packets leave by it (control)', flush=True)
 
 
 def check_unsolicited_tun_packets(scope):
@@ -671,7 +710,7 @@ def exercise(scope, single):
             check_bystander(scope, uid, name)
     check_tun_acl()
     check_core_loss(scope, owner, me, bystanders[0][0])
-    check_preseeded_dns(scope, owner, me)
+    check_preseeded_flows(scope, owner, me)
     check_unsolicited_tun_packets(scope)
     check_shutdown(scope, owner, me)
     if single:

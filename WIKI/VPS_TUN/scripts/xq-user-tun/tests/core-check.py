@@ -508,8 +508,11 @@ def paused_core(process):
         process.send_signal(signal.SIGSTOP)
         deadline = time.monotonic() + 5
         while process.poll() is None:
-            # Consume this round's stop event so the next round must observe its own.
-            stopped = os.waitid(os.P_PID, process.pid, os.WSTOPPED | os.WNOHANG)
+            # Reported only once every thread has stopped; SIGCONT withdraws an unread report.
+            try:
+                stopped = os.waitid(os.P_PID, process.pid, os.WSTOPPED | os.WNOHANG)
+            except ChildProcessError:           # it exited after poll(); the next poll() collects it
+                continue
             if stopped is not None and stopped.si_code == os.CLD_STOPPED and stopped.si_status == signal.SIGSTOP:
                 break
             if time.monotonic() >= deadline:
@@ -525,14 +528,16 @@ def paused_core(process):
 def check_closed_sockets(scope, unit):
     """Answers that arrive after the owner closed its socket: the kernel's replies must not take the uplink.
 
-    A probe closes its socket right after sending, but the core may answer
+    A UDP probe closes its socket right after sending, but the core may answer
     first: such an answer is discarded with the socket and no error is sent.
     How many answers of a round come first depends on how the host schedules
     the probe and the core; when all of them do, there is no error to observe.
     The core is therefore held stopped while a round of UDP probes runs, so
     every UDP answer arrives after its socket is closed. The kernel rate-limits
     the resulting ICMP errors. In this host's tests six reached the TUN for
-    the public resolver.
+    the public resolver. A TCP probe to it is reset either way: by close()
+    when the answer is already there, otherwise when the answer reaches the
+    closed socket; the count does not tell the two apart.
     """
     before, icmp, reset = stray(), count('tun_icmp'), count('tun_rst')
     for address in (PUBLIC, STUB, HOST_LOCAL):

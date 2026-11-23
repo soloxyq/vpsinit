@@ -173,8 +173,9 @@ uid,dest,port=int(sys.argv[1]),sys.argv[2],int(sys.argv[3])
 s=socket.socket();s.settimeout(3);s.connect((dest,port));print('ready',flush=True);sys.stdin.read()
 '''
 
-# An owner program that keeps asking one resolver: twenty times a second, and again a
-# millisecond after a refusal, as a resolver that does not pause between its attempts does.
+# An owner program that keeps asking one resolver: twenty times a second after answers,
+# and a millisecond after a refusal or timeout. A query lost when the rules change
+# must time out quickly enough for the next one to sample the brief guard-only stage.
 # Told to end (SIGTERM), it says how its queries ended.
 ASKER = r'''
 import json,os,signal,socket,struct,sys,time
@@ -182,15 +183,16 @@ uid,dest,name=int(sys.argv[1]),sys.argv[2],sys.argv[3]
 ''' + IDENTITY + r'''
 query=(struct.pack('>HHHHHH',0x1234,0x0100,1,0,0,0)
        +b''.join(bytes([len(label)])+label.encode() for label in name.split('.'))+b'\0'+struct.pack('>HH',1,1))
-tally={'answered':0,'refused':0,'blocked':0,'other':0}
+tally={'answered':0,'refused':0,'blocked':0,'timed_out':0,'other':0}
 def report(*_):
     print(json.dumps(tally),flush=True);os._exit(0)
 signal.signal(signal.SIGTERM,report)
 print('ready',flush=True)
 while True:
-    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(0.5);pause=0.05
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(0.02);pause=0.05
     try: s.connect((dest,53));s.send(query);s.recv(1500);tally['answered']+=1
     except ConnectionRefusedError: tally['refused']+=1;pause=0.001
+    except socket.timeout: tally['timed_out']+=1;pause=0.001
     except PermissionError: tally['blocked']+=1
     except OSError: tally['other']+=1
     s.close();time.sleep(pause)

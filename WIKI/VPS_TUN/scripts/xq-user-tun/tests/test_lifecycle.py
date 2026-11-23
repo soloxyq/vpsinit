@@ -849,16 +849,44 @@ class CleanupTests(Offline):
         self.call('off')
         self.assert_clean()
 
-    def test_a_delete_that_ends_at_an_entry_already_gone_is_repeated(self):
-        # conntrack-tools before 1.4.8 stops there, and the rest of the mappings is still listed.
+    def test_deletes_continue_while_mappings_expire_and_accept_an_empty_final_listing(self):
         self.healthy_on()
-        for _ in range(4):
+        # Eight DNS mappings, including the one from healthy_on. Each delete removes one,
+        # then stops with exit 1 when the next expires. Even the fourth delete exits 1.
+        for _ in range(7):
             self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
-        self.kernel.vanishing = 1
+        self.kernel.vanishing = 4
         self.call('off')
         self.assertEqual(self.kernel.vanishing, 0, 'the scenario did not happen')
         self.assert_clean()
         self.assertEqual(self.kernel.flows, [(OWNER_MARK, 0)], 'only the DNS mappings are deleted')
+
+    def test_progress_resets_the_count_of_stalled_deletes(self):
+        self.healthy_on()
+        for _ in range(2):
+            self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+        self.kernel.vanishing = 1   # the first delete allowed through leaves one DNS mapping
+        refused = iter([True, True, False, True, True, False])
+
+        def intermittent(argv):
+            if argv[:2] == ('conntrack', '-D'):
+                self.kernel.delete_refused = next(refused)
+
+        self.kernel.before = intermittent
+        self.call('off')
+        self.assert_clean()
+
+    def test_deletes_that_make_progress_still_have_a_total_limit(self):
+        self.healthy_on()
+        limit = 50
+        for _ in range(2 * limit):
+            self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+        self.kernel.vanishing = limit
+        with self.assertRaisesRegex(RuntimeError, '仍有 1 条'):
+            self.call('off')
+        self.assertIsNotNone(self.kernel.table, 'the guard stays while a mapping remains')
+        self.call('off')
+        self.assert_clean()
 
     def test_a_delete_that_keeps_failing_is_given_up_with_the_guard_kept(self):
         self.healthy_on()
@@ -868,7 +896,7 @@ class CleanupTests(Offline):
         self.assertIsInstance(error, RuntimeError)
         self.assertIn('Operation not permitted', str(error))
         deletes = [call for call in self.kernel.calls[calls:] if call[:2] == ('conntrack', '-D')]
-        self.assertEqual(len(deletes), self.g['DELETE_ATTEMPTS'])
+        self.assertEqual(len(deletes), 3)
         self.assertIsNotNone(self.kernel.table, 'the guard stays while a mapping remains')
         self.kernel.delete_refused = False
         self.call('off')

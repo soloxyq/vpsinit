@@ -937,27 +937,34 @@ def dns_connections():
 
 # conntrack-tools before 1.4.8 ends a delete at the first entry that has gone
 # since its dump (it expired, or its connection was reset) and leaves the rest.
-DELETE_ATTEMPTS = 3
+DELETE_STALL_LIMIT = 3
+DELETE_ATTEMPTS = 50
 
 
 def delete_dns_connections():
     # Delete only this feature's DNS translations, in every zone (entries from
     # before the dedicated zone included). Other connections and unrelated
-    # users' conntrack state are never flushed. Success is what a second
-    # listing shows, not what the delete printed. The delete's exit status
-    # only says whether to try again: one that failed with entries left has
-    # stopped early. One that succeeded removed every entry it saw, so what is
-    # listed after it came later; both callers load the inactive rules first,
-    # under which no owner query adds a translation.
-    if not dns_connections():
+    # users' conntrack state are never flushed. Verify each delete by listing
+    # again. An expiry burst can interrupt many deletes, each leaving fewer
+    # entries. Allow a few transient failures without progress as well.
+    left = len(dns_connections())
+    if not left:
         return
+    stalled = 0
     for _ in range(DELETE_ATTEMPTS):
+        before = left
         result = run([CONNTRACK, '-D', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
         left = len(dns_connections())
-        if not left or result.returncode == 0:
+        if not left:
+            return
+        # A successful delete removed every entry it saw. Anything left came
+        # later, even though both callers loaded the inactive rules first.
+        if result.returncode == 0:
             break
-    if left:
-        raise RuntimeError(f'清理本功能 DNS conntrack 失败，仍有 {left} 条；guard 保留：' + result.stderr.strip())
+        stalled = 0 if left < before else stalled + 1
+        if stalled >= DELETE_STALL_LIMIT:
+            break
+    raise RuntimeError(f'清理本功能 DNS conntrack 失败，仍有 {left} 条；guard 保留：' + result.stderr.strip())
 
 
 def remove_routes():

@@ -6,7 +6,7 @@
 
 **2026-11-15：** 当前版本在修复公网 DNS 直连泄漏和配置修改后不重载（提交 `51eb45c`）之后，又去掉了回复方向保持宿主路由、放行出网的例外：被代理用户发往公网的包在原始方向和回复方向都进入 TUN（IPv4）或被出口守卫丢弃（IPv6），关闭了外部预置一条反向 conntrack 记录就把非 DNS 的公网 UDP、IPv6、TCP 引到物理出口的通道（代价见下方行为说明）。两处都已部署到 Mico-system：第二批通过[原地升级](../xq-user-proxy/README.md#2026-11-15-原地升级为便携包版本)，第三批通过替换控制器并重载规则，均不改动核心配置、不重启核心。用本包的安装器在一台新机器上完整安装，仍未做过。
 
-**2026-11-22：** 修正 `xq_proxyon` 清理旧 DNS 映射时的竞态（见下方行为约定），并让 DNS 映射的删除在 conntrack 中途停下时重试。生成的规则逐字不变；Mico-system 当天换上这一版控制器，没有重载规则，没有重启核心。
+Mico-system 在 2026-11-22 换上了修复 `xq_proxyon` 清理竞态的控制器（`09ed7b4`），沿用已加载的规则和运行中的核心。便携包随后延长了映射集中到期时的删除重试，详见下方行为约定。
 
 ## 安装
 
@@ -77,7 +77,7 @@ bash xq-user-tun/install.sh --proxy-ip 192.168.5.34 --proxy-port 4066
 - 专用 DNS 入口是特权端口，普通用户在核心停止期间也无法监听；只有核心身份（root）发出的回复才会交给 owner（2026-11-15）。前提是 `net.ipv4.ip_unprivileged_port_start` 大于 40；root 和持有 `CAP_NET_BIND_SERVICE` 的程序属于受信任范围。
 - 核心停止期间，owner 发往本机地址的 DNS 和发往公网 DNS 的 UDP 查询立即失败；发往公网 DNS 的 TCP 连接没有应答，等到程序自己的超时。都不会回退到系统 DNS 或物理出口。
 - `xq_proxyoff` 先确认 conntrack 可用再动手，否则拒绝并保持原状；中途失败后重复执行即可继续清理。`xq_proxystatus` 在开关 OFF 但仍有残留时返回非零并列出残留。
-- DNS 映射是否删净，只看删除之后重新列出的结果。conntrack-tools 1.4.8 之前的版本遇到列出之后已自行消失的条目会报错退出、留下其余条目；删除报错而映射还在时，控制器再删一次，最多 3 次（2026-11-22）。
+- 控制器在每次删除后重新列出 DNS 映射，列表为空即清理完成。conntrack-tools 1.4.8 之前的版本遇到刚到期的条目会中途退出。删除报错后，只要剩余条数还在减少，控制器就继续尝试。连续 3 次条数没有减少，或累计删除 50 次仍有剩余，都会报错并保留防直连规则。删除命令成功但复查仍有映射时，控制器立即报错并保留规则。
 - 防直连依赖自有的 nftables 表。`nft flush ruleset`、停止 `nftables.service`，或加载含 `flush ruleset` 的 `/etc/nftables.conf`（Debian/Ubuntu 默认如此）都会删除它，此后 owner 的新连接和 DNS 直连；`xq_proxystatus` 会明确报告，执行 `xq_proxyon` 重建。详见[指南第 6 节](../../VPS-用户级TUN一键部署.md#nftables-规则集被清空时)。
 
 编辑或打包本目录不会更新任何正在运行的服务。
@@ -104,4 +104,4 @@ HOSTNS=$(readlink /proc/self/ns/net)
 unshare --user --map-root-user --net env XQ_HOST_NETNS="$HOSTNS" python3 -I tests/netns-check.py
 ```
 
-此时命名空间内只有一个身份，各角色通过规则中的 UID 常量轮流扮演，需要两个用户同时存在的检查会标为 SKIPPED；它不能代替上面的 root 运行。2026-11-15 的版本在 Mico-system（Ubuntu 22.04，内核 6.8）上执行了全部四项：离线 15 + 57 项、rootless 运行、root 下的三身份运行、`core-check.py` 连续 6 次，全部通过，详见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。2026-11-22 的版本在同一台机器上再次执行全部四项：离线 15 + 64 项、rootless 运行、root 下的三身份运行、`core-check.py` 连续 6 次，全部通过。
+此时命名空间内只有一个身份，各角色通过规则中的 UID 常量轮流扮演，需要两个用户同时存在的检查会标为 SKIPPED；它不能代替上面的 root 运行。2026-11-15 的版本在 Mico-system（Ubuntu 22.04，内核 6.8）上执行了全部四项：离线 15 + 57 项、rootless 运行、root 下的三身份运行、`core-check.py` 连续 6 次，全部通过。2026-11-22 第四批修改的运行记录列出了离线 15 + 64 项、rootless 运行、root 下的三身份运行和 `core-check.py` 连续 6 次通过。随后调整删除重试与测试采样的验证结果见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。

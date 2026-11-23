@@ -501,22 +501,55 @@ def check_owner_paths(scope):
           'nothing of it on the uplink; the classifier says the same', flush=True)
 
 
-def check_closed_sockets(scope):
-    """Answers that arrive after the owner closed its socket: the kernel's replies must not take the uplink."""
+@contextlib.contextmanager
+def paused_core(process):
+    """Run probes only after all threads of the test core have stopped."""
+    try:
+        process.send_signal(signal.SIGSTOP)
+        deadline = time.monotonic() + 5
+        while process.poll() is None:
+            # Consume this round's stop event so the next round must observe its own.
+            stopped = os.waitid(os.P_PID, process.pid, os.WSTOPPED | os.WNOHANG)
+            if stopped is not None and stopped.si_code == os.CLD_STOPPED and stopped.si_status == signal.SIGSTOP:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError('test core did not stop within 5 seconds of SIGSTOP')
+            time.sleep(0.01)
+        else:
+            raise RuntimeError(f'test core exited before confirming SIGSTOP (return code {process.returncode})')
+        yield
+    finally:
+        process.send_signal(signal.SIGCONT)
+
+
+def check_closed_sockets(scope, unit):
+    """Answers that arrive after the owner closed its socket: the kernel's replies must not take the uplink.
+
+    A probe closes its socket right after sending, but the core may answer
+    first: such an answer is discarded with the socket and no error is sent.
+    How many answers of a round come first depends on how the host schedules
+    the probe and the core; when all of them do, there is no error to observe.
+    The core is therefore held stopped while a round of UDP probes runs, so
+    every UDP answer arrives after its socket is closed. The kernel rate-limits
+    the resulting ICMP errors. In this host's tests six reached the TUN for
+    the public resolver.
+    """
     before, icmp, reset = stray(), count('tun_icmp'), count('tun_rst')
     for address in (PUBLIC, STUB, HOST_LOCAL):
-        for mode in ('udp-giveup', 'tcp-giveup'):
+        with paused_core(unit.process):
             for _ in range(20):
-                probe(OWNER, address, mode)
+                probe(OWNER, address, 'udp-giveup')
+        for _ in range(20):
+            probe(OWNER, address, 'tcp-giveup')
     time.sleep(3)                               # retransmissions of the unanswered side
     late_icmp, late_reset = count('tun_icmp') - icmp, count('tun_rst') - reset
     assert stray() == before, f'{stray() - before} packets for closed owner sockets left by the uplink'
     assert late_icmp and late_reset, ('the scenario did not happen: the kernel sent no reply for a closed socket '
                                       f'into the TUN (ICMP {late_icmp}, RST {late_reset})')
     owner_dns_works(scope, 'after the abandoned queries')
-    print(f'PASS: 120 owner queries abandoned before their answer (UDP and TCP; public resolver, stub, host '
-          f'address): the kernel\'s replies for the closed sockets ({late_icmp} ICMP errors, {late_reset} TCP '
-          'resets) followed the flows into the TUN, none left by the uplink', flush=True)
+    print(f'PASS: 120 owner queries sent then closed (UDP and TCP; public resolver, stub, host address): '
+          f'{late_icmp} ICMP errors and {late_reset} TCP resets entered the TUN, '
+          'no stray packets left by the uplink', flush=True)
 
 
 def check_forgotten_connection(scope):
@@ -877,7 +910,7 @@ def exercise(scope, unit):
     run([NFT, '-f', '-'], data=COUNTERS)
     check_fresh_on(scope, unit)
     check_owner_paths(scope)
-    check_closed_sockets(scope)
+    check_closed_sockets(scope, unit)
     check_forgotten_connection(scope)
     check_preseeded_flows(scope)
     check_bystanders(scope)

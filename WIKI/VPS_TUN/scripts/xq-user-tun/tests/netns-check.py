@@ -20,7 +20,8 @@ reported as skipped, and a process without CAP_NET_BIND_SERVICE stands in for
 No service and no controller lifecycle call; no host route, rule, sysctl or DNS
 change. Every controller path is redirected to a temporary directory, and the
 controller may only run ip, nft and conntrack, which act on this namespace. The
-one sysctl written, ip_unprivileged_port_start, is this namespace's own.
+sysctls written are this namespace's own: ip_unprivileged_port_start, and
+rp_filter and disable_ipv6 of the xq-utun that exists only here.
 """
 import fcntl
 import ipaddress
@@ -34,6 +35,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 BASE = Path(__file__).resolve().parents[1]
@@ -617,6 +619,59 @@ def check_unsolicited_tun_packets(scope):
           'and answered by nothing', flush=True)
 
 
+def check_attach_waits_for_the_link(scope):
+    """ExecStartPost's own step on a real TUN: the route is asked for once the link is up.
+
+    The core gives its TUN the address before it sets the link up, and the
+    kernel refuses a route through a device that is not up. Here the test holds
+    the TUN, gives it the address and sets it up half a second after
+    attach_routes() has begun to wait.
+    """
+    config = json.loads((BASE / 'sing-box.template.json').read_text())
+    config['outbounds'][0].update(server=scope['HOST'], server_port=scope['PORT'])
+    scope['CONFIG'].write_text(json.dumps(config))
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    scope['install_firewall']({'owner': 'xq-user-proxy-v1', 'boot_id': boot, 'uid': scope['UID']})
+    scope['install_routes']()
+    trusted, outcome, fd = scope['trusted'], [], None
+
+    def attach():
+        try:
+            scope['attach_routes']()
+            outcome.append(None)
+        except (RuntimeError, OSError, ValueError) as error:
+            outcome.append(str(error))
+    try:
+        scope['trusted'] = lambda path, directory=False: None    # the test directory is not a root-owned path
+        scope['ENABLED'].write_text('on\n')
+        fd = os.open('/dev/net/tun', os.O_RDWR)
+        fcntl.ioctl(fd, 0x400454ca, struct.pack('16sH22x', b'xq-utun', 0x1001))   # TUNSETIFF: IFF_TUN | IFF_NO_PI
+        run([IP, 'address', 'add', scope['ADDRESS'], 'dev', 'xq-utun'])
+        refused = subprocess.run(scope['route_command'](scope['TUN_ROUTE'], 'replace'), capture_output=True)
+        assert refused.returncode and not scope['has_route'](scope['TUN_ROUTE']), 'a route through the TUN was taken while it is down'
+        worker, started = threading.Thread(target=attach, daemon=True), time.monotonic()
+        worker.start()
+        time.sleep(0.5)
+        run([IP, 'link', 'set', 'xq-utun', 'up'])
+        worker.join(timeout=15)
+        waited = time.monotonic() - started
+        assert outcome == [None], f'attach_routes() did not wait for the link: {outcome}'
+        assert scope['has_route'](scope['TUN_ROUTE']) and waited >= 0.5, (waited, scope['routes']('-4'))
+    finally:
+        if fd is not None:
+            os.close(fd)
+        scope['trusted'] = trusted
+        scope['ENABLED'].unlink(missing_ok=True)
+    for _ in range(50):                                        # the TUN goes with its file descriptor
+        if subprocess.run([IP, 'link', 'show', 'xq-utun'], capture_output=True).returncode:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError('the TUN of this check outlived its file descriptor')
+    print('PASS: while the TUN has its address but is not up the kernel refuses a route through it; '
+          f'attach_routes() waits and gives the route once the link is up ({waited:.2f} s)', flush=True)
+
+
 def check_shutdown(scope, owner, core):
     """OFF's own steps in OFF's order, and what status would find before and after."""
     cast(scope, owner, core)
@@ -715,6 +770,7 @@ def exercise(scope, single):
     check_core_loss(scope, owner, me, bystanders[0][0])
     check_preseeded_flows(scope, owner, me)
     check_unsolicited_tun_packets(scope)
+    check_attach_waits_for_the_link(scope)
     check_shutdown(scope, owner, me)
     if single:
         print('SKIPPED (needs a second UID at the same time; run as root): borrowing an owner conntrack tuple, '

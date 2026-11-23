@@ -75,6 +75,11 @@ DELETE_TABLE = f'delete table inet {TABLE}\n'
 METAINFO = {'metainfo': {'version': '1.0.9', 'release_name': 'Old Doc Yak #3', 'json_schema_version': 1}}
 JOB_FAILED = (f'Job for {SERVICE} failed because the control process exited with error code.\n'
               f'See "systemctl status {SERVICE}" and "journalctl -xeu {SERVICE}" for details.\n')
+# systemd 249 once a unit has been started StartLimitBurst= times within StartLimitIntervalSec=.
+START_LIMIT_HIT = (f'Job for {SERVICE} failed because start of the service was attempted too often.\n'
+                   f'See "systemctl status {SERVICE}" and "journalctl -xeu {SERVICE}" for details.\n'
+                   f'To force a start use "systemctl reset-failed {SERVICE}"\n'
+                   f'followed by "systemctl start {SERVICE}" again.\n')
 # What main() turns into "exit 1"; anything else is a bug in the controller.
 REFUSALS = (RuntimeError, OSError, ValueError, KeyError)
 LEGACY_PORT = str(1000 + 53)
@@ -111,6 +116,21 @@ def chains(text):
         elif line and current is not None:
             current.append(line)
     return result
+
+
+def emptied(text):
+    """A guard text as `nft flush table` leaves it: its sets and chains stay, every rule goes."""
+    kept, chain = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('chain '):
+            chain = True
+        elif stripped == '}':
+            chain = False
+        elif chain and not stripped.startswith('type '):
+            continue
+        kept.append(line)
+    return '\n'.join(kept) + '\n'
 
 
 class Crash(BaseException):
@@ -283,6 +303,12 @@ class FakeKernel:
         self.links = {'lo', 'eth0'}
         self.addresses = {'lo': [('127.0.0.1', 8)], 'eth0': [('203.0.113.77', 24)]}
         self.core = False                      # unit active; the TUN exists exactly as long
+        self.clock = 0.0                       # seconds the controller has paused: the only time that passes
+        self.up_delay = 0                      # the core sets its new TUN up this long after the address; None: never
+        self.up_at = None                      # the clock reading from which the TUN is up
+        self.carrier = True                    # the core holds the TUN's queue; False: UP without LOWER_UP
+        self.tun_addresses = [('172.30.254.1', 32)]   # what the core gives its TUN
+        self.journal = []                      # why ExecStartPre or ExecStartPost failed, as systemd logs it
         self.flows = []                        # conntrack entries as (mark, zone)
         self.conntrack_error = None            # (exit code, stderr) for every conntrack call
         self.vanishing = 0                     # deletes that meet an entry gone since their dump
@@ -294,6 +320,10 @@ class FakeKernel:
         self.prepare = self.attach = None      # the unit's ExecStartPre and ExecStartPost
         self.marker = None                     # the unit's ConditionPathExists
         self.starting = None                   # called between ExecStartPre and the core's own start
+        # StartLimitBurst=5 in StartLimitIntervalSec=60. The clock stands still here: every start since
+        # the last reset-failed is within the interval. A start skipped by its condition does not count.
+        self.start_burst, self.starts = 5, 0
+        self.main_extra = []                   # further routes in the host's main table
 
     def run(self, args, *, check=True, data=None, timeout=30):
         if args[0] not in TOOLS:
@@ -354,12 +384,36 @@ class FakeKernel:
             items += HOST_ROUTES[family]
         return [numeric(item) for item in items] if as_numbers else items
 
+    def tun_up(self):
+        return TUN in self.links and self.up_at is not None and self.clock >= self.up_at
+
+    def link_flags(self, name):
+        """As ip prints them: UP once the link is up, LOWER_UP while it is up with a carrier."""
+        if name == TUN:
+            if self.tun_up() and not self.carrier:
+                return ['NO-CARRIER', 'POINTOPOINT', 'MULTICAST', 'NOARP', 'UP']
+            return ['POINTOPOINT', 'MULTICAST', 'NOARP'] + (['UP', 'LOWER_UP'] if self.tun_up() else [])
+        return (['LOOPBACK'] if name == 'lo' else ['BROADCAST', 'MULTICAST']) + ['UP', 'LOWER_UP']
+
+    def tun_listing(self):
+        """`ip -j -4 address show dev xq-utun` as iproute2 5.15 prints it, before and after the link is up."""
+        up = self.tun_up()
+        return [{'ifindex': 7, 'ifname': TUN, 'flags': self.link_flags(TUN), 'mtu': 1280,
+                 'qdisc': 'fq_codel' if up else 'noop', 'operstate': 'UNKNOWN' if up and self.carrier else 'DOWN',
+                 'group': 'default', 'txqlen': 500,
+                 'addr_info': [{'family': 'inet', 'local': local, 'prefixlen': length, 'scope': 'global',
+                                'label': TUN, 'valid_life_time': 4294967295, 'preferred_life_time': 4294967295}
+                               for local, length in self.tun_addresses]}] if self.tun_addresses else []
+
     def route_write(self, family, action, shape):
         route = route_of(shape)
         if route['dev'] and route['dev'] not in self.links:
             return 1, '', self.say(f'Cannot find device "{route["dev"]}"\n')
         if 'route' in self.denied:
             return 2, '', self.say('RTNETLINK answers: Operation not permitted\n')
+        if action == 'replace' and route['dev'] == TUN and not self.tun_up():
+            # The kernel tests IFF_UP of the device; a missing carrier would not matter.
+            return 2, '', self.say('Error: Device for nexthop is not up.\n')
         table = self.routes[family]
         if action == 'replace':
             table[:] = [r for r in table if (r['dst'], r['metric']) != (route['dst'], route['metric'])] + [route]
@@ -396,22 +450,19 @@ class FakeKernel:
         if a[:1] == ('-j',) and a[1:2] in (('-4',), ('-6',)) and a[2:] == ('route', 'show', 'table', 'all'):
             return 0, json.dumps(self.route_dump(a[1], False)) + '\n', ''
         if a == ('-j', '-4', 'route', 'show', 'table', 'main'):
-            return 0, json.dumps(HOST_ROUTES['-4'][:2]) + '\n', ''
+            return 0, json.dumps(HOST_ROUTES['-4'][:2] + self.main_extra) + '\n', ''
         if a == ('-j', '-4', 'route', 'get', UPSTREAM[0]):
             return 0, json.dumps([{'dst': UPSTREAM[0], 'gateway': '203.0.113.1', 'dev': 'eth0',
                                    'prefsrc': '203.0.113.77', 'flags': [], 'uid': 0, 'cache': []}]) + '\n', ''
         if a == ('-j', '-4', 'address', 'show'):
-            found = dict(self.addresses, **({TUN: [('172.30.254.1', 32)]} if TUN in self.links else {}))
-            return 0, json.dumps([{'ifname': name, 'addr_info': [
+            found = dict(self.addresses, **({TUN: self.tun_addresses} if TUN in self.links else {}))
+            return 0, json.dumps([{'ifname': name, 'flags': self.link_flags(name), 'addr_info': [
                 {'family': 'inet', 'local': local, 'prefixlen': length} for local, length in items]}
-                for name, items in found.items()]) + '\n', ''
+                for name, items in found.items() if items]) + '\n', ''
         if a == ('link', 'show', TUN):
-            return (0, f'7: {TUN}: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280\n', '') if TUN in self.links else missing
+            return (0, f'7: {TUN}: <{",".join(self.link_flags(TUN))}> mtu 1280\n', '') if TUN in self.links else missing
         if a == ('-j', '-4', 'address', 'show', 'dev', TUN):
-            if TUN not in self.links:
-                return missing
-            return 0, json.dumps([{'ifname': TUN, 'addr_info': [
-                {'family': 'inet', 'local': '172.30.254.1', 'prefixlen': 32}]}]) + '\n', ''
+            return (0, json.dumps(self.tun_listing()) + '\n', '') if TUN in self.links else missing
         if (len(a) > 5 and a[0] in FAMILIES and a[1] == 'route' and a[2] in ('replace', 'del')
                 and a[-2:] == ('table', RTABLE) and a[3:-2] in OWNED_ROUTES[a[0]]):
             return self.route_write(a[0], a[2], a[3:-2])
@@ -526,6 +577,8 @@ class FakeKernel:
     def bring_up(self):
         self.core = True
         self.links.add(TUN)
+        # sing-box gives its TUN the address first and sets the link up afterwards.
+        self.up_at = None if self.up_delay is None else self.clock + self.up_delay
         for path, value in ((f'/proc/sys/net/ipv4/conf/{TUN}/rp_filter', '0\n'),
                             (f'/proc/sys/net/ipv6/conf/{TUN}/disable_ipv6', '0\n')):
             target = pathlib.Path(self.box.inside(path))
@@ -552,24 +605,30 @@ class FakeKernel:
         if a == ('is-active', '--quiet', 'nscd.service'):
             return (0 if self.nscd else 4), '', ''
         if a == ('reset-failed', SERVICE):
+            self.starts = 0
             return 0, '', ''
         if a == ('start', SERVICE):
             # A failed ConditionPathExists skips the start and still reports success.
             if self.core or not self.marker.exists():
                 return 0, '', ''
+            if self.starts >= self.start_burst:
+                return 1, '', self.say(START_LIMIT_HIT)
+            self.starts += 1
             if self.start_error:
                 return 1, '', self.say(JOB_FAILED)
             try:
                 self.prepare()              # ExecStartPre=/usr/local/sbin/xq-user-proxyctl prepare
-            except (Crash, *REFUSALS):
+            except (Crash, *REFUSALS) as error:
+                self.journal.append(f'ExecStartPre: {error}')
                 return 1, '', self.say(JOB_FAILED)
             if self.starting:
                 self.starting()
             self.bring_up()                 # the core reads its configuration here
             try:
                 self.attach()               # ExecStartPost=/usr/local/sbin/xq-user-proxyctl attach
-            except (Crash, *REFUSALS):
+            except (Crash, *REFUSALS) as error:
                 # systemd stops the unit; attach's own reason goes to the journal.
+                self.journal.append(f'ExecStartPost: {error}')
                 self.take_down()
                 return 1, '', self.say(JOB_FAILED)
             return 0, '', ''
@@ -634,9 +693,13 @@ class Offline(unittest.TestCase):
                 raise KeyError(name)
             return SimpleNamespace(pw_uid=OWNER.uid, pw_gid=OWNER.gid)
 
+        def sleep(seconds):
+            self.sleeps.append(seconds)
+            self.kernel.clock += seconds
+
         g.update(Path=lambda value: BoxPath(self.box.inside(value)), os=BoxOS(self.box),
                  socket=self.sockets, subprocess=NoHostAccess('subprocess'),
-                 time=SimpleNamespace(time=lambda: 1763200000.0, sleep=self.sleeps.append),
+                 time=SimpleNamespace(time=lambda: 1763200000.0, sleep=sleep),
                  pwd=SimpleNamespace(getpwnam=account), trusted=trusted,
                  run=self.kernel.run, atomic=atomic)
         self.kernel.prepare, self.kernel.attach, self.kernel.marker = g['prepare'], g['attach'], g['ENABLED']
@@ -921,6 +984,59 @@ class CleanupTests(Offline):
             self.call('off')
         self.assertEqual(attempts, 4, 'one mapping expired, then three deletes made no progress')
 
+    def test_more_mappings_after_a_delete_are_no_progress(self):
+        self.healthy_on()
+        self.kernel.delete_refused = True
+        attempts = 0
+
+        def grow_on_first_delete(argv):
+            nonlocal attempts
+            if argv[:2] == ('conntrack', '-D'):
+                attempts += 1
+                if attempts == 1:
+                    self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+        self.kernel.before = grow_on_first_delete
+        with self.assertRaisesRegex(RuntimeError, '仍有 2 条'):
+            self.call('off')
+        self.assertEqual(attempts, 3, 'a delete that leaves more mappings than it found made no progress')
+        self.assertIsNotNone(self.kernel.table, 'the guard stays while a mapping remains')
+
+    def test_owner_queries_do_not_defeat_off(self):
+        """As for on(): a resolver that does not pause asks again before every step, or while the rules are replaced.
+
+        Either way off() must stop the translating before it deletes the translations: otherwise it
+        fails, or it succeeds and leaves translations behind (both measured on a real kernel).
+        """
+        for asking in ('before every step', 'while nft runs'):
+            with self.subTest(owner_asks=asking):
+                self.build()
+                self.healthy_on()
+                kernel = self.kernel
+                kernel.before = lambda argv: (asking == 'before every step' or argv[0] == 'nft') and kernel.owner_asks()
+                self.call('off')
+                kernel.before = None
+                self.assert_clean()
+
+    def test_off_finishes_when_the_guard_is_flushed_while_it_runs(self):
+        self.healthy_on()
+        kernel = self.kernel
+        # nftables.service reloads (nft flush ruleset) while off() stops the core.
+        kernel.before = lambda argv: argv[:2] == ('systemctl', 'stop') and setattr(kernel, 'table', None)
+        self.call('off')
+        kernel.before = None
+        self.assert_clean()
+
+    def test_off_stopped_at_its_first_rule_load_records_disabling(self):
+        self.healthy_on()
+        self.injector.when(lambda step: step == ('nft', '-f', '-'), 'fail')
+        self.assertIsInstance(self.attempt('off'), RuntimeError)
+        self.assertEqual(self.phase(), 'disabling')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertIn('disabling', text)
+        self.call('off')
+        self.assert_clean()
+
     def test_normal_boot_off_is_a_no_op(self):
         _, text = self.call('off')
         self.assertIn('已关闭', text)
@@ -972,6 +1088,21 @@ class PrerequisiteTests(Offline):
         self.write('/usr/sbin/conntrack', '#!/bin/sh\nexit 99\n', 0o755)
         self.call('off')
         self.assert_clean()
+
+    def test_nscd_stops_a_fresh_and_a_healing_on_before_any_change(self):
+        for nscd in ('unit', 'socket'):
+            for kind in ('fresh', 'healing'):
+                with self.subTest(nscd=nscd, on=kind):
+                    self.build()
+                    if kind == 'healing':
+                        self.healthy_on()
+                        self.kernel.take_down()                # check() fails: on() would start the core again
+                    if nscd == 'unit':
+                        self.kernel.nscd = True
+                    else:
+                        os.makedirs(self.box.inside('/run/nscd'))
+                        self.write('/run/nscd/socket', '')
+                    self.assert_refused_unchanged('on', 'nscd')
 
     def test_fresh_on_without_conntrack_changes_nothing(self):
         for how in ('missing', 'not executable', 'cannot list'):
@@ -1089,6 +1220,54 @@ class StatusTests(Offline):
         self.assertEqual(code, 1)
         self.assertIn('直连', text)
         self.assertNotIn('guard 和黑洞路由保留', text)
+
+    def test_a_stopped_core_is_named_as_stopped(self):
+        self.healthy_on()
+        self.kernel.take_down()                                # the core died; its TUN and TUN route went with it
+        self.kernel.routes['-4'].remove(route_of(BLACKHOLE))    # the rule digest says nothing about this route
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (str(caught.exception), text):
+            self.assertIn('核心未运行', message)
+            self.assertIn('已加载的防直连规则与记录一致', message)
+            self.assertIn('请执行 xq_proxyon 恢复', message)
+            self.assertNotIn('黑洞路由保留', message)
+
+    def test_an_altered_guard_is_not_called_effective(self):
+        self.healthy_on()
+        self.assertIn('counter drop', self.kernel.table)
+        self.kernel.load_table(self.kernel.table.replace('counter drop', 'counter accept'))
+        with self.assertRaisesRegex(RuntimeError, '与记录不一致，无法确认'):
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertNotIn('防直连仍然有效', text)
+        self.call('on')
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.call('check')
+
+    def test_each_route_of_the_feature_is_required_and_restored_by_on(self):
+        foreign_metric = {'kind': 'blackhole', 'dst': 'default', 'dev': None, 'metric': 5}
+        for label, family, shape, extra in (('IPv4 黑洞回退', '-4', BLACKHOLE, None),
+                                             ('IPv4 黑洞回退', '-4', BLACKHOLE, foreign_metric),
+                                             ('IPv6 阻断路由', '-6', UNREACHABLE, None),
+                                             ('TUN 专用默认路由', '-4', TUN_ROUTE, None)):
+            with self.subTest(route=label, with_other_metric=bool(extra)):
+                self.build()
+                self.healthy_on()
+                self.kernel.routes[family].remove(route_of(shape))
+                if extra:
+                    self.kernel.routes[family].append(dict(extra))
+                with self.assertRaisesRegex(RuntimeError, label + '缺失'):
+                    self.call('check')
+                self.assertEqual(self.status()[0], 1)
+                calls = len(self.kernel.calls)
+                self.call('on')
+                self.assertEqual([c for c in self.kernel.calls[calls:] if c[:2] in (('systemctl', 'start'), ('systemctl', 'stop'))],
+                                 [], 'the running core is kept')
+                self.call('check')
 
     def test_status_and_check_never_change_the_host(self):
         def observe():
@@ -1595,9 +1774,16 @@ class LoadedConfigurationTests(Offline):
         kernel = self.kernel
         kernel.take_down()                                     # the interface and its routes are gone...
         kernel.core = True                                     # ...while the unit still counts as active
-        with self.assertRaisesRegex(RuntimeError, 'TUN'):
+        kernel.routes['-4'].remove(route_of(BLACKHOLE))
+        with self.assertRaises(RuntimeError) as caught:
             self.call('check')
-        self.assertEqual(self.status()[0], 1)
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (str(caught.exception), text):
+            self.assertIn(f'TUN {TUN} 不存在', message)
+            self.assertIn('已加载的防直连规则与记录一致', message)
+            self.assertIn('请执行 xq_proxyon 恢复', message)
+            self.assertNotIn('黑洞路由保留', message)
         calls = len(kernel.calls)
         self.call('on')
         self.assertEqual(self.restarts(calls), ['stop', 'start'])
@@ -1683,6 +1869,102 @@ class LoadedConfigurationTests(Offline):
         self.call('off')
         self.assert_clean()
 
+    def test_on_starts_a_core_whose_start_limit_was_hit(self):
+        """systemd refuses every start, manual ones included, until reset-failed (systemd.unit(5), systemctl(1))."""
+        def crash_looped():                                    # Restart=on-failure gave up
+            self.healthy_on()
+            self.kernel.take_down()
+            self.kernel.starts = self.kernel.start_burst
+            self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1, 'the scenario')
+
+        def restarted_then_edited():                           # up on systemd's last attempt, then edited
+            self.healthy_on()
+            self.kernel.starts = self.kernel.start_burst
+            self.edit_upstream(UPSTREAM[1] + 1)
+
+        def switched_off():                                    # a new ON soon after an OFF
+            self.healthy_on()
+            self.kernel.starts = self.kernel.start_burst
+            self.call('off')
+        for prepare in (crash_looped, restarted_then_edited, switched_off):
+            with self.subTest(prepare.__name__):
+                self.build()
+                prepare()
+                self.call('on')
+                self.call('check')
+
+    def test_attach_waits_for_the_tun_address_and_gives_up_with_the_guard_kept(self):
+        looks = []
+
+        def addressed_a_moment_later(argv):                    # the core addresses its new TUN after five looks
+            if argv == ('ip', '-j', '-4', 'address', 'show', 'dev', TUN):
+                looks.append(argv)
+                self.kernel.tun_addresses = [('172.30.254.1', 32)] if len(looks) > 5 else []
+        self.kernel.before = addressed_a_moment_later
+        self.call('on')
+        self.call('check')
+        self.assertGreaterEqual(len(self.sleeps), 5, 'attach waits between its looks')
+        self.build()
+        self.kernel.tun_addresses = []                         # the core never addresses it
+        self.assertIsInstance(self.attempt('on'), RuntimeError)
+        self.assertFalse(self.kernel.core, 'systemd stops a unit whose ExecStartPost failed')
+        self.assertIn('counter drop', self.kernel.table)
+        self.assertNotIn(route_of(TUN_ROUTE), self.kernel.routes['-4'])
+        self.assertEqual(self.status()[0], 1)
+
+    def test_the_tun_alone_gets_ipv6_off_and_loose_reverse_path_filtering(self):
+        self.healthy_on()
+        sysctl = lambda path: pathlib.Path(self.box.inside('/proc/sys/net/' + path)).read_text()
+        self.assertEqual(sysctl(f'ipv6/conf/{TUN}/disable_ipv6'), '1\n')
+        self.assertEqual(sysctl(f'ipv4/conf/{TUN}/rp_filter'), '2\n')
+
+    def test_a_core_restarted_by_systemd_gets_no_route_while_its_surroundings_are_wrong(self):
+        def rule_gone():
+            self.kernel.rules['-4'] = []
+
+        def tun_in_main():
+            self.kernel.main_extra = [{'dst': '198.51.100.0/24', 'dev': TUN, 'scope': 'link', 'flags': []}]
+
+        def switched_off_meanwhile():                          # off() runs while attach looks at the main table
+            enabled = pathlib.Path(self.box.inside('/run/xq-user-proxy/enabled'))
+            self.kernel.before = lambda argv: argv[-2:] == ('table', 'main') and enabled.unlink()
+        for break_it in (rule_gone, tun_in_main, switched_off_meanwhile):
+            with self.subTest(break_it.__name__):
+                self.build()
+                self.healthy_on()
+                self.kernel.take_down()                        # the core crashed
+                break_it()
+                self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)   # Restart=on-failure
+                self.kernel.before = None
+                self.assertFalse(self.kernel.core, 'systemd stops a unit whose ExecStartPost failed')
+                self.assertNotIn(route_of(TUN_ROUTE), self.kernel.routes['-4'])
+
+    def test_systemd_starts_no_core_with_a_configuration_outside_the_scope(self):
+        self.healthy_on()
+        self.kernel.take_down()                                # the core crashed ...
+        self.config['inbounds'][0]['auto_route'] = True        # ... after its configuration was edited
+        self.write('/etc/xq-user-proxy/sing-box.json', json.dumps(self.config, indent=2) + '\n', 0o600)
+        seen = []
+        self.kernel.starting = lambda: seen.append('the core reads its configuration')
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)   # Restart=on-failure
+        self.assertEqual(seen, [], 'ExecStartPre refuses before the core starts')
+        self.assertFalse(self.kernel.core)
+
+    def test_translations_toward_an_unknown_or_other_entry_are_deleted_by_on(self):
+        for record in (json.dumps({'loaded': True, 'dns_port': int(LEGACY_PORT)}), '{ not json'):
+            with self.subTest(record=record):
+                self.build()
+                self.healthy_on()
+                path = pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json'))
+                if record.startswith('{ not'):
+                    path.write_text(record)
+                else:
+                    path.write_text(json.dumps(dict(json.loads(path.read_text()), **json.loads(record))))
+                self.assertTrue([flow for flow in self.kernel.flows if flow[0] & DNS_MARK], 'the scenario')
+                self.call('on')
+                self.assertEqual([flow for flow in self.kernel.flows if flow[0] & DNS_MARK], [])
+                self.call('check')
+
     def unrecorded_core(self):
         """ON with a core nobody recorded: its entry may not be the one the rules send to."""
         self.healthy_on()
@@ -1746,6 +2028,10 @@ class LoadedConfigurationTests(Offline):
             self.assertIn('开启尚未完成', message)
             self.assertIn('请执行 xq_proxyon 继续', message)
             self.assertNotIn('未开启', message)
+            # The rules are the ones on record: say so, and do not warn of direct traffic that cannot happen.
+            self.assertIn('与记录一致', message)
+            self.assertIn('只阻断', message)
+            self.assertNotIn('与记录不一致', message)
         # A core that systemd started by itself now would run without the rules that lead to it.
         self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
         self.assertFalse(self.kernel.core)
@@ -1753,6 +2039,75 @@ class LoadedConfigurationTests(Offline):
         self.assertIn('dnat ip to', self.kernel.table)
         self.call('check')
         self.assertEqual(self.status()[0], 0)
+
+    def test_an_on_stopped_after_it_reloaded_the_full_rules_does_not_claim_they_only_block(self):
+        """The full rules are loaded again, the state still records the inactive ones."""
+        self.unrecorded_core()
+        loads = []
+
+        def third_load(step):
+            if step == ('nft', '-f', '-'):
+                loads.append(step)
+                return len(loads) == 3
+            return False
+        self.injector.when(third_load, 'crash')
+        self.assertIsInstance(self.attempt('on'), Crash)
+        self.assertIn('dnat ip to', self.kernel.table)
+        self.assertIs(json.loads(self.state_files()['state.json'])['guard_active'], False)
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (text, str(caught.exception)):
+            for word in ('开启尚未完成', '与记录不一致', '无法确认', '请执行 xq_proxyon 继续'):
+                self.assertIn(word, message)
+            self.assertNotIn('只阻断', message)
+        self.call('on')
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_rules_altered_after_an_interrupted_on_are_not_described_as_blocking(self):
+        alterations = {
+            'emptied': lambda: self.kernel.load_table(emptied(self.kernel.table)),       # nft flush table
+            'replaced': lambda: self.kernel.load_table(self.g['firewall']().replace('fib daddr type local ', '')),
+        }
+        for name, alter in alterations.items():
+            with self.subTest(alteration=name):
+                self.build()
+                self.interrupt_on_during_dns_cleanup()
+                alter()
+                code, text = self.status()
+                self.assertEqual(code, 1, text)
+                with self.assertRaises(RuntimeError) as caught:
+                    self.call('check')
+                for message in (text, str(caught.exception)):
+                    for word in ('开启尚未完成', '与记录不一致', '无法确认', '请执行 xq_proxyon 继续'):
+                        self.assertIn(word, message)
+                    self.assertNotIn('只阻断', message)
+                self.call('on')
+                self.assertEqual(self.kernel.table, self.g['firewall']())
+                self.call('check')
+
+    def test_rules_emptied_while_on_are_not_called_kept(self):
+        for running in (True, False):
+            with self.subTest(core_running=running):
+                self.build()
+                self.healthy_on()
+                if not running:
+                    self.kernel.take_down()
+                self.kernel.load_table(emptied(self.kernel.table))
+                code, text = self.status()
+                self.assertEqual(code, 1, text)
+                with self.assertRaises(RuntimeError) as caught:
+                    self.call('check')
+                for message in (text, str(caught.exception)):
+                    for word in ('与记录不一致', '无法确认', '不会直连', '请执行 xq_proxyon 重新加载'):
+                        self.assertIn(word, message)
+                    self.assertNotIn('guard 和黑洞路由保留', message)
+                    self.assertNotIn('开启尚未完成', message)
+                self.call('on')
+                self.assertEqual(self.kernel.table, self.g['firewall']())
+                self.call('check')
 
     def test_a_guard_flushed_after_an_interrupted_on_reports_possible_direct_traffic(self):
         self.interrupt_on_during_dns_cleanup()
@@ -1764,6 +2119,122 @@ class LoadedConfigurationTests(Offline):
         for message in (text, str(caught.exception)):
             self.assertIn(f'表 inet {TABLE} 不存在', message)
             self.assertIn('可能正在直连', message)
+
+
+class TunStartTests(Offline):
+    """ExecStartPost gives the TUN its route only once the core has set the TUN up.
+
+    sing-box gives its TUN the address first and sets the link up afterwards,
+    and the kernel refuses a route through a device that is not up. Here the
+    core sets the link up `up_delay` seconds of the controller's own pauses
+    after the address, or never.
+    """
+
+    def route_requests(self, since=0):
+        return [call for call in self.kernel.calls[since:]
+                if call[:4] == ('ip', '-4', 'route', 'replace') and TUN in call]
+
+    def failed_start(self):
+        """ON whose core never sets its TUN up: what systemd logged for that start."""
+        self.kernel.up_delay = None
+        calls = len(self.kernel.calls)
+        error = self.attempt('on')
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn(f'systemctl start {SERVICE}', str(error))
+        self.assertEqual(len(self.kernel.journal), 1, self.kernel.journal)
+        self.assertEqual(self.route_requests(calls), [], f'a route the kernel refuses was asked for: {self.kernel.journal}')
+        return self.kernel.journal[0]
+
+    def test_the_route_waits_until_the_core_has_set_its_tun_up(self):
+        self.kernel.up_delay = 0.35
+        up_when_asked = []
+        self.kernel.before = lambda argv: (up_when_asked.append(self.kernel.tun_up())
+                                           if argv[:4] == ('ip', '-4', 'route', 'replace') and TUN in argv else None)
+        error = self.attempt('on')
+        self.assertIsNone(error, f'{error}\njournal: {self.kernel.journal}')
+        self.assertEqual(up_when_asked, [True])
+        self.assertGreaterEqual(self.kernel.clock, 0.35)
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+        # The same when systemd restarts a core that died: ExecStartPost on its own.
+        self.kernel.take_down()
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 0, self.kernel.journal)
+        self.assertEqual(up_when_asked, [True, True])
+        self.call('check')
+
+    def test_a_tun_that_never_comes_up_is_given_up_truthfully_and_the_guard_stays(self):
+        reason = self.failed_start()
+        for word in ('ExecStartPost', '查询 50 次、等待至少 5 秒后', f'TUN {TUN}', '172.30.254.1/32', '未启用', '保留 guard'):
+            self.assertIn(word, reason)
+        self.assertAlmostEqual(sum(self.sleeps), 5.0, msg='the whole budget is waited for')
+        self.assertFalse(self.kernel.core, 'systemd stops a unit whose ExecStartPost failed')
+        self.assertIn('dnat ip to', self.kernel.table)
+        self.assertIn(route_of(BLACKHOLE), self.kernel.routes['-4'])
+        self.assertIn(OWN_RULE_JSON, self.kernel.rules['-4'])
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertIn('核心未运行', text)
+
+    def test_on_reports_the_failed_start_and_a_second_on_recovers(self):
+        self.failed_start()
+        self.assertEqual(self.phase(), 'enabling')
+        self.assertIn('enabled', self.state_files())
+        self.kernel.up_delay = 0.35                            # the next start of the core is an ordinary one
+        error = self.attempt('on')
+        self.assertIsNone(error, f'{error}\njournal: {self.kernel.journal}')
+        self.call('check')
+        self.assertEqual(self.phase(), 'on')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_a_core_that_dies_while_attach_waits_is_reported_as_a_missing_tun(self):
+        polls = []
+
+        def dying(argv):
+            if argv == ('ip', '-j', '-4', 'address', 'show', 'dev', TUN):
+                polls.append(argv)
+                if len(polls) == 3:
+                    self.kernel.take_down()                    # the TUN goes with the core
+        self.kernel.before = dying
+        reason = self.failed_start()
+        self.assertIn(f'查不到 TUN {TUN}', reason)
+        self.assertIn(f'Device "{TUN}" does not exist.', reason)
+        self.assertNotIn('未启用', reason)
+
+    def test_an_ip_failure_is_reported_in_its_own_words_not_as_a_missing_tun(self):
+        answer, query = self.kernel.answer_ip, ('-j', '-4', 'address', 'show', 'dev', TUN)
+        self.kernel.answer_ip = lambda a, data: ((2, '', 'Cannot send dump request: Operation not permitted\n')
+                                                 if a == query else answer(a, data))
+        reason = self.failed_start()
+        self.assertIn('ip 退出码 2：Cannot send dump request: Operation not permitted', reason)
+        self.assertNotIn('没有 TUN', reason)
+        self.assertIn('查询 50 次、等待至少 5 秒后', reason)
+
+    def test_a_tun_with_another_address_is_reported_with_the_address_it_has(self):
+        self.kernel.tun_addresses = [('172.30.254.1', 24)]
+        reason = self.failed_start()
+        self.assertIn('172.30.254.1/24', reason)
+        self.assertIn('不是唯一的 172.30.254.1/32', reason)
+
+    def test_a_tun_that_is_up_with_a_second_address_is_not_given_the_route(self):
+        self.kernel.tun_addresses = [('172.30.254.1', 32), ('172.30.254.9', 32)]   # the TUN is up at once
+        calls = len(self.kernel.calls)
+        self.assertIsInstance(self.attempt('on'), RuntimeError)
+        self.assertEqual(self.route_requests(calls), [], self.kernel.journal)
+        self.assertEqual(len(self.kernel.journal), 1, self.kernel.journal)
+        self.assertIn('172.30.254.1/32、172.30.254.9/32', self.kernel.journal[0])
+
+    def test_a_tun_without_an_ipv4_address_is_not_reported_as_missing(self):
+        self.kernel.tun_addresses = []
+        reason = self.failed_start()
+        self.assertIn('现有：无', reason)
+        self.assertNotIn(f'查不到 TUN {TUN}', reason)
+
+    def test_a_tun_that_is_up_without_a_carrier_gets_its_route(self):
+        # As ip prints a TUN whose queue nobody holds: NO-CARRIER and UP, no LOWER_UP. The kernel takes the route.
+        self.kernel.carrier = False
+        error = self.attempt('on')
+        self.assertIsNone(error, f'{error}\njournal: {self.kernel.journal}')
+        self.assertIn(route_of(TUN_ROUTE), self.kernel.routes['-4'])
 
 
 class FailureInjectionTests(Offline):

@@ -786,17 +786,31 @@ def attach_routes():
         raise RuntimeError('用户代理已关闭；拒绝附加路由')
     if not table_exists() or firewall_digest() != state.get('guard_digest'):
         raise RuntimeError('guard 不完整；拒绝附加路由')
+    # Wait until the TUN has exactly its address and is up. The core gives the TUN
+    # its address before it sets the link up, and the kernel takes a route through
+    # a device only once that device is up (IFF_UP, which ip prints as UP; whether
+    # it has a carrier does not matter); until then the route below is refused
+    # with "Device for nexthop is not up".
+    address = ipaddress.ip_interface(ADDRESS)
+    wanted = [(str(address.ip), address.network.prefixlen)]
     for _ in range(50):
         result = run([IP, '-j', '-4', 'address', 'show', 'dev', TUN], check=False)
-        if result.returncode == 0:
-            interfaces = json.loads(result.stdout)
-            found = [(a['local'], a['prefixlen']) for i in interfaces for a in i.get('addr_info', [])]
-            address = ipaddress.ip_interface(ADDRESS)
-            if found == [(str(address.ip), address.network.prefixlen)]:
-                break
+        interfaces = json.loads(result.stdout) if result.returncode == 0 else []
+        found = [(a['local'], a['prefixlen']) for i in interfaces for a in i.get('addr_info', [])]
+        up = [i.get('ifname') for i in interfaces if 'UP' in i.get('flags', [])]
+        if found == wanted and up == [TUN]:
+            break
         time.sleep(0.1)
     else:
-        raise RuntimeError('未检测到正确的 TUN /32 地址；保留 guard')
+        if result.returncode:
+            # Usually the TUN is gone, but only ip's own words can say so.
+            missing = f'仍查不到 TUN {TUN}（ip 退出码 {result.returncode}：{result.stderr.strip()}）'
+        elif found != wanted:
+            missing = (f'TUN {TUN} 的 IPv4 地址仍不是唯一的 {ADDRESS}（现有：'
+                       + ('、'.join(f'{local}/{length}' for local, length in found) or '无') + '）')
+        else:
+            missing = f'TUN {TUN} 已有地址 {ADDRESS}，但仍未启用（UP），内核不接受经它的路由'
+        raise RuntimeError(f'查询 50 次、等待至少 5 秒后，{missing}；保留 guard')
     # This feature is IPv4-only. Disable IPv6 on our new interface alone so
     # its automatically generated link-local/multicast routes do not alter
     # the host IPv6 routing tables. Never change all/default/physical devices.
@@ -827,16 +841,21 @@ def check():
     if not table_exists():
         raise RuntimeError(f'防直连 nft 表 inet {TABLE} 不存在（规则集可能被 nft flush ruleset 或 nftables.service '
                            f'清空）；{USER} 的新连接和 DNS 可能正在直连。请执行 xq_proxyon 重建')
-    if not state.get('guard_active'):
-        # Only an on() that stopped while it deleted the translations of a core
-        # that is gone leaves the switch on with the inactive rules recorded.
-        raise RuntimeError('开启尚未完成：上一次 xq_proxyon 在清理旧 DNS 映射时中断或失败，'
-                           '防直连规则停在只阻断、不转发的形态，核心不会启动。请执行 xq_proxyon 继续')
-    if not core_active():
-        raise RuntimeError('核心未运行；guard 和黑洞路由保留')
+    # Compared before anything below speaks of the rules: they may have been
+    # emptied or replaced from outside, or a step that loads them may have
+    # stopped before it recorded what it loaded.
     loaded = firewall_digest()
+    # Only an on() that stopped while it replaced a core whose entry may have
+    # moved leaves the switch on with the inactive rules recorded.
+    pending = '' if state.get('guard_active') else '开启尚未完成：上一次 xq_proxyon 中断或失败；'
     if loaded != state.get('guard_digest'):
-        raise RuntimeError('guard 与记录不一致')
+        raise RuntimeError(pending + f'已加载的防直连规则与记录不一致，无法确认 {USER} 不会直连。'
+                           + ('请执行 xq_proxyon 继续' if pending else '请执行 xq_proxyon 重新加载'))
+    if pending:
+        raise RuntimeError(pending + '防直连规则与记录一致，停在只阻断、不转发的形态，核心不会启动。'
+                           '请执行 xq_proxyon 继续')
+    if not core_active():
+        raise RuntimeError('核心未运行。已加载的防直连规则与记录一致。请执行 xq_proxyon 恢复')
     if state.get('guard_source') != guard_source(loaded):
         raise RuntimeError('已加载的防直连规则不是当前控制器和配置生成的版本；防直连仍然有效，'
                            '请执行 xq_proxyon 换成当前版本')
@@ -844,7 +863,8 @@ def check():
     if fault:
         raise RuntimeError(fault + '。请执行 xq_proxyon 重新加载（会重启核心，已有的公网连接需要重连）')
     if not tun_exists():
-        raise RuntimeError(f'核心在运行，但它的 TUN {TUN} 不存在；guard 和黑洞路由保留')
+        raise RuntimeError(f'核心在运行，但它的 TUN {TUN} 不存在。已加载的防直连规则与记录一致。'
+                           '请执行 xq_proxyon 恢复')
     if (SYSCTL / f'ipv4/conf/{TUN}/rp_filter').read_text().strip() != '2':
         raise RuntimeError('自有 TUN 的 rp_filter 设置异常')
     for family in ('-4', '-6'):

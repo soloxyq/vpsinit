@@ -136,6 +136,14 @@
 
 真实 systemd 下的这条修复分支没有在本机执行。验证它需要先让核心失去启动记录，再执行 `xq_proxyon` 重启核心，会中断 xuqian 当时的公网连接；它的行为由 `tests/core-check.py`（真实控制器、真实核心、systemd 由替身代替）覆盖。
 
+## 2026-11-22 部署 `b98369dbc` 的控制器
+
+23:39:25（服务器时间），在 `/usr/local/sbin` 内原子替换 `xq-user-proxyctl`。原先的 `09ed7b4` 已备份至 `/var/backups/xq-user-proxyctl-before-b98369d-20261122-233925`。安装后的 SHA256 为 `a0ef06a68b7eb742f98e312ccd96e630a645a7a1bc97e43e4edee00dd5cbe4ea`，与 `b98369dbc` 中的文件一致。
+
+替换前后 `check` 均通过。替换后 `status` 返回 0，开关为 ON。核心 PID 均为 `1742943`，`NRestarts=0`。分别比对已加载 nft 表的规则摘要、`state.json` 和 `core.json` 的文件摘要，三项均与替换前一致。xuqian 两次均能通过默认 DNS 解析 `example.com`，关闭 curl 的显式代理后访问 `api.ipify.org` 均得到 HTTP 200，出口为 `179.255.139.228`。
+
+本次改善的是 `off` 或修复式 `on` 遇到 DNS 映射集中到期时的清理成功率。部署验收检查了正在运行的代理，清理负载的对照数据见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。
+
 ## 日常操作
 
 ```bash

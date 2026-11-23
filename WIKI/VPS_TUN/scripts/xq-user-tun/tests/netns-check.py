@@ -628,11 +628,13 @@ def check_shutdown(scope, owner, core):
     assert (len(fixed), len(found) - len(fixed), unchecked) == (5, 1, []), found
     scope['install_firewall']({}, active=False)          # stop translating before the mappings are deleted
     assert 'dnat' not in run([NFT, 'list', 'table', 'inet', TABLE])
-    before = dns_exits()
+    before, mappings = dns_exits(), len(scope['dns_connections']())
     for tcp in (False, True):
         expect(probe(owner, STUB, tcp=tcp), None, 'owner DNS while only the guard is left')
         expect(probe(owner, REMOTE, tcp=tcp), None, 'owner DNS to a public resolver while only the guard is left')
     assert dns_exits() == before, f'with only the guard left, owner DNS left the host: {dns_exits()} after {before}'
+    # What lets the mappings be counted: a query that arrives meanwhile does not add one.
+    assert len(scope['dns_connections']()) == mappings, 'an owner query left a mapping while only the guard was loaded'
     for _ in range(2):                                   # the second round finds nothing left to do
         scope['delete_dns_connections']()
         scope['remove_routes']()
@@ -640,8 +642,9 @@ def check_shutdown(scope, owner, core):
             run([NFT, 'delete', 'table', 'inet', TABLE])
         assert scope['kernel_leftovers']() == ([], []), scope['kernel_leftovers']()
     expect(probe(owner, STUB), 'stub', 'owner DNS after the cleanup')
-    print('PASS: the steps of OFF in order: the guard-only stage blocks owner DNS instead of leaking it, '
-          'then nothing of this feature is left and repeating the cleanup changes nothing', flush=True)
+    print('PASS: the steps of OFF in order: the guard-only stage blocks owner DNS instead of leaking it and '
+          'records no new mapping, then nothing of this feature is left and repeating the cleanup changes nothing',
+          flush=True)
 
 
 def exercise(scope, single):

@@ -285,6 +285,8 @@ class FakeKernel:
         self.core = False                      # unit active; the TUN exists exactly as long
         self.flows = []                        # conntrack entries as (mark, zone)
         self.conntrack_error = None            # (exit code, stderr) for every conntrack call
+        self.vanishing = 0                     # deletes that meet an entry gone since their dump
+        self.delete_refused = False            # every delete fails and removes nothing
         self.denied = set()                    # 'route' / 'rule': netlink answers EPERM
         self.nscd = False
         self.start_error = False               # ExecStartPre or the core itself fails
@@ -471,6 +473,15 @@ class FakeKernel:
     def add_flow(self, mark, zone=0):
         self.flows.append((mark, zone))
 
+    def owner_asks(self):
+        """One owner query for a resolver on this host.
+
+        It leaves a translation exactly while the loaded rules translate,
+        whether a core answers at the entry or the entry refuses it.
+        """
+        if self.table is not None and 'dnat ip to' in self.table:
+            self.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+
     def flow_text(self, flow):
         mark, zone = flow
         return ('udp      17 28 src=127.0.0.1 dst=127.0.0.53 sport=42294 dport=53 src=127.0.0.1 '
@@ -495,6 +506,16 @@ class FakeKernel:
             return result(0, [flow for flow in self.flows if flow[1] == ZONE], 'shown')
         if a == ('-D', '-f', 'ipv4', '--mark', f'{DNS_MARK:#x}/{DNS_MARK:#x}'):
             deleted = [flow for flow in self.flows if flow[0] & DNS_MARK]
+            if self.delete_refused:
+                return 1, '', self.say('conntrack v1.4.6 (conntrack-tools): Operation failed: Operation not permitted\n')
+            if self.vanishing and len(deleted) > 1:
+                # conntrack-tools before 1.4.8: the first entry is deleted, the next one has
+                # gone by itself since the dump, and the delete ends there with the rest left.
+                self.vanishing -= 1
+                for flow in deleted[:2]:
+                    self.flows.remove(flow)
+                return 1, self.flow_text(deleted[0]), self.say(
+                    "conntrack v1.4.6 (conntrack-tools): Operation failed: such conntrack doesn't exist\n")
             self.flows = [flow for flow in self.flows if not flow[0] & DNS_MARK]
             # conntrack-tools exits 1 when nothing matched.
             return result(0 if deleted else 1, deleted, 'deleted')
@@ -825,6 +846,31 @@ class CleanupTests(Offline):
         self.assertIsNotNone(self.kernel.table, 'the guard stays while a mapping remains')
         self.assertEqual(self.status()[0], 1)
         self.kernel.before = None
+        self.call('off')
+        self.assert_clean()
+
+    def test_a_delete_that_ends_at_an_entry_already_gone_is_repeated(self):
+        # conntrack-tools before 1.4.8 stops there, and the rest of the mappings is still listed.
+        self.healthy_on()
+        for _ in range(4):
+            self.kernel.add_flow(DNS_MARK | OWNER_MARK, ZONE)
+        self.kernel.vanishing = 1
+        self.call('off')
+        self.assertEqual(self.kernel.vanishing, 0, 'the scenario did not happen')
+        self.assert_clean()
+        self.assertEqual(self.kernel.flows, [(OWNER_MARK, 0)], 'only the DNS mappings are deleted')
+
+    def test_a_delete_that_keeps_failing_is_given_up_with_the_guard_kept(self):
+        self.healthy_on()
+        self.kernel.delete_refused = True
+        calls = len(self.kernel.calls)
+        error = self.attempt('off')
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn('Operation not permitted', str(error))
+        deletes = [call for call in self.kernel.calls[calls:] if call[:2] == ('conntrack', '-D')]
+        self.assertEqual(len(deletes), self.g['DELETE_ATTEMPTS'])
+        self.assertIsNotNone(self.kernel.table, 'the guard stays while a mapping remains')
+        self.kernel.delete_refused = False
         self.call('off')
         self.assert_clean()
 
@@ -1590,6 +1636,73 @@ class LoadedConfigurationTests(Offline):
         self.call('off')
         self.assert_clean()
 
+    def unrecorded_core(self):
+        """ON with a core nobody recorded: its entry may not be the one the rules send to."""
+        self.healthy_on()
+        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+
+    def test_translating_stops_while_the_translations_of_a_core_that_is_gone_are_deleted(self):
+        self.unrecorded_core()
+        guarded, seen = [], []
+
+        def watching(argv):
+            table = self.kernel.table or ''
+            if changes_host(argv):
+                guarded.append('counter drop' in table)
+            if argv[:2] in (('systemctl', 'stop'), ('conntrack', '-D'), ('systemctl', 'start')):
+                seen.append((argv[1], 'dnat ip to' in table))
+        self.kernel.before = watching
+        self.call('on')
+        self.kernel.before = None
+        self.assertTrue(all(guarded), 'the guard stays loaded at every step')
+        self.assertEqual(seen, [('stop', True), ('-D', False), ('start', True)])
+        self.call('check')
+
+    def test_owner_queries_do_not_defeat_an_on_that_replaces_an_unrecorded_core(self):
+        """With the core stopped the entry refuses at once; a resolver that does not
+        pause asks again before every step the controller takes."""
+        self.unrecorded_core()
+        self.kernel.before = lambda argv: self.kernel.owner_asks()
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.kernel.before = None
+        self.assertEqual(self.restarts(calls), ['stop', 'start'])
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_owner_queries_do_not_defeat_the_retry_of_a_first_start_that_failed(self):
+        self.kernel.start_error = True
+        self.assertIsInstance(self.attempt('on'), RuntimeError)
+        self.assertIsNone(self.record(), 'the scenario: the core failed before its start was recorded')
+        self.kernel.start_error = False
+        self.kernel.before = lambda argv: self.kernel.owner_asks()
+        self.call('on')
+        self.kernel.before = None
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_an_on_interrupted_while_translating_is_stopped_says_so_and_is_resumed(self):
+        self.unrecorded_core()
+        self.injector.when(lambda step: step[:2] == ('conntrack', '-D'), 'crash')
+        self.assertIsInstance(self.attempt('on'), Crash)
+        self.assertIn('enabled', self.state_files())
+        self.assertIn('counter drop', self.kernel.table)
+        self.assertNotIn('dnat ip to', self.kernel.table)
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (text, str(caught.exception)):
+            self.assertIn('xq_proxyon', message)
+            self.assertNotIn('未开启', message)
+        # A core that systemd started by itself now would run without the rules that lead to it.
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
+        self.assertFalse(self.kernel.core)
+        self.call('on')
+        self.assertIn('dnat ip to', self.kernel.table)
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
 
 class FailureInjectionTests(Offline):
     """Batch A acceptance: whatever step of ON or OFF breaks, repeated OFF ends clean."""
@@ -1659,6 +1772,12 @@ class FailureInjectionTests(Offline):
                 proxy_ip=UPSTREAM[0], proxy_port=UPSTREAM[1] + 1)) + '\n', 0o600)
             self.g['load_settings']()
         self.survive(edited, 'on')
+
+    def test_failure_at_every_step_of_an_on_that_replaces_a_core_without_a_start_record(self):
+        def unrecorded():
+            self.healthy_on()
+            pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+        self.survive(unrecorded, 'on')
 
     def test_failure_at_every_step_of_off(self):
         self.survive(self.healthy_on, 'off')

@@ -10,7 +10,8 @@ the controller's own on/off/status/check and lets them start and stop the core
 itself, so it can observe what only a real core produces: DNS answered inside
 the TUN, answers that arrive after the owner has closed its socket, a core that
 is down while the guard stays, a core that still runs a configuration which
-was edited on disk afterwards, connections a stopped core leaves behind.
+was edited on disk afterwards, connections a stopped core leaves behind, a core
+that is replaced while an owner program keeps asking.
 
 Three real identities take part: the owner, another user and root (the core).
 A dummy interface stands for the uplink; nothing can answer there, and the
@@ -170,6 +171,29 @@ import os,socket,sys
 uid,dest,port=int(sys.argv[1]),sys.argv[2],int(sys.argv[3])
 ''' + IDENTITY + r'''
 s=socket.socket();s.settimeout(3);s.connect((dest,port));print('ready',flush=True);sys.stdin.read()
+'''
+
+# An owner program that keeps asking one resolver: twenty times a second, and again a
+# millisecond after a refusal, as a resolver that does not pause between its attempts does.
+# Told to end (SIGTERM), it says how its queries ended.
+ASKER = r'''
+import json,os,signal,socket,struct,sys,time
+uid,dest,name=int(sys.argv[1]),sys.argv[2],sys.argv[3]
+''' + IDENTITY + r'''
+query=(struct.pack('>HHHHHH',0x1234,0x0100,1,0,0,0)
+       +b''.join(bytes([len(label)])+label.encode() for label in name.split('.'))+b'\0'+struct.pack('>HH',1,1))
+tally={'answered':0,'refused':0,'blocked':0,'other':0}
+def report(*_):
+    print(json.dumps(tally),flush=True);os._exit(0)
+signal.signal(signal.SIGTERM,report)
+print('ready',flush=True)
+while True:
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(0.5);pause=0.05
+    try: s.connect((dest,53));s.send(query);s.recv(1500);tally['answered']+=1
+    except ConnectionRefusedError: tally['refused']+=1;pause=0.001
+    except PermissionError: tally['blocked']+=1
+    except OSError: tally['other']+=1
+    s.close();time.sleep(pause)
 '''
 
 # Where IPv4 packets leave, and for the uplink whose socket sent them. A packet
@@ -781,6 +805,40 @@ def check_replaced_controller(scope, unit):
           'without a start record is restarted; a deleted table is rebuilt around the running core', flush=True)
 
 
+def check_unrecorded_core_under_queries(scope, unit):
+    """on() replaces a core nobody recorded while an owner program keeps asking.
+
+    The translations of such a core may lead to an entry the rules no longer
+    send to, so on() deletes them between the old core and the new one and
+    proves them gone. With the old core stopped the entry refuses at once, and
+    a program that asks again at once adds translations faster than they can be
+    counted. on() therefore stops translating for that moment; otherwise it
+    fails there, with the core left stopped.
+    """
+    starts, pid, before = unit.starts, unit.process.pid, stray()
+    asker = child('asker', ASKER, OWNER, STUB, NAME)
+    time.sleep(0.5)
+    scope['CORE_RECORD'].unlink()
+    assert '记录' in refused(scope, 'check')
+    try:
+        call(scope, 'on')
+    finally:
+        CHILDREN.pop('asker')
+        asker.terminate()
+        said = asker.communicate(timeout=5)[0]
+    tally = json.loads(said.splitlines()[-1])
+    assert unit.starts == starts + 1 and unit.process.pid != pid, 'on() kept the unrecorded core'
+    assert tally['answered'] and tally['refused'] and tally['blocked'], f'the scenario did not happen: {tally}'
+    assert stray() == before, f'{stray() - before} owner packets left by the uplink while the core was replaced'
+    call(scope, 'check')
+    assert call(scope, 'status')[0] == 0
+    owner_dns_works(scope, 'after the unrecorded core was replaced')
+    print(f'PASS: on() replaces a core without a start record while an owner program keeps asking the stub, again '
+          f'a millisecond after each refusal ({tally["refused"]} queries refused by the empty entry, '
+          f'{tally["blocked"]} dropped by the guard while the old translations were deleted, {tally["answered"]} '
+          'answered): the translations are proven gone, the new core answers, nothing left by the uplink', flush=True)
+
+
 def check_off_and_on_again(scope, unit):
     held = child('held', HOLD, OWNER, LAN, 53, stdin=subprocess.PIPE)   # an owner connection that outlives OFF
     call(scope, 'off')
@@ -825,6 +883,7 @@ def exercise(scope, unit):
     check_forged_answers(scope, unit)
     check_edited_configuration(scope, unit)
     check_replaced_controller(scope, unit)
+    check_unrecorded_core_under_queries(scope, unit)
     check_off_and_on_again(scope, unit)
     if LEFT_BEHIND:
         print(f'INFO: {len(LEFT_BEHIND)} TCP query(ies) got the source port of a connection that an abandoned query '

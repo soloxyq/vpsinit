@@ -365,6 +365,20 @@ def firewall(active=True):
     # The other cost: a server the owner runs cannot answer a client at a
     # public address, since its replies enter the TUN and answer nothing there.
     # LAN and loopback destinations keep the host route by their own rules.
+    #
+    # Rules that repeat a later one, on purpose. The first two rules of
+    # target_output drop owner DNS for a public address that is not leaving by
+    # the TUN; the port 53 drop further down that chain decides the same for
+    # every such packet. The first rule of target_route marks owner DNS for a
+    # public address for the TUN; the last rule of that chain marks it as well,
+    # unless the host itself routes that address to lo, where the first rule
+    # is what still sends it into the TUN. When these rules were written the
+    # exception for the reply direction stood right behind each of them, and
+    # they kept public DNS out of it. They stay for the day an exception is put
+    # behind them again, and tests/netns-check.py restores the old one at
+    # exactly these places for its control. Taking out the two of
+    # target_output would change no packet's path, only the text of the table,
+    # which every installation that is ON would then have to load again.
     return f'''table inet {TABLE} {{
   set lan_v4 {{
     type ipv4_addr; flags interval;
@@ -809,12 +823,15 @@ def check():
     if not ENABLED.exists():
         raise RuntimeError('用户代理未开启')
     state = load()
-    if not state.get('guard_active'):
-        raise RuntimeError('用户代理未开启')
     # Without the table nothing below is kept: say so before anything else.
     if not table_exists():
         raise RuntimeError(f'防直连 nft 表 inet {TABLE} 不存在（规则集可能被 nft flush ruleset 或 nftables.service '
                            f'清空）；{USER} 的新连接和 DNS 可能正在直连。请执行 xq_proxyon 重建')
+    if not state.get('guard_active'):
+        # Only an on() that stopped while it deleted the translations of a core
+        # that is gone leaves the switch on with the inactive rules recorded.
+        raise RuntimeError('开启尚未完成：上一次 xq_proxyon 在清理旧 DNS 映射时中断或失败，'
+                           '防直连规则停在只阻断、不转发的形态，核心不会启动。请执行 xq_proxyon 继续')
     if not core_active():
         raise RuntimeError('核心未运行；guard 和黑洞路由保留')
     loaded = firewall_digest()
@@ -873,7 +890,18 @@ def on():
                         # entry, which the rules no longer send to. A program that
                         # keeps one socket for its queries would stay tied to it,
                         # and that port may be one any user can listen on.
+                        # As in off(), the rules do not translate while these are
+                        # deleted and counted. With the core stopped the entry
+                        # refuses every owner query at once, and a resolver that
+                        # asks again without a pause would add translations (to
+                        # the current entry, harmless) faster than the old ones
+                        # can be shown to be gone: this would fail, and leave the
+                        # core stopped. Meanwhile the guard drops such a query
+                        # instead of the entry refusing it.
+                        install_firewall(state, active=False)
                         delete_dns_connections()
+                        # prepare() starts no core while the guard is the inactive one.
+                        install_firewall(state)
                     run([SYSTEMCTL, 'reset-failed', SERVICE], check=False)
                     run([SYSTEMCTL, 'start', SERVICE], timeout=60)
         else:
@@ -907,15 +935,27 @@ def dns_connections():
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+# conntrack-tools before 1.4.8 ends a delete at the first entry that has gone
+# since its dump (it expired, or its connection was reset) and leaves the rest.
+DELETE_ATTEMPTS = 3
+
+
 def delete_dns_connections():
     # Delete only this feature's DNS translations, in every zone (entries from
     # before the dedicated zone included). Other connections and unrelated
     # users' conntrack state are never flushed. Success is what a second
-    # listing shows, not what the delete printed.
+    # listing shows, not what the delete printed. The delete's exit status
+    # only says whether to try again: one that failed with entries left has
+    # stopped early. One that succeeded removed every entry it saw, so what is
+    # listed after it came later; both callers load the inactive rules first,
+    # under which no owner query adds a translation.
     if not dns_connections():
         return
-    result = run([CONNTRACK, '-D', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
-    left = len(dns_connections())
+    for _ in range(DELETE_ATTEMPTS):
+        result = run([CONNTRACK, '-D', '-f', 'ipv4', '--mark', f'{DNS_BIT:#x}/{DNS_BIT:#x}'], check=False)
+        left = len(dns_connections())
+        if not left or result.returncode == 0:
+            break
     if left:
         raise RuntimeError(f'清理本功能 DNS conntrack 失败，仍有 {left} 条；guard 保留：' + result.stderr.strip())
 

@@ -2,7 +2,7 @@
 
 **新 VPS 请使用 [便携一键部署指南](../../VPS-用户级TUN一键部署.md)。** 本目录保留 Mico-system 的历史部署及安装器，不用于在其他机器首次安装。
 
-**2026-11-15：Mico-system 已从本目录的冻结版本原地升级为[便携安装包](../xq-user-tun/README.md)的版本。** 现在运行的控制器、服务单元和核心配置来自 `scripts/xq-user-tun/`（提交 `51eb45c`）。本目录的 `xq-user-proxyctl`、`xq-user-proxy.service`、`sing-box.json`、`verify.py` 等是升级前版本的记录，不再是本机现状，也不再维护。升级过程和结果见[下文](#2026-11-15-原地升级为便携包版本)；日常命令没有变化。
+**2026-11-15：Mico-system 已从本目录的冻结版本原地升级为[便携安装包](../xq-user-tun/README.md)的版本。** 升级后运行的控制器、服务单元和核心配置来自 `scripts/xq-user-tun/`（提交 `51eb45c`）。其中控制器此后又替换过几次，现在运行的是 `e0d3d24` 的控制器（见[下文](#2026-11-23-部署-e0d3d24-的控制器)）；服务单元仍与 `51eb45c` 中的文件一致。本目录的 `xq-user-proxyctl`、`xq-user-proxy.service`、`sing-box.json`、`verify.py` 等是升级前版本的记录，不再是本机现状，也不再维护。升级过程和结果见[下文](#2026-11-15-原地升级为便携包版本)；日常命令没有变化。
 
 冻结版本有下列已确认的缺陷，升级后不再存在：
 
@@ -143,6 +143,18 @@
 替换前后 `check` 均通过。替换后 `status` 返回 0，开关为 ON。核心 PID 均为 `1742943`，`NRestarts=0`。分别比对已加载 nft 表的规则摘要、`state.json` 和 `core.json` 的文件摘要，三项均与替换前一致。xuqian 两次均能通过默认 DNS 解析 `example.com`，关闭 curl 的显式代理后访问 `api.ipify.org` 均得到 HTTP 200，出口为 `179.255.139.228`。
 
 本次改善的是 `off` 或修复式 `on` 遇到 DNS 映射集中到期时的清理成功率。部署验收检查了正在运行的代理，清理负载的对照数据见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。
+
+## 2026-11-23 部署 `e0d3d24` 的控制器
+
+06:20:41（服务器时间），在 `/usr/local/sbin` 内原子替换 `xq-user-proxyctl`。原先的 `b98369dbc` 已备份至 `/var/backups/xq-user-proxyctl-before-e0d3d24-20261123-062041`。安装后的 SHA256 为 `565305898c33e7d2bb08618b1c94dbd800b7d6b798d9acb8e9aa7dbdeb986e8d`，与 `e0d3d24` 中的文件一致。
+
+替换之前，新控制器先以临时文件名对运行中的系统执行 `check`，通过后才改名。替换前后 `check` 均通过。替换后 `status` 返回 0，开关为 ON。核心 PID 均为 `1742943`，`NRestarts=0`；`xq-tun.service` 的 PID `2460344` 未变。分别比对已加载 nft 表的规则摘要、`state.json` 和 `core.json` 的文件摘要、策略规则和 20261 路由表，各项均与替换前一致；`state.json` 和 `core.json` 的修改时间仍是 2026-11-22 18:40:17，服务日志里没有启动或停止的记录。xuqian 两次均能通过默认 DNS 解析 `example.com`，关闭 curl 的显式代理后访问 `example.com` 均得到 HTTP 200，经 `api.ipify.org` 查得的出口两次均为 `179.255.139.228`。
+
+本次生效的是两处：给 TUN 添加路由之前先等它启用；`check` 和 `xq_proxystatus` 先核对已加载规则的摘要，再报告核心和 TUN 的状态。新旧控制器生成的规则逐字节相同，没有重载规则，也没有重启核心。
+
+添加路由的那一步有两个入口：核心启动时的 `attach`（`ExecStartPost`），以及修复式的 `xq_proxyon`。开关为 ON、检查不通过，而核心在运行、它的启动记录与磁盘上的配置一致、TUN 也在时（例如规则表被清空后重建），`xq_proxyon` 不重启核心，直接执行这一步。新的 `attach` 在本机真实的 systemd 下还没有运行过。等待之后添加路由的路径由独立网络命名空间内的三身份验收覆盖：`netns-check.py` 在 TUN 已有地址、尚未启用时专门检查一次；`core-check.py` 每次启动真实核心都经过 `attach`（systemd 由替身代替），规则表被删除后修复式 `xq_proxyon` 不重启核心、直接执行这一步的情形也在其中。记录见[指南第 9 节](../../VPS-用户级TUN一键部署.md#2026-11-23-三身份验收)。等不到 TUN 启用而放弃、报告缺哪一项的分支只由离线测试 `tests/test_lifecycle.py` 覆盖。`check` 的改动只涉及报错的顺序和措辞，本机这次只走到检查通过的分支。
+
+回退：先把备份用 `sudo install -o root -g root -m 0755` 放到 `/usr/local/sbin` 下的临时文件名，再 `sudo mv -f` 到原路径（同目录改名是原子的）；规则没有变，不需要重载。
 
 ## 日常操作
 

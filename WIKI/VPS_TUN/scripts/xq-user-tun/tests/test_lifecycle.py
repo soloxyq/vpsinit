@@ -902,6 +902,25 @@ class CleanupTests(Offline):
         self.call('off')
         self.assert_clean()
 
+    def test_one_expiry_counts_as_progress_only_on_the_delete_where_it_happens(self):
+        self.healthy_on()
+        expiring = (DNS_MARK, ZONE)
+        self.kernel.add_flow(*expiring)
+        self.kernel.delete_refused = True
+        attempts = 0
+
+        def expire_on_first_delete(argv):
+            nonlocal attempts
+            if argv[:2] == ('conntrack', '-D'):
+                attempts += 1
+                if attempts == 1:
+                    self.kernel.flows.remove(expiring)
+
+        self.kernel.before = expire_on_first_delete
+        with self.assertRaisesRegex(RuntimeError, '仍有 1 条'):
+            self.call('off')
+        self.assertEqual(attempts, 4, 'one mapping expired, then three deletes made no progress')
+
     def test_normal_boot_off_is_a_no_op(self):
         _, text = self.call('off')
         self.assertIn('已关闭', text)
@@ -1709,19 +1728,23 @@ class LoadedConfigurationTests(Offline):
         self.call('check')
         self.assertEqual(self.status()[0], 0)
 
-    def test_an_on_interrupted_while_translating_is_stopped_says_so_and_is_resumed(self):
+    def interrupt_on_during_dns_cleanup(self):
         self.unrecorded_core()
         self.injector.when(lambda step: step[:2] == ('conntrack', '-D'), 'crash')
         self.assertIsInstance(self.attempt('on'), Crash)
         self.assertIn('enabled', self.state_files())
         self.assertIn('counter drop', self.kernel.table)
         self.assertNotIn('dnat ip to', self.kernel.table)
+
+    def test_an_on_interrupted_while_translating_is_stopped_says_so_and_is_resumed(self):
+        self.interrupt_on_during_dns_cleanup()
         with self.assertRaises(RuntimeError) as caught:
             self.call('check')
         code, text = self.status()
         self.assertEqual(code, 1, text)
         for message in (text, str(caught.exception)):
-            self.assertIn('xq_proxyon', message)
+            self.assertIn('开启尚未完成', message)
+            self.assertIn('请执行 xq_proxyon 继续', message)
             self.assertNotIn('未开启', message)
         # A core that systemd started by itself now would run without the rules that lead to it.
         self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
@@ -1730,6 +1753,17 @@ class LoadedConfigurationTests(Offline):
         self.assertIn('dnat ip to', self.kernel.table)
         self.call('check')
         self.assertEqual(self.status()[0], 0)
+
+    def test_a_guard_flushed_after_an_interrupted_on_reports_possible_direct_traffic(self):
+        self.interrupt_on_during_dns_cleanup()
+        self.kernel.table = None
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (text, str(caught.exception)):
+            self.assertIn(f'表 inet {TABLE} 不存在', message)
+            self.assertIn('可能正在直连', message)
 
 
 class FailureInjectionTests(Offline):

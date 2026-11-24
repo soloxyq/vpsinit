@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TUN 改动文件清单</title>
-<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14 的逐项核对整理。">
+<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14/15 的逐项核对整理，并补记 11-22、11-23 的控制器替换和真实 systemd 验收。">
 <style>
 /* Same transit-map tokens as index.html, plus status colours for files:
    blue = added by this solution, amber = existing file changed,
@@ -221,7 +221,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <a href="index.html">流量链路</a>
       <a href="files.html" aria-current="page">动了哪些文件</a>
     </nav>
-    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对 · 2026-11-15 更新</p>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对 · 2026-11-15 更新 · 11-23 补记</p>
     <h1>动了哪些文件</h1>
     <p class="lede">系统原有的设置文件一个没改。新文件都放在名字带 xq 的独立位置；被改过的旧文件只有两个，都在你的家目录。</p>
     <ul class="legend" aria-label="标记含义">
@@ -373,7 +373,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
         </section>
 
       </div>
-      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。用户级的控制器和服务定义与 <code>~/WIKI/vpsinit/WIKI/VPS_TUN/scripts/xq-user-tun/</code> 下的源码逐字节一致（11-15 核对）；房间模式和共用的文件没有被这次升级改动。</figcaption>
+      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。当前用户级控制器为 <code>e0d3d24</code>，服务定义仍沿用便携包版本；11-22、11-23 的替换和备份见下方时间线。房间模式和共用的文件没有被这些用户级更新改动。</figcaption>
     </figure>
   </section>
 
@@ -494,6 +494,28 @@ footer code { font-family: var(--mono); font-size: .92em; }
                 <p class="bk">备份 xq-user-proxy-upgrade-20261115-202339-hgiljq0u</p></div></li>
           </ol>
         </section>
+        <section class="day" aria-labelledby="day-22">
+          <h3 id="day-22">11-22 晚上</h3>
+          <ol class="tl">
+            <li><time>23:39</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 `b98369dbc` 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-b98369d-20261122-233925</p></div></li>
+          </ol>
+        </section>
+        <section class="day" aria-labelledby="day-23">
+          <h3 id="day-23">11-23</h3>
+          <ol class="tl">
+            <li><time>06:20</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 `e0d3d24` 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li><li>等待 TUN 启用</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-e0d3d24-20261123-062041</p></div></li>
+            <li><time>17:29</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>真实 systemd 重启验证启动 `attach`</b>
+                <ul class="chips"><li>核心 PID 2573772</li><li>NRestarts=0</li><li>check 通过</li></ul>
+                <p class="bk">未替换文件，规则和配置未重载</p></div></li>
+          </ol>
+        </section>
       </div>
       <figcaption>服务器时间（America/Los_Angeles）。蓝色是系统里本方案自己的文件，橙色是你家目录里的文件。系统备份都在 <code>/var/backups/</code>，每一步的“改了哪些”是比对备份里各版本的哈希得出的。</figcaption>
     </figure>
@@ -543,7 +565,7 @@ ip rule show | grep 18410; ip route show table 20261
 sudo ls -l /run/xq-user-proxy</pre>
   </section>
 
-  <footer>依据 2026-11-14 在本机的逐项核对：文件属性、内容哈希，以及 <code>/var/backups</code> 里各次备份的版本；2026-11-15 升级后按升级脚本的记录和实际文件更新。时间为服务器时间（America/Los_Angeles）。</footer>
+  <footer>主体依据 2026-11-14 在本机的逐项核对，以及 2026-11-15 升级后的文件记录；时间线补记 2026-11-22、11-23 的控制器替换、备份和真实 systemd 验收。时间为服务器时间（America/Los_Angeles）。</footer>
 </main>
 </body>
 </html>

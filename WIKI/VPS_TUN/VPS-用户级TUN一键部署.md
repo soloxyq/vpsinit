@@ -381,9 +381,9 @@ firewalld、ufw 的重载行为没有核实，本文不作结论。
 
 `e0d3d24` 在第二版候选的基础上改了“核心未运行”和“TUN 不存在”两条报告的措辞，并在 `core-check.py` 中加入上述停止确认。这一版的控制器随后单独验收，所用的 `core-check.py` 比 `e0d3d24` 多一处修正：核心在确认期间退出时，报出为此准备的错误。`netns-check.py` 3/3，`core-check.py` 8/8，每轮的关闭 socket 检查都观察到 6 个 ICMP 和 20 至 23 个 TCP 复位，没有包从物理出口发出。两项对照：探测在关闭 socket 前多停 50 ms，2/2 通过；删去控制器中按连接标记接管没有 socket 的包的两条规则，检查失败，报告 128 个包从物理出口发出。离线测试 `tests/test_lifecycle.py` 94 项、`tests/test_portable.py` 15 项全部通过。
 
-这一版的控制器随后部署到 Mico-system，不重载规则、不重启核心，记录见[归档说明](scripts/xq-user-proxy/README.md#2026-11-23-部署-e0d3d24-的控制器)。
+这一版的控制器随后部署到 Mico-system，不重载规则、不重启核心，记录见[归档说明](scripts/xq-user-proxy/README.md#2026-11-23-部署-e0d3d24-的控制器)。随后在 17:29:24 对正在运行的服务做了一次真实 systemd 重启，启动时 `attach` 成功，核心 PID 为 `2573772`，`NRestarts=0`，`check` 返回 0。这个现场重启验证的是启动时 `attach`，修复式 `xq_proxyon` 分支仍未在宿主上执行。
 
-这些测试不需要改动 Mico-system 正在运行的 TUN。尚未在第二台真实 VPS 完整执行安装，因此没有把软件包安装、该机 systemd 启动和实际代理出口宣称为已在新服务器验收。目标机器仍需按安装器结果及本指南的状态、HTTPS 检查完成验证。
+上面的隔离测试没有改动 Mico-system 正在运行的 TUN。随后已在 Mico-system 做真实 systemd 重启验收。尚未在第二台真实 VPS 完整执行安装，因此没有把软件包安装、该机 systemd 启动和实际代理出口宣称为已在新服务器验收。目标机器仍需按安装器结果及本指南的状态、HTTPS 检查完成验证。
 
 修改源码或文档后，可在 `WIKI/VPS_TUN` 目录重新生成部署包及 SHA256 校验文件：
 

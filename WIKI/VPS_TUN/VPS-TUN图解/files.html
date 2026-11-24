@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TUN 改动文件清单</title>
-<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14/15 的逐项核对整理，并补记 11-22、11-23 的控制器替换和真实 systemd 验收。">
+<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14/15 的逐项核对整理，并补记 11-15 至 11-23 的控制器替换和 11-23 的一次真实 systemd 重启。">
 <style>
 /* Same transit-map tokens as index.html, plus status colours for files:
    blue = added by this solution, amber = existing file changed,
@@ -367,13 +367,14 @@ footer code { font-family: var(--mono); font-size: .92em; }
             <li><span class="dir">backups/</span>
               <ul>
                 <li><div class="row"><span class="nm">xq-*/（11 个目录）</span><span class="b bak">备份</span></div><span class="ds">每次安装、更新前的快照，见下方时间线</span></li>
+                <li><div class="row"><span class="nm">xq-user-proxyctl-before-*（7 个文件）</span><span class="b bak">备份</span><span class="md">用户级</span></div><span class="ds">11-15 晚上起每次单独替换控制器前的旧控制器（5 个），以及 11-15 重载规则前后的规则表（2 个 .nft-*.txt），见下方时间线</span></li>
               </ul>
             </li>
           </ul>
         </section>
 
       </div>
-      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。当前用户级控制器为 <code>e0d3d24</code>，服务定义仍沿用便携包版本；11-22、11-23 的替换和备份见下方时间线。房间模式和共用的文件没有被这些用户级更新改动。</figcaption>
+      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。当前用户级控制器为 <code>e0d3d24</code>，服务定义仍沿用便携包版本；11-15 升级之后控制器的每次替换和备份见下方时间线。房间模式和共用的文件没有被这些用户级更新改动。</figcaption>
     </figure>
   </section>
 
@@ -492,13 +493,25 @@ footer code { font-family: var(--mono); font-size: .92em; }
               <div class="ev"><b>用户级升级为便携包版本</b>
                 <ul class="chips"><li>xq-user-proxyctl</li><li>xq-user-proxy.service</li><li>sing-box.json</li><li>settings.json</li><li>managed-by</li><li>bin/sing-box</li><li>删 verify.py</li></ul>
                 <p class="bk">备份 xq-user-proxy-upgrade-20261115-202339-hgiljq0u</p></div></li>
+            <li><time>21:32</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 <code class="inline">1a58d33</code> 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>重载规则</li><li>不重启核心</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-reply-fix-20261115-213230（及重载前后的 .nft-before.txt、.nft-after.txt）</p></div></li>
+            <li><time>22:07</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 <code class="inline">cf48933</code> 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>只改注释</li><li>不停服</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-comment-fix-20261115-220704</p></div></li>
           </ol>
         </section>
         <section class="day" aria-labelledby="day-22">
           <h3 id="day-22">11-22 晚上</h3>
           <ol class="tl">
+            <li><time>19:50</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 <code class="inline">09ed7b4</code> 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-dns-cleanup-fix-20261122-195045</p></div></li>
             <li><time>23:39</time><span class="rail" aria-hidden="true"></span>
-              <div class="ev"><b>部署 `b98369dbc` 控制器</b>
+              <div class="ev"><b>部署 <code class="inline">b98369dbc</code> 控制器</b>
                 <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li></ul>
                 <p class="bk">备份 xq-user-proxyctl-before-b98369d-20261122-233925</p></div></li>
           </ol>
@@ -507,13 +520,13 @@ footer code { font-family: var(--mono); font-size: .92em; }
           <h3 id="day-23">11-23</h3>
           <ol class="tl">
             <li><time>06:20</time><span class="rail" aria-hidden="true"></span>
-              <div class="ev"><b>部署 `e0d3d24` 控制器</b>
+              <div class="ev"><b>部署 <code class="inline">e0d3d24</code> 控制器</b>
                 <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li><li>等待 TUN 启用</li></ul>
                 <p class="bk">备份 xq-user-proxyctl-before-e0d3d24-20261123-062041</p></div></li>
             <li><time>17:29</time><span class="rail" aria-hidden="true"></span>
-              <div class="ev"><b>真实 systemd 重启验证启动 `attach`</b>
-                <ul class="chips"><li>核心 PID 2573772</li><li>NRestarts=0</li><li>check 通过</li></ul>
-                <p class="bk">未替换文件，规则和配置未重载</p></div></li>
+              <div class="ev"><b>真实 systemd 重启核心，新的 <code class="inline">attach</code> 完成</b>
+                <ul class="chips"><li>核心 PID 2573772</li><li>NRestarts=0</li><li>check 通过</li><li>未走到等待</li></ul>
+                <p class="bk">没有替换安装的文件，规则未重载；核心重新读取未改动的配置，TUN 重建，core.json 重写</p></div></li>
           </ol>
         </section>
       </div>
@@ -565,7 +578,7 @@ ip rule show | grep 18410; ip route show table 20261
 sudo ls -l /run/xq-user-proxy</pre>
   </section>
 
-  <footer>主体依据 2026-11-14 在本机的逐项核对，以及 2026-11-15 升级后的文件记录；时间线补记 2026-11-22、11-23 的控制器替换、备份和真实 systemd 验收。时间为服务器时间（America/Los_Angeles）。</footer>
+  <footer>主体依据 2026-11-14 在本机的逐项核对，以及 2026-11-15 升级后的文件记录；时间线补记 2026-11-15 升级之后至 11-23 的控制器替换和备份（已比对 <code>/var/backups</code> 中各备份的哈希），以及 11-23 的一次真实 systemd 重启。时间为服务器时间（America/Los_Angeles）。</footer>
 </main>
 </body>
 </html>

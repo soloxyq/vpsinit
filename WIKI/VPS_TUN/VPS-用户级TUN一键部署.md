@@ -23,9 +23,9 @@ Mico-system 在 2026-11-23 06:20（服务器时间）又部署了 `e0d3d24` 的�
 | 特权端口 | `net.ipv4.ip_unprivileged_port_start` 必须大于 `40`（内核默认 `1024`）。专用 DNS 入口使用特权端口 `127.0.0.1:40`；该值被调到 `40` 或以下时普通用户可以占用入口，安装和开启都会拒绝 |
 | 默认 DNS | `/etc/resolv.conf` 中 glibc 实际使用的 nameserver（前 3 个）至少有一个可用：IPv4 地址，或 IPv6 的 ULA/链路本地地址。只有 `::1` 或公网 IPv6 nameserver 时安装和开启都会拒绝，见第 5 节 |
 | 名称解析（NSS） | `/etc/nsswitch.conf` 必须恰好有一条 `hosts` 行，其中有 `dns`，并且只出现 `files`、`dns`、`mdns4_minimal`、`[NOTFOUND=return]`、`myhostname` 这几项；机器上不能运行 nscd。其他模块（例如 systemd-resolved 的 `resolve`）可能把查询交给共享的解析服务代发，那样的查询不属于目标用户、不会被接管，安装和开启都会拒绝，并指出 `hosts` 行里是哪几项。这一行不能带行尾注释：glibc 把行中间 `#` 后面的词也当作模块加载。各项的理由和各发行版镜像的默认值见表后 |
-| 上游 | 从新 VPS 可达的 SOCKS5 IPv4 地址及端口，无用户名密码认证，支持 TCP |
+| 上游 | 从新 VPS 可达的 SOCKS5 IPv4 地址及端口，无用户名密码认证，支持 TCP。它还必须能访问 `1.1.1.1:443`：被接管的 DNS 固定经上游走 DoH，而安装器的探测不测这一项，见[上游的要求和安装前的测试](#上游的要求和安装前的测试) |
 | 下载 | 能通过 apt 获取缺少的发行版依赖，并通过给定代理下载 sing-box 1.14.4 官方发行包；可提供对应架构的本地官方 `.tar.gz` |
-| 共存 | 单台机器只由此安装包管理一个目标用户；安装前不能存在同名旧部署或占用其专用资源 |
+| 共存 | 单台机器只由此安装包管理一个目标用户；安装前不能存在同名旧部署或占用其专用资源，具体见[与已有网络配置共存](#与已有网络配置共存) |
 
 `hosts` 行里被接受的几项各有理由。`dns` 的查询从发起查询的程序自己的 socket 发出，按 UID 接管。`files` 只读 `/etc/hosts`。`mdns4_minimal` 只处理 `printer.local` 这样两段的名称和 `169.254.0.0/16` 地址的反查。对这样的名称，它先从发起查询的程序自己的 socket 向 `/etc/resolv.conf` 里的服务器查一次 `local` 的 SOA，这个查询和 `dns` 的一样按 UID 接管；查不到时才把名称交给 avahi-daemon，由后者在本地链路上组播查询，那本来就在直连范围内。`myhostname` 只应答本机主机名、`localhost` 和 `localhost.localdomain`（及以 `.localhost`、`.localhost.localdomain` 结尾的名称）、`_gateway` 和 `_outbound`，以及本机地址的反查，数据取自本机的主机名和内核里的地址、路由，不发任何查询。`[NOTFOUND=return]` 是动作项，不是模块；其他写法的动作项（包括小写的）不接受。
 
@@ -49,6 +49,51 @@ Mico-system 在 2026-11-23 06:20（服务器时间）又部署了 `e0d3d24` 的�
 若代理实际只支持 HTTP CONNECT，或要求用户名/密码，本安装包不适用；不能把它当作无认证 SOCKS5 端口使用。
 
 自动安装缺少的系统包可能执行软件包维护脚本，因此不能承诺整个安装过程对系统其余部分绝无影响。已有复杂防火墙或其他网络管理服务的 VPS，建议管理员先预装所需依赖（`iproute2`、`nftables`、`iptables`、`conntrack`、`curl`、`util-linux`、`sudo`、`ca-certificates`），核对软件包操作和防火墙状态后再运行安装器。
+
+### 上游的要求和安装前的测试
+
+核心的 DNS 配置是固定的：被接管的查询全部经上游发往 `1.1.1.1:443`（DoH，TLS 的 SNI 为 `cloudflare-dns.com`），控制器不接受改动过的配置。安装器在写入文件之前只探测一次上游（经它访问 `https://example.com/`，域名交给上游解析），不经过这条路。上游到不了 `1.1.1.1:443`，或不接受按 IP 地址发来的连接请求时，要到开启之后才失败，那时目标用户已经处于被阻断的状态。安装前在新 VPS 上先测一次，把地址换成实际的上游：
+
+```bash
+UP=203.0.113.25:1080
+curl --disable -sS --fail --max-time 30 --proxy "socks5://$UP" --noproxy '' --resolve cloudflare-dns.com:443:1.1.1.1 \
+  -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=example.com&type=A'; echo
+```
+
+应返回含 `"Status":0` 和 `"Answer"` 的 JSON。这条命令和核心一样，请求上游连接 IPv4 字面地址 `1.1.1.1:443`，TLS 带同样的 SNI；请求内容用的是 Cloudflare 的 JSON 接口，与核心发出的 DoH 报文不同。`--noproxy ''` 使环境变量 `NO_PROXY` 不起作用：没有它，`NO_PROXY` 匹配时 curl 会绕过 `--proxy` 直接连接，上游不通也会显示通过。2026-11-23 在 Mico-system 上对现有上游运行过这条命令，返回了这样的 JSON。
+
+除此之外：
+
+- 安装器经上游从 GitHub 下载 sing-box（可用 `--archive` 免去）；默认安装的最后一步和 `xq_proxyon` 以目标用户身份访问 `https://api.ipify.org` 查询出口。缺少的系统依赖由 apt 安装：安装器不把上游交给 apt，apt 按 `/etc/apt` 里的设置访问软件源，默认是直连。
+- 上游在公网时，这段 SOCKS5 没有认证也没有加密。应在上游一侧只放行本机的出口 IPv4，否则它就是公网上的开放代理；出口地址在安装前用 `curl --disable --proxy '' --noproxy '*' -4 https://api.ipify.org` 查询（这几个选项使 shell 里的代理环境变量和 `~/.curlrc` 不起作用），在 NAT 后面的机器上它与网卡上的地址不同。途经的网络能看到每条连接的目标 IP 和端口、TLS 的 SNI，以及所有未加密的内容。需要加密时，把上游放在隧道里的私网地址上，或使用本机 `127.0.0.1` 上的代理客户端。
+- 上游是本机 `127.0.0.1` 上的程序时，它不能以目标用户的身份运行。规则不为上游地址设例外，只按发包 socket 的 UID 选路：这个程序自己的出站连接也会进入 TUN，再由核心交回给它自己，目标用户的公网访问全部中断。由 root 或另一个用户运行则不受影响。这一条是按规则推断的，没有测试覆盖。
+
+### 与已有网络配置共存
+
+下列情况会被拒绝，都发生在写入本包文件之前。第一项只在安装时检查，其余各项在安装时和每次从关闭状态开启时都检查：
+
+- iptables-legacy 或 ip6tables-legacy 里有规则、自定义链，或默认策略不是 ACCEPT；
+- 其他 nftables 规则使用了 `meta mark`、`ct mark` 或 `ct zone`。全隧道的 WireGuard（wg-quick）、Tailscale、Kubernetes 一类的软件通常会用到，本文没有逐一核实；
+- 已有策略路由规则占用优先级 `18410`，或带 `fwmark` 而标记值或掩码含有本方案的路由标记位 `0x40000000`（不写掩码等于全掩码）；
+- 路由表 `20261` 里已有路由，或接口名 `xq-utun`、nft 表 `inet xq_user_proxy` 已经存在；
+- 已有路由（默认路由除外）覆盖 TUN 的地址 `172.30.254.1`，例如 `172.16.0.0/12` 或 `172.30.0.0/16` 的网段路由；
+- `127.0.0.1:40` 已被占用，或 conntrack 里已有带本方案标记、或在 zone `20261` 中的条目。本包在同一启动周期内关闭之后再开启时，conntrack 只查 DNS 映射的标记：它自己接管过的连接留下的标记和条目不算冲突。
+
+这些检查里，除 iptables-legacy 一项外都排在安装依赖和下载 sing-box 之后；[名称解析（NSS）](#1-安装前提)一项也是。被拒绝时还没有写入本包的文件，处理之后可以直接重跑安装器。处理应由管理员核对后进行，不要为了通过检查去删除不认识的规则或路由。
+
+运行安装器之前可以先用下面的只读命令查一遍，免得装完依赖、下载完 sing-box 才被拒绝。它们不改动系统，查的就是上面清单里的各项，只有两项没有列入：conntrack 一项要用到安装器才装上的工具；iptables-legacy 一项，机器上已经有 `iptables-legacy-save` 时安装器在安装依赖之前就先查，被拒绝也不会白等。
+
+```bash
+[ -x /usr/sbin/nft ] && sudo /usr/sbin/nft list ruleset | grep -nE '\b(meta|ct)[[:space:]]+mark\b|\bct[[:space:]]+((original|reply)[[:space:]]+)?zone\b'
+[ -x /usr/sbin/nft ] && sudo /usr/sbin/nft list tables | grep -x 'table inet xq_user_proxy'
+ip -4 rule show; ip -6 rule show
+ip -4 route show table 20261; ip -6 route show table 20261
+ip link show xq-utun
+python3 -I -c 'import ipaddress, json, subprocess; t = ipaddress.ip_address("172.30.254.1"); print([r["dst"] for r in json.loads(subprocess.run(["ip", "-j", "-4", "route", "show", "table", "all"], capture_output=True, text=True, check=True).stdout) if r.get("dst", "default") != "default" and t in ipaddress.ip_network(r["dst"], strict=False)])'
+ss -Hlntu 'sport = :40'
+```
+
+可以安装时：前两条没有输出（还没有装 nft 时也没有输出，安装器装好依赖后会再查）；`ip rule` 的输出里没有优先级 `18410`，带 `fwmark` 的规则其标记值和掩码都不含 `0x40000000`（不写掩码的算含）；两条 `ip route` 没有输出，或报路由表不存在；`ip link` 报设备不存在；Python 那一条打印 `[]`；`ss` 没有输出。
 
 ## 2. 将安装包放到新 VPS
 
@@ -108,7 +153,7 @@ curl --disable --proxy '' --noproxy '*' -4 --fail --max-time 20 https://api.ipif
 
 安装器无法修改此前打开的终端及其他进程的环境变量；只执行 `source ~/.bashrc` 也不会自动清理旧变量。在要继续使用的终端中执行 `xq_proxyon` 才会清除该 shell 的常见代理变量。其他终端需分别处理，已运行进程可能需要重启。
 
-公网出口是运行时查询结果，换代理节点后可以变化，没有固定的预期 IP。
+公网出口是运行时查询结果，换代理节点后可以变化，没有固定的预期 IP。判断是否走了代理，可以和 root 的出口比较：`sudo curl --disable --proxy '' --noproxy '*' -4 https://api.ipify.org` 以 root 身份查询，不经代理，得到的是 VPS 自己的出口；目标用户的结果与它相同，说明没有走代理（除非上游本来就从这个地址出网）。`sudo /usr/local/sbin/xq-user-proxyctl check` 通过时没有任何输出，退出码为 0。
 
 ### 只安装，稍后开启
 
@@ -119,6 +164,14 @@ xq_proxyon
 ```
 
 `--no-start` 仍会完成安装前的环境及代理检查，但不启用用户 TUN。
+
+通过 SSH 第一次在远程机器上安装时，建议用这种分两步的方式。用安装器在新机器上完整安装还没有做过（见[第 9 节](#9-已验证范围)），分开之后，安装出问题时网络没有变化，开启出问题时安装已经完成。另外：
+
+- 用普通 SSH 登录，不要用 mosh（见[第 5 节](#远程登录和目标用户自己的服务)）。最好在 `tmux` 或 `screen` 里运行安装器：它没有回滚，连接中断会把它停在半路。
+- 新开机的云主机先等首次启动的初始化和自动更新结束：`cloud-init status --wait` 返回之后，再看 `systemctl is-active apt-daily.service apt-daily-upgrade.service` 是否都是 `inactive`（前一条命令不等这两个服务）。安装器的 `apt-get` 不等待 dpkg 锁，锁被占用时直接失败；这时还没有写入本包的文件，等占用结束后重跑即可。
+- 开启之前另开一个 SSH 会话留着，并确认能使用服务商的控制台。重启之后本功能默认 OFF，这是最后的退路。
+- 开启之前先执行一次 `xq_proxystatus`：开关为 OFF 时它已经列出默认 DNS 在开启后的路径和警告。
+- `xq_proxyon` 成功时先打印状态报告，最后一行是“公网出口 IP：…”。之后新开一个 SSH 会话，确认还能登录。
 
 ### 先查看生成结果
 
@@ -154,6 +207,8 @@ xq_proxyon && claude
 
 这些命令不会进入新的交互式 shell。开关覆盖目标 UID 的全部宿主会话及新进程，不是单个终端；关闭终端不会关闭服务，新终端沿用当前状态，完整重启后默认 OFF。部分切换前建立的公网长连接可能需要重新连接。
 
+重启之后（包括服务商维护造成的重启）开关为 OFF，目标用户直接走 VPS 自己的网络，不会有任何提醒：`xq_proxystatus` 显示 OFF，返回码是 0。需要代理时重新执行 `xq_proxyon`，它会重做从关闭状态开启时的全部检查。
+
 快捷函数会清除调用终端的常见代理环境变量，但无法改写其他已运行进程的环境。程序若自行指定代理，或由 root、其他 UID、容器、共享守护进程代发网络请求，不属于同一用户的宿主 TUN 接管保证。
 
 本包仅安装用户级开关。原机器的 `xq_tun run claude` 属于另一个独立命名空间方案，本次便携安装不会额外创建该命令。
@@ -185,6 +240,12 @@ xq_proxyon && claude
 直连例外是 IPv4 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`169.254.0.0/16`、`224.0.0.0/4`、`255.255.255.255/32`，IPv6 `fc00::/7`、`fe80::/10`、`ff00::/8`。因此“防直连”指对受管公网流量的阻断策略，不代表封掉全部局域网通信。
 
 公网 ping 不通是预期策略，不能据此判断 Claude Code 或 HTTPS 代理失效。
+
+### 远程登录和目标用户自己的服务
+
+- SSH 登录不受开关影响，包括开启期间新建的登录和 scp、sftp。SSH 连接由 root 的 sshd 接受，而规则只认目标用户自己创建的 socket：内核按创建 socket 的进程的身份判断，连接之后交给目标用户的进程使用并不改变它。这是按规则和内核的实现推断的，包内没有测试覆盖这种情形，也没有在公网机器上验证过；所以第一次开启时要留好退路，见[第 3 节](#只安装稍后开启)。
+- 以目标用户身份运行、供公网客户端访问的服务在开启期间不通：它的应答进入 TUN，到不了客户端（见[第 7 节](#没有-socket-的包)）。mosh 属于这种情况，目标用户自己启动的 sshd 也是。从局域网和本机访问这些服务不受影响。
+- `100.64.0.0/10`（运营商级 NAT 地址段，Tailscale 和部分云厂商的内网服务使用）不在直连范围内，按公网处理：目标用户访问这些地址的 TCP 被交给上游，通常到不了。
 
 ### 默认 DNS 的实际路径
 
@@ -234,6 +295,8 @@ sudo /usr/local/sbin/xq-user-proxyctl off
 
 核心只在启动时读取配置，之后再改文件对正在运行的核心没有作用。更换上游时，`/etc/xq-user-proxy/settings.json` 和 `sing-box.json` 中的地址和端口要一起改（两者不一致时控制器拒绝），然后执行 `xq_proxyon`。
 
+两个文件属于 root、权限 `0600`，用 `sudoedit` 原地修改：`settings.json` 里是 `proxy_ip`（字符串）和 `proxy_port`（整数），`sing-box.json` 里是 `outbounds` 第一项的 `server` 和 `server_port`。`settings.json` 一旦写坏，控制器的所有命令都会拒绝执行，包括 `off`，改之前先留一份副本。控制器的 `on` 和 `check` 都不探测上游，它们通过不代表新上游可用：改之前先对新上游做一遍[第 1 节的测试](#上游的要求和安装前的测试)，改完用 `xq_proxyon`，它在开启之后还会查询一次出口。
+
 - 服务单元在核心启动前记下将要加载的配置（`ExecStartPre=… prepare`），核心起来后确认（`ExecStartPost=… attach`），记录在 `/run/xq-user-proxy/core.json`。systemd 自动重启核心时同样会重新记录。
 - `attach` 等核心的 TUN 有了唯一的地址 `172.30.254.1/32` 并且已经启用（UP）之后才给它路由：核心先设地址、后启用网卡，而内核拒绝经过未启用网卡的路由（`Device for nexthop is not up`）。它最多查询 50 次、每次间隔 0.1 秒，放弃前至少等了 5 秒（`ip` 响应慢时更久）；仍不满足则这次启动失败，防直连规则和黑洞路由保留。这时 `xq_proxyon` 只报 `systemctl start xq-user-proxy.service` 失败，缺的是哪一项（查不到 TUN 并附 `ip` 的报错、地址不对或未启用）写在服务日志里（`journalctl -u xq-user-proxy.service`）。核心在运行、它的启动记录与磁盘上的配置一致、TUN 也在而检查不通过时（例如规则表被清空后），`xq_proxyon` 不重启核心，自己执行同样的等待和添加路由；这时仍不满足的话，由 `xq_proxyon` 直接给出上述报告，核心继续运行，防直连规则和黑洞路由保留。
 - 磁盘上的配置与记录不一致时，`check` 返回非零，`xq_proxystatus` 显示运行中的核心实际使用的上游，并注明磁盘上的配置“尚未加载”。它不会把尚未生效的新上游显示成当前上游。
@@ -280,7 +343,26 @@ firewalld、ufw 的重载行为没有核实，本文不作结论。
 
 写明这些并不能让清空规则集变成安全操作：防直连只在这张表存在时成立。需要“规则集被清空后仍不直连”的保证时，必须另行设计，本包没有提供。使用 nftables 管理防火墙的机器，应改为只操作自己的表（`nft delete table`、`nft flush table`），不要整体 `flush ruleset`。
 
-如果安装在开启阶段失败，按安装输出中的路径检查已写入配置和日志，不要假设系统自动恢复了安装前的网络状态。安装记录及备份路径以该次脚本输出为准。
+### 安装器报“安装未完成”时
+
+安装器不回滚，本包也没有卸载命令。不要假设系统自动恢复了安装前的网络状态。下面的判断是读 `install.py` 得出的，各种中断没有逐一演练过。安装器被强行终止时（例如 SSH 断开）不打印“安装未完成”，判断方法相同。先看 `/etc/xq-user-proxy` 是否存在：
+
+- 不存在：还没有写入本包的文件，缺少的依赖可能已经装上。处理报错后可以直接重跑安装器。
+- 存在：安装器拒绝再次运行（“检测到已有安装或冲突”），不要靠删除文件强行重跑。再看安装器的输出里有没有“启用目标用户 TUN”这一行（加了 `--no-start` 时不会有）。看不到输出时（例如 SSH 断开，终端里没有留下），先确认安装器已经不在运行：`pgrep -af install.py` 的输出里没有带 `python3 -I` 和 `install.py` 的命令行（网络断开后，服务器上的旧会话可能过一阵才结束，这期间安装器还在往下走）。然后，在执行本包的任何命令之前用 `sudo ls -d /run/xq-user-proxy` 代替：安装器自己不建这个目录，只有控制器的 `on` 和 `off` 会建。它在，按“有这一行”处理；不在，按“没有这一行”处理（重启会清掉这个目录，重启之后开关是 OFF，同样按“没有这一行”处理）。已经执行过 `xq_proxyon`、`xq_proxyoff` 或控制器的 `on`、`off` 时，这个目录不能再作依据：直接用下面的 `latest-backup` 判断，列不出就按“列不出”处理；列得出时文件已经写完，先用 `sudo /usr/local/sbin/xq-user-proxyctl status` 看开关，再按“列得出”的步骤做。
+  - 没有这一行：停在开启之前，开关是 OFF，网络没有变化。用 `sudo ls /var/lib/xq-user-proxy/latest-backup` 判断系统文件是否写完：它是安装器写入的最后一个文件。控制器反而是第一个，控制器在不说明其余文件已经写完。
+    - 列得出：文件已经写完，停在其后的几步之一（核对服务单元、`systemctl daemon-reload`、修改 `~/.bashrc`）。按报错处理后执行 `sudo systemctl daemon-reload`，再 `source /usr/local/share/xq-user-proxy/xq-user-proxy.bash`，然后 `xq_proxyon`。报错来自 `~/.bashrc` 时（它是符号链接、不属于目标用户，或已有 `xq-user-tun` 标记），新开的终端不会自动加载这些命令，要自己核对或加上那三行。看不到输出时，也看一下 `~/.bashrc` 末尾有没有这三行。
+    - 列不出：停在写文件的中途，只能手动移除后重装。这时不要执行 `xq_proxyon`，也不要直接执行控制器的 `on`：配置已经写下而核心的二进制还没有写完时，它会装上防直连规则，核心却启动不了，目标用户停在被阻断的状态。
+  - 有这一行：停在开启、`check` 或最后的出口查询。开关多半已经是 ON：目标用户的公网访问被阻断，不是直连（发往局域网 DNS 的查询照常直连，见第 5 节），root 和其他用户不受影响。按本节开头的办法查看状态和日志，修好后执行 `xq_proxyon`；要恢复直连就执行 `xq_proxyoff`。只有出口查询失败时，安装其实已经完成，常见原因是上游到不了 `1.1.1.1:443` 或 `api.ipify.org`。
+
+安装器写入的对象如下，读代码得出；移除步骤没有验证过。开关为 ON 时，移除其中任何一项之前先用 `xq_proxyoff` 关闭：控制器、`settings.json` 或 `/run/xq-user-proxy/` 里的记录不在了，就无法再用它关闭，防直连规则和路由会留到重启。
+
+- `/etc/xq-user-proxy/`、`/usr/local/lib/xq-user-proxy/`、`/usr/local/share/xq-user-proxy/`、`/var/lib/xq-user-proxy/`、`/usr/local/sbin/xq-user-proxyctl`、`/etc/systemd/system/xq-user-proxy.service`；
+- 目标用户 `~/.bashrc` 末尾 `# >>> xq-user-tun >>>` 到 `# <<< xq-user-tun <<<` 的三行，以及修改前的副本 `~/.bashrc.before-xq-user-tun-*`。这三行不删，重装会在系统文件写完之后才停下；
+- 安装前的网络快照 `/var/backups/xq-user-tun-*/host-before.json`，路径记在 `/var/lib/xq-user-proxy/latest-backup` 里，安装成功时也打印在输出最后的“网络基线”一行；
+- 运行时的 `/run/xq-user-proxy/` 和 `/run/xq-user-proxy-install.lock`，重启后消失；
+- 安装器被强行终止时（例如 SSH 断开而没有用 `tmux`），临时目录 `/var/tmp/xq-user-tun-*` 和 `/run/xq-user-tun-check-*` 可能留下，里面有带上游地址的配置。这一条是按 Python 清理临时目录的方式推断的。
+
+安装器用 apt 装上的依赖没有单独记录，只在安装输出里列出。
 
 ## 7. 用户隔离的边界
 

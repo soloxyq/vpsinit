@@ -1104,6 +1104,104 @@ class PrerequisiteTests(Offline):
                         self.write('/run/nscd/socket', '')
                     self.assert_refused_unchanged('on', 'nscd')
 
+    def test_the_hosts_line_of_nsswitch_decides_whether_lookups_can_be_taken_over(self):
+        """The file is read as glibc reads it: every word glibc would load as a module must be an accepted one."""
+        def nsswitch(data):
+            pathlib.Path(self.box.inside('/etc/nsswitch.conf')).write_bytes(data)
+
+        def break_the_guard(core):
+            """Make check() fail, so that the next on() repairs instead of reporting."""
+            if core == 'stopped':
+                self.kernel.take_down()                    # on() would start the core again
+            else:
+                self.kernel.table = None                   # nft flush ruleset: on() would keep the running core
+
+        accepted = {
+            'glibc default': b'hosts:          files dns\n',
+            'with avahi': b'hosts:          files mdns4_minimal [NOTFOUND=return] dns\n',
+            'Debian 12 cloud image, June 2024': b'hosts:          files dns myhostname\n',
+            'Debian 12 as packaged since': b'passwd:         files systemd\nhosts:          files myhostname dns\n',
+            # A line whose first word starts with '#' names no database.
+            'old line commented out as a whole': ('# 原来的一行\n#hosts: files resolve [!UNAVAIL=return] dns myhostname\n'
+                                                  'hosts: files myhostname dns\n').encode(),
+            # glibc needs no colon and takes a tab and the CR before a line feed as blanks. A '#' on the line of
+            # another database is that line's business. A last line without a line feed, here the services line,
+            # glibc leaves out; the check reads such a line all the same (see 'last line without a line feed').
+            'no colon, tabs, CRLF, no final newline': b'hosts\tfiles\tdns\r\nnetworks:\tfiles\r\nservices: db files # hosts: resolve',
+            'blanks around the colon': b'  hosts : files dns\n',
+            # Every blank of C may stand before the name and, with the colon, after it.
+            'vertical tab, form feed and CR around the name': b'\x0b\x0chosts\x0c:\x0b\r files\tdns\n',
+        }
+        for name, data in accepted.items():
+            for core in ('stopped', 'running'):
+                with self.subTest(accepted=name, repaired_with_core=core):
+                    self.build()
+                    nsswitch(data)
+                    self.healthy_on()
+                    break_the_guard(core)                  # check() fails: on() asks again before it repairs
+                    self.call('on')
+                    self.call('check')
+        refused = {
+            # systemd-resolved would ask on the owner's behalf; myhostname next to it is not what is refused.
+            'resolve': (b'hosts: files resolve [!UNAVAIL=return] dns myhostname\n', 'hosts 行的 resolve [!UNAVAIL=return]）'),
+            'Debian 13 as packaged': (b'hosts:          files myhostname resolve [!UNAVAIL=return] dns\n',
+                                      'hosts 行的 resolve [!UNAVAIL=return]）'),
+            'mymachines': (b'hosts: files mymachines dns\n', 'hosts 行的 mymachines）'),
+            'all names by mdns': (b'hosts: files mdns4 dns\n', 'hosts 行的 mdns4）'),
+            'mdns for both address families': (b'hosts: files mdns [NOTFOUND=return] dns\n', 'hosts 行的 mdns）'),
+            # Samba's wins and sssd's sss hand the name to winbindd and to sssd.
+            'wins': (b'hosts: files dns wins\n', 'hosts 行的 wins）'),
+            'sss': (b'hosts: files sss dns\n', 'hosts 行的 sss）'),
+            # What is refused is named even where dns is missing as well.
+            'resolve and no dns': (b'hosts: files resolve [!UNAVAIL=return] myhostname\n', 'hosts 行的 resolve [!UNAVAIL=return]）'),
+            # glibc loads the words after '#' as modules ...
+            'resolve after #': (b'hosts: files dns myhostname # resolve [!UNAVAIL=return]\n',
+                                'hosts 行的 # resolve [!UNAVAIL=return]）'),
+            'a comment after #': (b'hosts: files dns # the default\n', 'hosts 行的 # the default）'),
+            # What can be read is shown as it is.
+            'a comment in Chinese after #': ('hosts: files dns # 旧的写法\n'.encode(), 'hosts 行的 # 旧的写法）'),
+            # ... takes a CR and a form feed inside the line as blanks, not as its end ...
+            'resolve after a CR': (b'hosts: files dns myhostname\rresolve\n', 'hosts 行的 resolve）'),
+            'resolve after a form feed': (b'hosts: files dns\x0cresolve\n', 'hosts 行的 resolve）'),
+            # ... and needs no blank between an action and the next module. Here that is one unknown word.
+            'no blank after an action': (b'hosts: files [NOTFOUND=return]resolve dns\n', 'hosts 行的 [NOTFOUND=return]resolve）'),
+            'not UTF-8': (b'hosts: files dns r\xe9solve\n', 'hosts 行的 r\\xe9solve）'),
+            # A no-break space is no blank to glibc: files and dns are one word here. The refusal shows it.
+            'a no-break space between two words': (b'hosts:          files\xc2\xa0dns\n', 'hosts 行的 files\\xa0dns）'),
+            # glibc reads a line only up to a NUL. The check reads on: the word with the NUL in it is not accepted.
+            'a NUL in the line': (b'hosts: files dns\x00 resolve\n', 'hosts 行的 dns\\x00 resolve）'),
+            'no dns': (b'hosts: files myhostname\n', 'hosts 行没有 dns'),
+            # dns has to be a word of its own; mdns4_minimal only contains the letters.
+            'dns only inside another word': (b'hosts: files mdns4_minimal\n', 'hosts 行没有 dns'),
+            'nothing after the name': (b'hosts:\n', 'hosts 行没有 dns'),
+            # glibc lets the last line for a database replace the earlier ones: with or without a colon,
+            # indented, or the bare name, which leaves the database without any module.
+            'two hosts lines': (b'hosts: files dns\nhosts: files dns myhostname\n', '有 2 条 hosts 行'),
+            'second one without colon': (b'hosts: files dns myhostname\nhosts files resolve dns\n', '有 2 条 hosts 行'),
+            'second one indented': (b'hosts: files dns\n\t hosts: files resolve dns\n', '有 2 条 hosts 行'),
+            # Every blank of C counts before and after the name, not only the space and the tab ...
+            'second one after a form feed': (b'hosts: files dns\n\x0chosts: files resolve dns\n', '有 2 条 hosts 行'),
+            'second one after a CR': (b'hosts: files dns\n\rhosts: files resolve dns\n', '有 2 条 hosts 行'),
+            'second one, vertical tab after the name': (b'hosts: files dns\nhosts\x0bfiles resolve dns\n', '有 2 条 hosts 行'),
+            'second one, CR after the name': (b'hosts: files dns\nhosts\rfiles resolve dns\n', '有 2 条 hosts 行'),
+            # ... and a '#' that comes first in the list does not make the line a comment.
+            'second one, # first in its list': (b'hosts: files dns\nhosts: # resolve [!UNAVAIL=return] dns\n', '有 2 条 hosts 行'),
+            'second one is the bare name': (b'hosts: files dns\nhosts\n', '有 2 条 hosts 行'),
+            # glibc leaves out a last line without a line feed. The check counts it: a line feed added later
+            # would put it into force.
+            'last line without a line feed': (b'hosts: files dns\nhosts: files resolve dns', '有 2 条 hosts 行'),
+            'no hosts line': (b'passwd:         files systemd\n#hosts: files dns\nHOSTS: files dns\n', '没有 hosts 行'),
+        }
+        for name, (data, said) in refused.items():
+            for kind in ('fresh', 'repair with the core stopped', 'repair with the core running'):
+                with self.subTest(refused=name, on=kind):
+                    self.build()
+                    if kind != 'fresh':
+                        self.healthy_on()
+                        break_the_guard(kind.split()[-1])
+                    nsswitch(data)
+                    self.assert_refused_unchanged('on', said)
+
     def test_fresh_on_without_conntrack_changes_nothing(self):
         for how in ('missing', 'not executable', 'cannot list'):
             with self.subTest(conntrack=how):

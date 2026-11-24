@@ -469,14 +469,50 @@ def install_firewall(state, active=True):
 
 
 def check_nss():
-    hosts = [line.split('#', 1)[0].partition(':')[2].split()
-             for line in Path('/etc/nsswitch.conf').read_text().splitlines()
-             if line.partition(':')[0].strip() == 'hosts']
-    if len(hosts) != 1 or 'dns' not in hosts[0]:
-        raise RuntimeError('hosts NSS 配置不能确定由 libc DNS 解析；停止启用')
-    allowed = {'files', 'dns', 'mdns4_minimal', '[NOTFOUND=return]'}
-    if set(hosts[0]) - allowed:
-        raise RuntimeError('检测到共享 NSS 解析模块；不能保证按 UID 接管 DNS')
+    # The file is read as glibc reads it (2.35 and later, which every release
+    # the installer accepts has): a line ends at '\n' only; blanks may precede
+    # the database name, which ends at a blank or ':'; the blanks and colons
+    # after it are skipped, and the rest is split at blanks into the words
+    # glibc loads as modules. '#' starts no comment there: a word after it is
+    # loaded like any other, so it has to pass the list below as well. Where
+    # several lines name the database glibc takes the last; here that is refused.
+    # glibc itself leaves out a last line that has no '\n' and what follows a
+    # NUL in a line. Both are read here all the same. That lets no other module
+    # through: it refuses more, and where such a last line is the only hosts
+    # line, glibc uses its built-in "files dns" in its place.
+    hosts = []
+    for line in Path('/etc/nsswitch.conf').read_bytes().split(b'\n'):
+        name, rest = re.match(rb'[ \t\v\f\r]*([^ \t\v\f\r:]*)[ \t\v\f\r:]*(.*)', line).groups()
+        if name == b'hosts':
+            hosts.append([word.decode(errors='backslashreplace') for word in rest.split()])
+    if len(hosts) != 1:
+        found = f'有 {len(hosts)} 条' if hosts else '没有'
+        raise RuntimeError(f'hosts NSS 配置不能确定由 libc DNS 解析（/etc/nsswitch.conf {found} hosts 行）；停止启用')
+    # Accepted is what asks only in ways the rules deal with. dns sends its
+    # query from the asking program's own socket, where it is taken over by
+    # UID. files reads /etc/hosts. mdns4_minimal takes only names like
+    # printer.local and the reverse of 169.254.0.0/16: for such a name it first
+    # asks for the SOA of local as dns would, from the program's own socket,
+    # and only if there is none hands the name to avahi-daemon, which asks by
+    # multicast on the local link, a range that stays direct in any case.
+    # myhostname (in Debian's cloud images) answers the machine's own name,
+    # localhost and localhost.localdomain (and the names below these two),
+    # _gateway and _outbound, and the reverse of the machine's own addresses,
+    # from the host name and the kernel's address and route tables, and sends
+    # nothing. Anything else may hand the question to a shared service, as
+    # resolve does to systemd-resolved, whose query is not the owner's and is
+    # not taken over.
+    allowed = {'files', 'dns', 'mdns4_minimal', '[NOTFOUND=return]', 'myhostname'}
+    others = [word for word in hosts[0] if word not in allowed]
+    if others:
+        # What Python does not count as printable is shown escaped: a no-break
+        # space pasted between files and dns makes one word of them, which must
+        # not read "files dns".
+        shown = ''.join(c if c.isprintable() else c.encode('unicode_escape').decode() for c in ' '.join(others))
+        raise RuntimeError(f'检测到不在允许范围内的 NSS 项（hosts 行的 {shown}），'
+                           '它们可能把查询交给共享解析服务；不能保证按 UID 接管 DNS')
+    if 'dns' not in hosts[0]:
+        raise RuntimeError('hosts NSS 配置不能确定由 libc DNS 解析（hosts 行没有 dns）；停止启用')
     for path in ('/run/nscd/socket', '/var/run/nscd/socket', '/var/run/.nscd_socket'):
         if os.path.exists(path):
             raise RuntimeError('检测到 nscd 套接字；不修改其他用户服务，停止启用')

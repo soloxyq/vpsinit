@@ -6,7 +6,7 @@
 
 **2026-11-15：** 当前版本在修复公网 DNS 直连泄漏和配置修改后不重载（提交 `51eb45c`）之后，又去掉了回复方向保持宿主路由、放行出网的例外：被代理用户发往公网的包在原始方向和回复方向都进入 TUN（IPv4）或被出口守卫丢弃（IPv6），关闭了外部预置一条反向 conntrack 记录就把非 DNS 的公网 UDP、IPv6、TCP 引到物理出口的通道（代价见下方行为说明）。两处都已部署到 Mico-system：第二批通过[原地升级](../xq-user-proxy/README.md#2026-11-15-原地升级为便携包版本)，第三批通过替换控制器并重载规则，均不改动核心配置、不重启核心。用本包的安装器在一台新机器上完整安装，仍未做过。
 
-Mico-system 在 2026-11-22 23:39（服务器时间）部署了 `b98369dbc` 的控制器，沿用已加载的规则和运行中的核心。该版已修复开启时清理旧 DNS 映射的竞态，并在映射集中到期时按剩余条数继续清理。2026-11-23 06:20 又部署了 `e0d3d24` 的控制器（`attach` 等 TUN 启用后才给它路由，`check` 先核对已加载规则的摘要），同样没有重载规则，也没有重启核心。同日 17:29 核心在真实 systemd 下重启，新的 `attach` 退出码 0，核心 PID 为 `2573772`、`NRestarts=0`，随后 `check` 通过；`attach` 第一次查询时 TUN 已经启用，等待 TUN 启用的路径没有走到，这一版的修复式 `xq_proxyon` 分支在本机宿主上也没有执行过的记录。
+Mico-system 在 2026-11-22 23:39（服务器时间）部署了 `b98369dbc` 的控制器，沿用已加载的规则和运行中的核心。该版已修复开启时清理旧 DNS 映射的竞态，并在映射集中到期时按剩余条数继续清理。2026-11-23 06:20 又部署了 `e0d3d24` 的控制器（`attach` 等 TUN 启用后才给它路由，`check` 先核对已加载规则的摘要），同样没有重载规则，也没有重启核心。同日 17:29 核心在真实 systemd 下重启，新的 `attach` 退出码 0，核心 PID 为 `2573772`、`NRestarts=0`，随后 `check` 通过；`attach` 第一次查询时 TUN 已经启用，等待 TUN 启用的路径没有走到，这一版的修复式 `xq_proxyon` 分支在本机宿主上也没有执行过的记录。此后安装和开启前的 NSS 检查改为接受 `myhostname`（Debian 12 云镜像的 `hosts` 行里有它），并按 glibc 的读法读 `hosts` 行；这项修改不改变生成的规则，没有部署到 Mico-system，本机运行的仍是 `e0d3d24` 的控制器。
 
 ## 安装
 
@@ -46,6 +46,8 @@ xq_proxystatus         # 查询状态
 | `--render-dir DIR` | 只在尚不存在的目录中生成安装配置，不含核心文件，不提权、不安装、不修改网络 |
 | `--archive FILE` | 使用本地官方 sing-box 1.14.4 `.tar.gz`，仍按当前架构核验内置 SHA256 |
 | `--help` | 查看实际脚本支持的参数 |
+
+安装前提见[指南第 1 节](../../VPS-用户级TUN一键部署.md#1-安装前提)。其中 `/etc/nsswitch.conf` 必须恰好有一条 `hosts` 行，行里必须有 `dns`，并且只接受 `files`、`dns`、`mdns4_minimal`、`[NOTFOUND=return]` 和 `myhostname`；带 `resolve` 等其他模块或运行 nscd 的机器会被拒绝，报错指出是哪几项。行尾注释也会被拒绝：glibc 把行中间 `#` 后面的词当作模块加载，检查按同样的读法读这一行。
 
 普通用户运行时自动选择该用户；`sudo bash install.sh ...` 会识别 sudo 前的用户。目标必须是已有的非 root 账号，并已有后续执行开关所需的 sudo 管理权限。root 使用 `--user` 代装不会自动授予目标账号 sudo 权限；安装器不写 sudoers。每台 VPS 只允许本安装包管理一个用户，遇到旧安装或资源冲突会拒绝，不提供原地升级。唯一的例外是 Mico-system 上的冻结版本：它由专门的 [upgrade-to-portable.py](../xq-user-proxy/upgrade-to-portable.py) 原地换成本包的控制器、服务单元和配置，过程见[归档说明](../xq-user-proxy/README.md)。
 
@@ -104,6 +106,6 @@ HOSTNS=$(readlink /proc/self/ns/net)
 unshare --user --map-root-user --net env XQ_HOST_NETNS="$HOSTNS" python3 -I tests/netns-check.py
 ```
 
-此时命名空间内只有一个身份，各角色通过规则中的 UID 常量轮流扮演，需要两个用户同时存在的检查会标为 SKIPPED；它不能代替上面的 root 运行。2026-11-15 的版本在 Mico-system（Ubuntu 22.04，内核 6.8）上执行了全部四项：离线 15 + 57 项、rootless 运行、root 下的三身份运行、`core-check.py` 连续 6 次，全部通过。2026-11-22 第四批修改的运行记录列出了离线 15 + 64 项、rootless 运行、root 下的三身份运行和 `core-check.py` 连续 6 次通过。当前版本的离线测试为 `test_lifecycle.py` 94 项、`test_portable.py` 15 项；2026-11-23 对 `e0d3d24` 控制器的三身份验收为 `netns-check.py` 3/3、`core-check.py` 8/8，所用的 `core-check.py` 与 `2576030` 中的文件相同（此后 `fce5067` 只改了一条断言的报错文字）。本机另有一次真实 systemd 重启，新的 `attach` 完成，但没有走到等待（见上文）。详细拆分见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。
+此时命名空间内只有一个身份，各角色通过规则中的 UID 常量轮流扮演，需要两个用户同时存在的检查会标为 SKIPPED；它不能代替上面的 root 运行。2026-11-15 的版本在 Mico-system（Ubuntu 22.04，内核 6.8）上执行了全部四项：离线 15 + 57 项、rootless 运行、root 下的三身份运行、`core-check.py` 连续 6 次，全部通过。2026-11-22 第四批修改的运行记录列出了离线 15 + 64 项、rootless 运行、root 下的三身份运行和 `core-check.py` 连续 6 次通过。当前版本的离线测试为 `test_lifecycle.py` 95 项、`test_portable.py` 15 项（第 95 项是 2026-11-23 为 NSS 检查新增的）；2026-11-23 对 `e0d3d24` 控制器的三身份验收为 `netns-check.py` 3/3、`core-check.py` 8/8，所用的 `core-check.py` 与 `2576030` 中的文件相同（此后 `fce5067` 只改了一条断言的报错文字）。本机另有一次真实 systemd 重启，新的 `attach` 完成，但没有走到等待（见上文）。详细拆分见[指南第 9 节](../../VPS-用户级TUN一键部署.md#9-已验证范围)。
 
 2026-11-23 在独立网络命名空间内用三个真实身份复核了当时的部署版 `b98369dbc`、合并前的候选版和 `e0d3d24` 的控制器，逐项结果见[三身份验收记录](../../VPS-用户级TUN一键部署.md#2026-11-23-三身份验收)。

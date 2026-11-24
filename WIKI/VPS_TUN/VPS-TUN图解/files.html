@@ -567,8 +567,9 @@ footer code { font-family: var(--mono); font-size: .92em; }
   <!-- 7. check it yourself -->
   <section class="chapter" aria-labelledby="c-check">
     <h2 id="c-check">自己核对</h2>
-<pre class="cmd"><span class="c"># 装进系统的文件和 WIKI 源码是否一致（两行哈希应相同）</span>
-sha256sum /usr/local/sbin/xq-user-proxyctl ~/WIKI/vpsinit/WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl
+<pre class="cmd"><span class="c"># 装进系统的控制器是不是 e0d3d24 的那一份（两行哈希应相同）。WIKI 里现在的源码此后改过 NSS 检查，没有部署到本机，哈希与它不同</span>
+sha256sum &lt; /usr/local/sbin/xq-user-proxyctl
+git -C ~/WIKI/vpsinit show e0d3d24:WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl | sha256sum
 <span class="c"># 服务定义</span>
 systemctl cat xq-user-proxy.service
 <span class="c"># 内核里的设置（ON 时才有）</span>

@@ -549,8 +549,8 @@ def check_closed_sockets(scope, unit):
     time.sleep(3)                               # retransmissions of the unanswered side
     late_icmp, late_reset = count('tun_icmp') - icmp, count('tun_rst') - reset
     assert stray() == before, f'{stray() - before} packets for closed owner sockets left by the uplink'
-    assert late_icmp and late_reset, ('the scenario did not happen: the kernel sent no reply for a closed socket '
-                                      f'into the TUN (ICMP {late_icmp}, RST {late_reset})')
+    assert late_icmp and late_reset, ('closed-socket probe response counts were incomplete: '
+                                      f'ICMP errors {late_icmp}, TCP resets {late_reset}; both should be nonzero')
     owner_dns_works(scope, 'after the abandoned queries')
     print(f'PASS: 120 owner queries sent then closed (UDP and TCP; public resolver, stub, host address): '
           f'{late_icmp} ICMP errors and {late_reset} TCP resets entered the TUN, '

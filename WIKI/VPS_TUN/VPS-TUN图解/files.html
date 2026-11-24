@@ -567,7 +567,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
   <!-- 7. check it yourself -->
   <section class="chapter" aria-labelledby="c-check">
     <h2 id="c-check">自己核对</h2>
-<pre class="cmd"><span class="c"># 装进系统的控制器是不是 e0d3d24 的那一份（两行哈希应相同）。WIKI 里现在的源码此后改过 NSS 检查，没有部署到本机，哈希与它不同</span>
+<pre class="cmd"><span class="c"># 装进系统的控制器是不是 e0d3d24 的那一份（两行哈希应相同）。WIKI 里现在的源码此后改过 NSS 检查、修复式开启的顺序和几处报告，没有部署到本机，哈希与它不同</span>
 sha256sum &lt; /usr/local/sbin/xq-user-proxyctl
 git -C ~/WIKI/vpsinit show e0d3d24:WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl | sha256sum
 <span class="c"># 服务定义</span>

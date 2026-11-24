@@ -133,6 +133,22 @@ def emptied(text):
     return '\n'.join(kept) + '\n'
 
 
+# How the rules on record stop being the ones loaded, behind the controller's back.
+LOSSES = {
+    'table deleted': lambda kernel: setattr(kernel, 'table', None),                                   # nft flush ruleset
+    'rules emptied': lambda kernel: kernel.load_table(emptied(kernel.table)),                         # nft flush table
+    'a rule changed': lambda kernel: kernel.load_table(kernel.table.replace('counter drop', 'counter accept')),
+}
+# What on() adds to its reason when it stops with the rules that only block loaded: the state, what that state
+# does not cover, and the two ways out.
+STOPPED_BLOCKING = (f'。防直连规则停在只阻断、不转发的形态：{OWNER.name} 新发起的公网访问被阻断，不是直连'
+                    '（规则缺失期间已经建立的连接、交给共享解析服务的名称查询不在此列）。'
+                    '处理好这一项之后请执行 xq_proxyon 继续，或执行 xq_proxyoff 关闭')
+# How check, status and the unit's hooks begin while the rules on record only block: an on() may still be
+# running, or have stopped, failed or been refused.
+PENDING = '开启尚未完成（xq_proxyon 正在执行，或上一次中断、失败或被拒绝）：'
+
+
 class Crash(BaseException):
     """The controller process dies right after a step took effect."""
 
@@ -786,17 +802,94 @@ class Offline(unittest.TestCase):
     def assert_clean(self):
         self.assertIsNone(self.dirt())
 
-    def assert_refused_unchanged(self, name, *words):
+    def assert_refused_unchanged(self, name, *words, kind=RuntimeError):
         """The operation must be refused, saying `words`, before changing anything."""
         before, writes = self.host(), len(self.kernel.writes)
         error = self.attempt(name)
         self.assertIsNotNone(error, f'{name} was not refused')
         self.assertEqual(self.kernel.writes[writes:], [], f'{name} changed the host before stopping with: {error}')
         self.assertEqual(self.host(), before, f'{name} changed its state before stopping with: {error}')
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, kind)
         for word in words:
             self.assertIn(word, str(error))
         return str(error)
+
+    def assert_refused_blocking(self, *words):
+        """on() must load the rules that only block and record them, change nothing else, and then refuse saying `words`."""
+        kernel, digest = self.kernel, self.g['firewall_digest']
+        before, files, writes = self.host()[1:6], self.state_files(), len(kernel.writes)
+        error = self.attempt('on')
+        self.assertIsInstance(error, RuntimeError, 'on was not refused')
+        for word in words:
+            self.assertIn(word, str(error))
+        self.assertTrue(str(error).endswith(STOPPED_BLOCKING), str(error))
+        self.assertEqual(kernel.table, self.g['firewall'](False), 'the rules that only block are the ones loaded')
+        self.assertEqual(kernel.writes[writes:], [('nft', '-f', '-')], 'one load of the rules is the only change to the host')
+        self.assertEqual(self.host()[1:6], before, 'policy rules, routes, core, links and conntrack are as they were')
+        after = self.state_files()
+        was, now = json.loads(files.pop('state.json')), json.loads(after.pop('state.json'))
+        self.assertEqual(after, files, 'the switch and the other records are as they were')
+        guard = ('guard_active', 'guard_digest', 'guard_source')
+        self.assertEqual([now.pop(key) for key in guard], [False, digest(), self.g['guard_source'](digest(), False)])
+        self.assertEqual(now, {key: value for key, value in was.items() if key not in guard})
+        self.assert_reported_incomplete()
+        return str(error)
+
+    def assert_reported_incomplete(self):
+        """check and status: the switching on is not complete; the rules on record, which only block, are loaded."""
+        with self.assertRaises(RuntimeError) as caught:
+            self.call('check')
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        for message in (text, str(caught.exception)):
+            for word in (PENDING + '防直连规则与记录一致，停在只阻断、不转发的形态', '请执行 xq_proxyon 继续'):
+                self.assertIn(word, message)
+            # A core that still runs is not said to be one that will not start.
+            self.assertEqual('核心不会启动' in message, not self.kernel.core, message)
+        self.assertNotIn('完整', text)
+
+    NAME_SERVICE = ('a hosts line with resolve', 'no nsswitch.conf', 'an nsswitch.conf that cannot be read',
+                    'nscd running', 'an nscd socket')
+    CONFIGURATION = ('a key outside the scope', 'another upstream than settings.json names', 'no sing-box.json',
+                     'a sing-box.json that is not JSON')
+
+    def refuse(self, cause):
+        """Give on() a reason to refuse; return what on() then says and how to take the reason away."""
+        nsswitch = pathlib.Path(self.box.inside('/etc/nsswitch.conf'))
+        config = pathlib.Path(self.box.inside('/etc/xq-user-proxy/sing-box.json'))
+        if cause in self.CONFIGURATION:
+            good, data = config.read_bytes(), json.loads(config.read_text())
+            if cause == 'a key outside the scope':
+                config.write_text(json.dumps(dict(data, experimental={}), indent=2) + '\n')
+                said = '配置偏离限定的用户 TUN/DNS 范围'
+            elif cause == 'another upstream than settings.json names':
+                data['outbounds'][0]['server_port'] += 1
+                config.write_text(json.dumps(data, indent=2) + '\n')
+                said = '上游配置与 settings.json 不一致'
+            elif cause == 'no sing-box.json':
+                config.unlink()
+                said = 'sing-box.json'
+            else:
+                config.write_text('{ not json')
+                said = 'sing-box.json 无法作为 JSON 读取（Expecting property name'
+            return said, lambda: config.write_bytes(good)       # the same bytes: a running core still runs them
+        good = nsswitch.read_bytes()
+        if cause == 'a hosts line with resolve':
+            nsswitch.write_bytes(b'hosts: files resolve [!UNAVAIL=return] dns\n')
+            return 'hosts 行的 resolve [!UNAVAIL=return]）', lambda: nsswitch.write_bytes(good)
+        if cause == 'no nsswitch.conf':
+            nsswitch.unlink()
+            return 'nsswitch.conf', lambda: nsswitch.write_bytes(good)
+        if cause == 'an nsswitch.conf that cannot be read':
+            nsswitch.unlink()
+            nsswitch.mkdir()                                    # reading it fails, and not with "no such file"
+            return 'nsswitch.conf', lambda: (nsswitch.rmdir(), nsswitch.write_bytes(good))
+        if cause == 'nscd running':
+            self.kernel.nscd = True
+            return 'nscd 正在运行', lambda: setattr(self.kernel, 'nscd', False)
+        os.makedirs(self.box.inside('/run/nscd'))
+        self.write('/run/nscd/socket', '')
+        return 'nscd 套接字', pathlib.Path(self.box.inside('/run/nscd/socket')).unlink
 
     def path_line(self, text, address):
         """The status line that states the path of one default nameserver."""
@@ -1104,6 +1197,72 @@ class PrerequisiteTests(Offline):
                         self.write('/run/nscd/socket', '')
                     self.assert_refused_unchanged('on', 'nscd')
 
+    def test_a_configuration_that_is_refused_stops_every_on_before_any_change_while_the_rules_are_in_place(self):
+        for cause in self.CONFIGURATION:
+            for kind in ('fresh', 'healing', 'repeated'):
+                with self.subTest(refused_for=cause, on=kind):
+                    self.build()
+                    if kind != 'fresh':
+                        self.healthy_on()
+                    if kind == 'healing':
+                        self.kernel.take_down()                # check() fails: on() would start the core again
+                    said, _ = self.refuse(cause)
+                    # The rules on record are loaded, or the switch is off: nothing is direct that was not before.
+                    self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said, kind=REFUSALS))
+
+    def test_a_file_that_cannot_be_read_as_json_is_named(self):
+        """The error says which of the two files it is. Where the rules were lost, an on() refused for such a
+        sing-box.json has put the rules that only block back first."""
+        for name, reader in (('settings.json', 'load_settings'), ('sing-box.json', 'check_config')):
+            for label, content in (('not JSON', b'{ not json'), ('not UTF-8', b'\xff\xfe{}'),
+                                   ('nested too deeply', b'[' * 100000 + b']' * 100000)):
+                with self.subTest(file=name, content=label):
+                    self.build()
+                    said = f'/etc/xq-user-proxy/{name} 无法作为 JSON 读取（'
+                    path = pathlib.Path(self.box.inside(f'/etc/xq-user-proxy/{name}'))
+                    if name == 'sing-box.json':
+                        self.healthy_on()
+                        self.kernel.table = None                    # nft flush ruleset
+                        path.write_bytes(content)
+                        self.assert_refused_blocking(said)
+                    path.write_bytes(content)
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.g[reader]()
+                    self.assertIn(said, str(caught.exception))
+
+    def test_where_both_checks_would_refuse_every_on_names_the_configuration(self):
+        """A repair gives the reason a fresh on() gives: the configuration is looked at before the name service."""
+        for kind in ('fresh', 'healing', 'guard lost'):
+            with self.subTest(on=kind):
+                self.build()
+                if kind != 'fresh':
+                    self.healthy_on()
+                if kind == 'healing':
+                    self.kernel.take_down()
+                if kind == 'guard lost':
+                    self.kernel.table = None
+                self.refuse('a hosts line with resolve')
+                said, _ = self.refuse('a key outside the scope')
+                error = self.attempt('on')
+                self.assertIsInstance(error, RuntimeError)
+                self.assertIn(said, str(error))
+                self.assertNotIn('NSS', str(error))
+
+    def test_a_refused_retry_of_a_first_on_whose_core_did_not_start_changes_nothing(self):
+        """The full rules that first on() loaded are on record and in place: they block the owner, nothing is lost."""
+        for cause in ('a hosts line with resolve', 'a key outside the scope'):
+            with self.subTest(refused_for=cause):
+                self.build()
+                self.kernel.start_error = True
+                self.assertIsInstance(self.attempt('on'), RuntimeError)
+                self.assertEqual(self.phase(), 'enabling')
+                self.kernel.start_error = False
+                said, undo = self.refuse(cause)
+                self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said))
+                undo()
+                self.call('on')
+                self.call('check')
+
     def test_the_hosts_line_of_nsswitch_decides_whether_lookups_can_be_taken_over(self):
         """The file is read as glibc reads it: every word glibc would load as a module must be an accepted one."""
         def nsswitch(data):
@@ -1138,7 +1297,7 @@ class PrerequisiteTests(Offline):
                     self.build()
                     nsswitch(data)
                     self.healthy_on()
-                    break_the_guard(core)                  # check() fails: on() asks again before it repairs
+                    break_the_guard(core)                  # check() fails: on() asks again while it repairs
                     self.call('on')
                     self.call('check')
         refused = {
@@ -1193,13 +1352,21 @@ class PrerequisiteTests(Offline):
             'no hosts line': (b'passwd:         files systemd\n#hosts: files dns\nHOSTS: files dns\n', '没有 hosts 行'),
         }
         for name, (data, said) in refused.items():
-            for kind in ('fresh', 'repair with the core stopped', 'repair with the core running'):
+            for kind in ('fresh', 'repair with the guard in place and the core stopped',
+                         'repair with the guard gone and the core running'):
                 with self.subTest(refused=name, on=kind):
                     self.build()
                     if kind != 'fresh':
                         self.healthy_on()
                         break_the_guard(kind.split()[-1])
                     nsswitch(data)
+                    if 'gone' in kind:
+                        # The owner may be direct. The rules that only block come back before the refusal and stay.
+                        self.assert_refused_blocking(said)
+                    else:
+                        # Nothing is direct: refused before any change, and without a word about rules that only block.
+                        self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said))
+                    # Asked again it is refused again, and changes nothing in either case.
                     self.assert_refused_unchanged('on', said)
 
     def test_fresh_on_without_conntrack_changes_nothing(self):
@@ -1232,6 +1399,20 @@ class StatusTests(Offline):
         code, text = self.status()
         self.assertEqual(code, 0, text)
         self.assertIn('开关：OFF', text)
+
+    def test_status_does_not_say_that_mdns4_minimal_asks_no_dns_server(self):
+        """For a name like printer.local it first asks the default resolver for the SOA of local, as dns would.
+
+        What can be said of it is which names it takes, and that it hands no public name to a shared service.
+        """
+        for switch in ('OFF', 'ON'):
+            if switch == 'ON':
+                self.healthy_on()
+            code, text = self.status()
+            self.assertEqual(code, 0, text)
+            self.assertIn('开关：' + switch, text)
+            self.assertIn('NSS 的 mdns4_minimal 只处理本地域名和链路本地反查，不把公网名称交给共享解析服务。', text)
+            self.assertNotIn('不属于公网 DNS 查询', text)
 
     def test_off_with_each_kind_of_residue_is_nonzero_and_off_clears_it(self):
         kinds = {
@@ -1346,6 +1527,37 @@ class StatusTests(Offline):
         self.assertEqual(self.kernel.table, self.g['firewall']())
         self.call('check')
 
+    def test_a_lost_guard_is_named_before_a_configuration_that_would_be_refused(self):
+        """The owner may be direct: status and check say that first, whatever else is wrong."""
+        for loss, lose in LOSSES.items():
+            for core in ('running', 'stopped'):
+                for cause in self.CONFIGURATION:
+                    with self.subTest(guard=loss, core=core, configuration=cause):
+                        self.build()
+                        self.healthy_on()
+                        if core == 'stopped':
+                            self.kernel.take_down()
+                        said, _ = self.refuse(cause)
+                        # While the rules are in place the configuration is what is reported, before the core: an
+                        # on() would be refused for it ...
+                        with self.assertRaises(REFUSALS) as caught:
+                            self.call('check')
+                        code, text = self.status()
+                        self.assertEqual(code, 1, text)
+                        for message in (str(caught.exception), text):
+                            self.assertIn(said, message)
+                            self.assertNotIn('核心未运行', message)
+                        lose(self.kernel)
+                        # ... and once they are not, that comes first.
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.call('check')
+                        code, text = self.status()
+                        self.assertEqual(code, 1, text)
+                        for message in (str(caught.exception), *(line for line in text.splitlines() if line.startswith('异常'))):
+                            self.assertIn('不存在' if loss == 'table deleted' else '与记录不一致，无法确认', message)
+                            self.assertIn('直连', message)
+                            self.assertNotIn(said, message)
+
     def test_each_route_of_the_feature_is_required_and_restored_by_on(self):
         foreign_metric = {'kind': 'blackhole', 'dst': 'default', 'dev': None, 'metric': 5}
         for label, family, shape, extra in (('IPv4 黑洞回退', '-4', BLACKHOLE, None),
@@ -1380,6 +1592,288 @@ class StatusTests(Offline):
         observe()
         self.kernel.take_down()
         observe()
+
+
+class LostGuardTests(Offline):
+    """An on() that finds its rules gone or changed blocks the owner again before it can refuse, fail or be killed."""
+
+    def restarts(self, since):
+        return [call[1] for call in self.kernel.calls[since:] if call[0] == 'systemctl' and call[1] in ('start', 'stop')]
+
+    def lost_and_refused(self, loss='table deleted', core='running', cause='a hosts line with resolve'):
+        """ON, the rules lost, and an on() that put the blocking ones back and was refused.
+
+        Returns what that on() said and how to take its reason away.
+        """
+        self.healthy_on()
+        LOSSES[loss](self.kernel)
+        if core == 'stopped':
+            self.kernel.take_down()
+        said, undo = self.refuse(cause)
+        self.assert_refused_blocking(said)
+        return said, undo
+
+    def test_a_refused_on_leaves_the_owner_blocked_until_the_reason_is_gone(self):
+        for loss in LOSSES:
+            for core in ('running', 'stopped'):
+                for cause in self.NAME_SERVICE + self.CONFIGURATION:
+                    with self.subTest(guard=loss, core=core, refused_for=cause):
+                        self.build()
+                        said, undo = self.lost_and_refused(loss, core, cause)
+                        # Asked again it is refused again: the owner stays blocked, and now nothing changes at all.
+                        for _ in range(2):
+                            self.assert_refused_unchanged('on', said, STOPPED_BLOCKING)
+                        # While the rules only block, the unit starts no core and gives none its route. The
+                        # switch is on: it does not say that the proxy is switched off.
+                        if core == 'stopped':
+                            self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
+                            self.assertFalse(self.kernel.core)
+                            self.assertNotIn('已关闭', self.kernel.journal[-1])
+                            if cause in self.NAME_SERVICE:
+                                self.assertEqual(self.kernel.journal[-1], f'ExecStartPre: {PENDING}拒绝启动核心。请执行 xq_proxyon 继续')
+                            else:                              # ExecStartPre looks at the configuration first
+                                self.assertIn(said, self.kernel.journal[-1])
+                        # ExecStartPost, and the route it adds once the core's TUN is up.
+                        for hook in ('attach', 'attach_routes'):
+                            with self.assertRaises(REFUSALS) as caught:
+                                self.call(hook)
+                            if hook == 'attach' or cause in self.NAME_SERVICE:
+                                self.assertEqual(str(caught.exception), f'{PENDING}拒绝附加路由。请执行 xq_proxyon 继续')
+                            else:                              # attach_routes() looks at the configuration first
+                                self.assertIn(said, str(caught.exception))
+                        self.assert_reported_incomplete()
+                        undo()
+                        calls = len(self.kernel.calls)
+                        self.call('on')
+                        self.assertEqual(self.kernel.table, self.g['firewall']())
+                        self.assertEqual(self.restarts(calls), [] if core == 'running' else ['start'])
+                        self.call('check')
+                        self.assertEqual(self.status()[0], 0)
+
+    def test_off_is_the_other_way_out_of_a_refused_on(self):
+        for loss in LOSSES:
+            for core in ('running', 'stopped'):
+                for cause in self.NAME_SERVICE + self.CONFIGURATION:
+                    with self.subTest(guard=loss, core=core, refused_for=cause):
+                        self.build()
+                        said, undo = self.lost_and_refused(loss, core, cause)
+                        self.call('off')
+                        self.assert_clean()
+                        # From OFF the refusal comes before any change, and leaves the owner on the host's own network.
+                        self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said, kind=REFUSALS))
+                        self.assert_clean()
+                        undo()
+                        self.healthy_on()
+
+    def test_rules_lost_again_after_a_refusal_are_put_back_again(self):
+        """The rules on record are then the ones that only block. Gone or changed, they are lost no less."""
+        for first in LOSSES:
+            for again, lose_again in LOSSES.items():
+                with self.subTest(lost=first, then=again):
+                    self.build()
+                    said, undo = self.lost_and_refused(first)
+                    lose_again(self.kernel)
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.call('check')
+                    self.assertIn('直连', str(caught.exception))
+                    self.assertNotIn('与记录一致', str(caught.exception))
+                    self.assert_refused_blocking(said)
+                    undo()
+                    self.call('on')
+                    self.assertEqual(self.kernel.table, self.g['firewall']())
+                    self.call('check')
+                    self.assertEqual(self.status()[0], 0)
+
+    def test_a_core_that_dies_while_the_rules_only_block_is_started_only_by_the_on_that_completes(self):
+        said, undo = self.lost_and_refused()
+        self.kernel.take_down()                                # the core dies; Restart=on-failure
+        record = self.state_files().get('core.json')
+        self.assertIsNotNone(record)
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
+        self.assertFalse(self.kernel.core)
+        self.assertEqual(self.kernel.journal[-1], f'ExecStartPre: {PENDING}拒绝启动核心。请执行 xq_proxyon 继续')
+        # Refused before it writes: the record still names the entry of the core that made the DNS translations,
+        # which the on() that completes reads to decide whether to delete them.
+        self.assertEqual(self.state_files().get('core.json'), record)
+        self.assert_reported_incomplete()                      # which now says that the core will not start
+        self.assert_refused_unchanged('on', said, STOPPED_BLOCKING)
+        undo()
+        calls = len(self.kernel.calls)
+        self.call('on')
+        self.assertEqual(self.restarts(calls), ['start'])
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_a_first_on_whose_core_never_started_is_held_off_too_once_its_rules_are_lost(self):
+        """The first on() loaded the full rules and its core did not start; systemd keeps trying. The rules are lost
+        and a repair is refused: the rules that only block, now on record, keep the core from starting as well."""
+        self.kernel.start_error = True
+        self.assertIsInstance(self.attempt('on'), RuntimeError)
+        self.kernel.start_error = False
+        self.assertEqual(self.phase(), 'enabling')
+        self.kernel.table = None
+        said, undo = self.refuse('a hosts line with resolve')
+        self.assert_refused_blocking(said)
+        self.assertEqual(self.phase(), 'enabling')
+        record = self.state_files().get('core.json')
+        self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 1)
+        self.assertFalse(self.kernel.core)
+        self.assertEqual(self.kernel.journal[-1], f'ExecStartPre: {PENDING}拒绝启动核心。请执行 xq_proxyon 继续')
+        self.assertEqual(self.state_files().get('core.json'), record, 'the refused start changed the start record')
+        undo()
+        self.call('on')
+        self.call('check')
+        self.assertEqual(self.status()[0], 0)
+
+    def test_an_off_that_cannot_finish_after_a_refusal_keeps_a_guard_where_the_rules_were_lost_again(self):
+        """off() loads the rules that only block before anything else, also where the state records them already."""
+        for loss in LOSSES:
+            with self.subTest(lost_again=loss):
+                self.build()
+                self.lost_and_refused()
+                LOSSES[loss](self.kernel)
+                self.kernel.delete_refused = True              # the DNS translations cannot be deleted
+                error = self.attempt('off')
+                self.assertIsInstance(error, RuntimeError)
+                self.assertIn('guard 保留', str(error))
+                self.assertEqual(self.kernel.table, self.g['firewall'](False), 'the guard stays while a mapping remains')
+                self.kernel.delete_refused = False
+                self.call('off')
+                self.assert_clean()
+
+    def test_what_status_and_the_unit_say_while_a_repair_runs_holds_then(self):
+        """Status and the unit's hooks take no lock. While state.json records the rules that only block (from their
+        record until that of the full ones), check reports the switching on as not complete, in words true while the
+        on() runs, and ExecStartPre refuses before it writes the core's start record: the on() goes on as if no one
+        had looked, and a core that runs is not restarted. In the one command between the load of those rules and
+        their record, the record still names the full rules: check says that the loaded rules are not the recorded
+        ones, and ExecStartPost gives no route."""
+        for loss in LOSSES:
+            for core in ('running', 'stopped'):
+                with self.subTest(guard=loss, core=core):
+                    self.build()
+                    self.healthy_on()
+                    LOSSES[loss](self.kernel)
+                    if core == 'stopped':
+                        self.kernel.take_down()
+                    seen, between = [], []
+
+                    def observe(argv):
+                        self.kernel.before = None
+                        try:
+                            if not json.loads(self.state_files()['state.json'])['guard_active']:
+                                record = self.state_files().get('core.json')
+                                seen.append((str(self.attempt('check')), str(self.attempt('prepare')),
+                                             self.state_files().get('core.json') == record))
+                            elif self.kernel.table == self.g['firewall'](False):
+                                between.append((str(self.attempt('check')), str(self.attempt('attach'))))
+                        finally:
+                            self.kernel.before = observe
+                    self.kernel.before = observe
+                    calls = len(self.kernel.calls)
+                    self.call('on')
+                    self.kernel.before = None
+                    self.assertEqual(self.restarts(calls), [] if core == 'running' else ['start'])
+                    self.assertTrue(seen, 'the rules that only block were never on record')
+                    for reported, hook, kept in seen:
+                        self.assertTrue(reported.startswith(PENDING), reported)
+                        self.assertEqual(hook, f'{PENDING}拒绝启动核心。请执行 xq_proxyon 继续')
+                        self.assertTrue(kept, 'the refused prepare wrote the start record')
+                    self.assertEqual(between, [(f'已加载的防直连规则与记录不一致，无法确认 {OWNER.name} 不会直连。'
+                                                '请执行 xq_proxyon 重新加载', 'guard 不完整；拒绝附加路由')])
+                    self.call('check')
+                    self.assertEqual(self.status()[0], 0)
+
+    def test_a_core_that_runs_without_its_tun_is_not_said_to_be_one_that_will_not_start(self):
+        self.lost_and_refused()
+        self.kernel.take_down()                                # the interface is gone ...
+        self.kernel.core = True                                # ... while the unit still counts as active
+        self.assert_reported_incomplete()
+
+    def test_a_load_of_the_full_rules_that_breaks_after_the_checks_passed_is_reported_as_not_complete(self):
+        for mode in ('fail', 'crash'):
+            with self.subTest(mode=mode):
+                self.build()
+                self.healthy_on()
+                self.kernel.table = None
+                loads = []
+
+                def second_load(step):
+                    if step == ('nft', '-f', '-'):
+                        loads.append(step)
+                    return step == ('nft', '-f', '-') and len(loads) == 2
+                self.injector.when(second_load, mode)
+                error = self.attempt('on')
+                self.assertIsNotNone(error)
+                full = mode == 'crash'                         # a crash lets the load take effect, unrecorded
+                if not full:
+                    # The words of nft, and nothing of a reason to be dealt with: no check refused.
+                    self.assertIn('nft -f -', str(error))
+                    self.assertNotIn('处理好这一项', str(error))
+                self.assertEqual(self.kernel.table, self.g['firewall'](full))
+                with self.assertRaises(RuntimeError) as caught:
+                    self.call('check')
+                code, text = self.status()
+                self.assertEqual(code, 1, text)
+                for message in (text, str(caught.exception)):
+                    for word in ('开启尚未完成', '请执行 xq_proxyon 继续'):
+                        self.assertIn(word, message)
+                    # Rules that are not the ones on record are not described at all.
+                    self.assertEqual('只阻断' in message, not full, message)
+                    self.assertEqual('与记录不一致，无法确认' in message, full, message)
+                self.call('on')
+                self.assertEqual(self.kernel.table, self.g['firewall']())
+                self.call('check')
+                self.assertEqual(self.status()[0], 0)
+
+    def test_an_on_killed_while_it_checks_the_name_service_has_blocked_the_owner_already(self):
+        """The check asks systemd about nscd. Whatever stops the controller there finds the rules loaded and recorded."""
+        for loss, lose in LOSSES.items():
+            with self.subTest(guard=loss):
+                self.build()
+                self.healthy_on()
+                lose(self.kernel)
+                self.injector.when(lambda step: step == ('systemctl', 'is-active', '--quiet', 'nscd.service'), 'crash')
+                self.assertIsInstance(self.attempt('on'), Crash)
+                self.assertEqual(self.kernel.table, self.g['firewall'](False))
+                self.assert_reported_incomplete()
+                calls = len(self.kernel.calls)
+                self.call('on')
+                self.assertEqual(self.kernel.table, self.g['firewall']())
+                self.assertEqual(self.restarts(calls), [], 'the running core is kept')
+                self.call('check')
+                self.assertEqual(self.status()[0], 0)
+
+    def test_the_rules_that_only_block_are_loaded_first_and_the_table_is_never_absent_afterwards(self):
+        for loss, lose in LOSSES.items():
+            for core in ('running', 'stopped', 'not recorded'):
+                with self.subTest(guard=loss, core=core):
+                    self.build()
+                    self.healthy_on()
+                    lose(self.kernel)
+                    if core == 'stopped':
+                        self.kernel.take_down()
+                    elif core == 'not recorded':                   # its translations are deleted before a new core starts
+                        pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+                    seen = []
+
+                    def watching(argv):
+                        if changes_host(argv) or argv == ('systemctl', 'is-active', '--quiet', 'nscd.service'):
+                            seen.append((argv[:2], self.kernel.table))
+                    self.kernel.before = watching
+                    self.call('on')
+                    self.kernel.before = None
+                    blocking, full = self.g['firewall'](False), self.g['firewall']()
+                    # The first change to the host is a load of the rules, and what it loads only blocks ...
+                    self.assertEqual(seen[0][0], ('nft', '-f'))
+                    self.assertEqual(seen[1], (('systemctl', 'is-active'), blocking))
+                    # ... the full rules follow the check, and from the first load on the table is one of the two.
+                    self.assertEqual(seen[2], (('nft', '-f'), blocking))
+                    self.assertEqual(seen[3][1], full)
+                    self.assertLessEqual({table for _, table in seen[1:]}, {blocking, full})
+                    self.assertEqual(self.kernel.table, full)
+                    self.call('check')
 
 
 class ResolverTests(Offline):
@@ -1935,6 +2429,24 @@ class LoadedConfigurationTests(Offline):
         self.assertEqual(self.restarts(calls), [], 'a core that runs the current configuration is kept')
         self.call('check')
 
+    def test_rules_of_another_controller_version_stay_loaded_when_on_is_refused(self):
+        """They are the rules on record and they keep the owner from going out direct: nothing is lost."""
+        self.healthy_on()
+        state = pathlib.Path(self.box.inside('/run/xq-user-proxy/state.json'))
+        self.kernel.load_table(self.kernel.table.replace('counter drop\n  }\n  chain private_dns_output',
+                                                         'drop\n  }\n  chain private_dns_output'))
+        data = json.loads(state.read_text())
+        data.update(guard_digest=self.g['firewall_digest'](), guard_source='another version')
+        state.write_text(json.dumps(data))
+        for cause in ('a hosts line with resolve', 'a key outside the scope'):
+            with self.subTest(refused_for=cause):
+                said, undo = self.refuse(cause)
+                self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said))
+                undo()
+        self.call('on')
+        self.assertEqual(self.kernel.table, self.g['firewall']())
+        self.call('check')
+
     def test_state_left_by_the_controller_before_this_one_is_taken_over_by_on(self):
         """An installation switched on by the previous controller, upgraded in place while ON."""
         self.healthy_on()
@@ -2218,6 +2730,25 @@ class LoadedConfigurationTests(Offline):
             self.assertIn(f'表 inet {TABLE} 不存在', message)
             self.assertIn('可能正在直连', message)
 
+    def test_an_on_refused_after_an_interrupted_one_puts_back_the_rules_that_only_block_where_they_were_lost(self):
+        for loss in (None, *LOSSES):
+            with self.subTest(guard=loss or 'in place'):
+                self.build()
+                self.interrupt_on_during_dns_cleanup()         # the rules that only block are on record and loaded
+                if loss:
+                    LOSSES[loss](self.kernel)
+                said, undo = self.refuse('a hosts line with resolve')
+                if loss:
+                    self.assert_refused_blocking(said)
+                else:
+                    # Nothing is lost and nothing is loaded; on() names the state it leaves all the same.
+                    self.assert_refused_unchanged('on', said, STOPPED_BLOCKING)
+                    self.assert_reported_incomplete()
+                undo()
+                self.call('on')
+                self.assertEqual(self.kernel.table, self.g['firewall']())
+                self.call('check')
+
 
 class TunStartTests(Offline):
     """ExecStartPost gives the TUN its route only once the core has set the TUN up.
@@ -2392,6 +2923,133 @@ class FailureInjectionTests(Offline):
             self.kernel.table = None
             self.kernel.rules['-4'] = []
         self.survive(flushed, 'on')
+
+    def test_failure_at_every_step_of_an_on_that_puts_back_a_lost_guard_and_is_refused(self):
+        """Until the rules that only block are loaded the owner may be direct, and no longer.
+
+        Nothing reports success, only a controller that loaded the rules says that they block, and both ways out
+        work.
+        """
+        load = ('nft', '-f', '-')
+        for loss in LOSSES:
+            for cause in ('a hosts line with resolve', 'a key outside the scope'):
+                def refused():
+                    self.build()
+                    self.healthy_on()
+                    LOSSES[loss](self.kernel)
+                    return self.refuse(cause)
+                said, _ = refused()
+                lost, blocking = self.kernel.table, self.g['firewall'](False)
+                start = self.injector.count
+                self.assertIsInstance(self.attempt('on'), RuntimeError)
+                steps = self.injector.count - start
+                self.assertGreater(steps, 5)
+                for offset in range(steps):
+                    for mode in ('fail', 'crash'):
+                        for way_out in ('the reason is taken away', 'off'):
+                            with self.subTest(guard=loss, refused_for=cause, step=offset, mode=mode, way_out=way_out):
+                                _, undo = refused()
+                                writes = len(self.kernel.writes)
+                                self.injector.at(offset, mode)
+                                error = self.attempt('on')
+                                label = self.injector.fired
+                                self.assertIsNotNone(label, f'step {offset} was never reached')
+                                self.assertIsNotNone(error, 'an on() that is refused must not succeed')
+                                loaded = load in self.kernel.writes[writes:] and (label, mode) != (load, 'fail')
+                                self.assertEqual(self.kernel.table, blocking if loaded else lost, f'after {mode} at {label}')
+                                if not loaded:
+                                    self.assertNotIn('只阻断', str(error))
+                                if (label, mode) == (load, 'fail'):
+                                    self.assertIn('nft -f -', str(error), 'a load that failed is reported in the words of nft')
+                                self.assertEqual(self.status()[0], 1)
+                                # The next on(), refused again, ends with the blocking rules on record. One more changes nothing.
+                                self.assertIsInstance(self.attempt('on'), RuntimeError)
+                                self.assertEqual(self.kernel.table, blocking)
+                                self.assert_reported_incomplete()
+                                self.assert_refused_unchanged('on', said, STOPPED_BLOCKING)
+                                if way_out == 'the reason is taken away':
+                                    undo()
+                                    self.call('on')
+                                    self.call('check')
+                                    self.assertEqual(self.status()[0], 0)
+                                self.call('off')
+                                self.assert_clean()
+
+    def refused_and_put_right(self, core):
+        """ON, the table deleted, an on() refused with the rules that only block loaded, and the reason then taken away."""
+        self.healthy_on()
+        self.kernel.table = None
+        if core == 'stopped':
+            self.kernel.take_down()
+        _, undo = self.refuse('a hosts line with resolve')
+        self.assertIsInstance(self.attempt('on'), RuntimeError)
+        self.assertEqual(self.kernel.table, self.g['firewall'](False))
+        undo()
+
+    def test_failure_at_every_step_of_an_off_after_a_refused_on(self):
+        for core in ('running', 'stopped'):
+            with self.subTest(core=core):
+                self.survive(lambda: self.refused_and_put_right(core), 'off')
+
+    def test_an_on_broken_at_any_step_of_completing_a_refused_one_is_completed_by_the_next_on(self):
+        for core in ('running', 'stopped'):
+            with self.subTest(core=core):
+                self.completed_by_the_next_on(lambda: self.refused_and_put_right(core))
+
+    def completed_by_the_next_on(self, prepare):
+        """Break each step of an on() in turn; the next on() must complete it without an OFF in between."""
+        self.build()
+        prepare()
+        start = self.injector.count
+        self.assertIsNone(self.attempt('on'), 'the undisturbed operation must succeed')
+        steps = self.injector.count - start
+        self.assertGreater(steps, 10)
+        stuck, either = [], (self.g['firewall'](False), self.g['firewall']())
+        for offset in range(steps):
+            for mode in ('fail', 'crash'):
+                self.build()
+                prepare()
+                seen, lost = [], self.kernel.table not in either
+                self.kernel.before = lambda argv: seen.append(self.kernel.table is None) if changes_host(argv) else None
+                self.injector.at(offset, mode)
+                self.attempt('on')
+                label = self.injector.fired
+                self.assertIsNotNone(label, f'step {offset} was never reached')
+                # Whatever broke: once a change to the host was made (the first is a load of the rules), one
+                # of the two sets of rules is what the break leaves loaded.
+                broken = None if self.kernel.table in either or (lost and not seen) else \
+                    'the break left neither set of rules loaded'
+                error = broken or self.attempt('on') or self.attempt('check')
+                self.kernel.before = None
+                if error is None and self.status()[0]:
+                    error = 'status is not zero'
+                if error is None and self.kernel.table != self.g['firewall']():
+                    error = 'the full rules are not the ones loaded'
+                # The first change to the host loads the rules; no later one finds the table gone.
+                if error is None and any(seen[1:]):
+                    error = 'the table was absent again after rules had been loaded'
+                if error is not None:
+                    stuck.append(f'{mode} at step {offset} ({" ".join(label)}): {error}')
+        if stuck:
+            self.fail(f'{len(stuck)} of {2 * steps} injected failures leave a state that the next on() does not '
+                      'complete:\n' + '\n'.join(stuck[:12]))
+
+    def test_an_on_broken_at_any_step_of_putting_back_a_lost_guard_is_completed_by_the_next_on(self):
+        def flushed():
+            self.healthy_on()
+            self.kernel.table = None
+            self.kernel.rules['-4'] = []
+
+        def flushed_and_stopped():
+            flushed()
+            self.kernel.take_down()
+
+        def flushed_and_not_recorded():
+            flushed()
+            pathlib.Path(self.box.inside('/run/xq-user-proxy/core.json')).unlink()
+        for prepare in (flushed, flushed_and_stopped, flushed_and_not_recorded):
+            with self.subTest(prepare.__name__):
+                self.completed_by_the_next_on(prepare)
 
     def test_failure_at_every_step_of_an_on_that_reloads_an_edited_configuration(self):
         def edited():

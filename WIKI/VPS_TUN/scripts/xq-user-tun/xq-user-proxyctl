@@ -96,11 +96,19 @@ def trusted(path, *, directory=False):
         raise RuntimeError(f'管理路径类型异常：{path}')
 
 
+def read_json(path):
+    """The administrator's JSON file at `path`; one that cannot be read as JSON is named in the error."""
+    try:
+        return json.loads(path.read_text())
+    except (ValueError, RecursionError) as error:
+        raise RuntimeError(f'{path} 无法作为 JSON 读取（{error}）') from None
+
+
 def load_settings():
     """Read the administrator-owned installation identity, never sudo env input."""
     global UID, GID, USER, HOST, PORT
     trusted(SETTINGS)
-    data = json.loads(SETTINGS.read_text())
+    data = read_json(SETTINGS)
     required = {'schema', 'user', 'uid', 'gid', 'proxy_ip', 'proxy_port'}
     if not isinstance(data, dict) or set(data) != required or type(data['schema']) is not int or data['schema'] != 1:
         raise RuntimeError('安装配置格式或版本无效')
@@ -132,7 +140,7 @@ def load_settings():
 def check_config():
     """Reject drift that could change the selected user, upstream or DNS scope."""
     trusted(CONFIG)
-    data = json.loads(CONFIG.read_text())
+    data = read_json(CONFIG)
     upstream = {'type': 'socks', 'tag': 'upstream', 'server': HOST,
                 'server_port': PORT, 'version': '5', 'network': 'tcp'}
     if not isinstance(data, dict) or data.get('outbounds') != [upstream]:
@@ -765,6 +773,21 @@ def core_fault():
     return None
 
 
+# The switch is on while the rules on record are the ones that only block: an
+# on() recorded them and has not recorded the full ones yet. That on() may still
+# be running, or it stopped, failed or was refused on the way. Status and the
+# unit's hooks print this without the lock, so the words claim none of these.
+PENDING = '开启尚未完成（xq_proxyon 正在执行，或上一次中断、失败或被拒绝）：'
+
+
+def refuse_unless_on(state, refusal):
+    """No core is started, and none is given its route, unless the switch is on with the full rules on record."""
+    if not ENABLED.exists():
+        raise RuntimeError(f'用户代理已关闭；{refusal}')
+    if not state.get('guard_active'):
+        raise RuntimeError(f'{PENDING}{refusal}。请执行 xq_proxyon 继续')
+
+
 def prepare():
     """ExecStartPre: note what the core is about to load.
 
@@ -773,9 +796,7 @@ def prepare():
     are edited while it starts.
     """
     check_config()
-    state = load()
-    if not ENABLED.exists() or not state.get('guard_active'):
-        raise RuntimeError('用户代理已关闭；拒绝启动核心')
+    refuse_unless_on(load(), '拒绝启动核心')
     atomic(CORE_RECORD, json.dumps(dict(disk_identity(), loaded=False), ensure_ascii=False, indent=2) + '\n')
 
 
@@ -785,8 +806,7 @@ def attach():
     A core whose configuration cannot be vouched for gets no route: the owner
     stays on the blackhole until the unit has started it again.
     """
-    if not ENABLED.exists() or not load().get('guard_active'):
-        raise RuntimeError('用户代理已关闭；拒绝附加路由')
+    refuse_unless_on(load(), '拒绝附加路由')
     try:
         record = core_record()
     except ValueError:
@@ -818,8 +838,7 @@ def attach_routes():
     check_config()
     # ExecStartPost must not acquire the lock held by `on` waiting on systemctl.
     state = load()
-    if not ENABLED.exists() or not state.get('guard_active'):
-        raise RuntimeError('用户代理已关闭；拒绝附加路由')
+    refuse_unless_on(state, '拒绝附加路由')
     if not table_exists() or firewall_digest() != state.get('guard_digest'):
         raise RuntimeError('guard 不完整；拒绝附加路由')
     # Wait until the TUN has exactly its address and is up. The core gives the TUN
@@ -869,11 +888,11 @@ def attach_routes():
 
 
 def check():
-    check_config()
     if not ENABLED.exists():
         raise RuntimeError('用户代理未开启')
     state = load()
-    # Without the table nothing below is kept: say so before anything else.
+    # Without the table nothing below is kept: say so before anything else, a
+    # configuration that would be refused included.
     if not table_exists():
         raise RuntimeError(f'防直连 nft 表 inet {TABLE} 不存在（规则集可能被 nft flush ruleset 或 nftables.service '
                            f'清空）；{USER} 的新连接和 DNS 可能正在直连。请执行 xq_proxyon 重建')
@@ -881,15 +900,20 @@ def check():
     # emptied or replaced from outside, or a step that loads them may have
     # stopped before it recorded what it loaded.
     loaded = firewall_digest()
-    # Only an on() that stopped while it replaced a core whose entry may have
-    # moved leaves the switch on with the inactive rules recorded.
-    pending = '' if state.get('guard_active') else '开启尚未完成：上一次 xq_proxyon 中断或失败；'
+    # The switch is on with the inactive rules on record where an on() recorded
+    # them and has not recorded the full ones yet: while it replaces a core whose
+    # entry may have moved, or after it put back a guard that was lost. It may
+    # still be running, or it stopped or was refused on the way.
+    pending = '' if state.get('guard_active') else PENDING
     if loaded != state.get('guard_digest'):
         raise RuntimeError(pending + f'已加载的防直连规则与记录不一致，无法确认 {USER} 不会直连。'
                            + ('请执行 xq_proxyon 继续' if pending else '请执行 xq_proxyon 重新加载'))
     if pending:
-        raise RuntimeError(pending + '防直连规则与记录一致，停在只阻断、不转发的形态，核心不会启动。'
-                           '请执行 xq_proxyon 继续')
+        # After a guard was put back the core may still be running; these
+        # rules send nothing to it. One that is not running is not started.
+        raise RuntimeError(pending + '防直连规则与记录一致，停在只阻断、不转发的形态'
+                           + ('' if core_active() else '，核心不会启动') + '。请执行 xq_proxyon 继续')
+    check_config()
     if not core_active():
         raise RuntimeError('核心未运行。已加载的防直连规则与记录一致。请执行 xq_proxyon 恢复')
     if state.get('guard_source') != guard_source(loaded):
@@ -916,7 +940,6 @@ def check():
 
 
 def on():
-    check_config()
     with locked():
         if ENABLED.exists():
             state = load()
@@ -926,7 +949,31 @@ def on():
                 status()
                 return
             except (RuntimeError, OSError, ValueError):
-                check_nss()
+                # The rules on record are what keeps the owner from going out
+                # direct. Where they are not the ones loaded (the table deleted
+                # by nft flush ruleset, its rules emptied or changed), the
+                # owner may be direct right now, and that ends first: the rules
+                # that only block are loaded and recorded before either check
+                # below can refuse and before anything else can fail or be
+                # interrupted. They are made from the owner's UID alone, which
+                # main() has verified; the core's configuration is not needed
+                # for them. From then on this is an on() that is not complete,
+                # which check() and status report and during which prepare()
+                # starts no core.
+                if not table_exists() or firewall_digest() != state.get('guard_digest'):
+                    install_firewall(state, active=False)
+                try:
+                    check_config()
+                    check_nss()
+                except (RuntimeError, OSError, ValueError) as error:
+                    if state.get('guard_active'):
+                        raise               # the full rules on record are loaded: nothing was changed
+                    # What these rules do not reach is named. A connection the
+                    # owner made while no rules were loaded is not cut by them,
+                    # and a shared resolver sends what it is asked for itself.
+                    raise RuntimeError(f'{error}。防直连规则停在只阻断、不转发的形态：{USER} 新发起的公网访问被阻断，不是直连'
+                                       '（规则缺失期间已经建立的连接、交给共享解析服务的名称查询不在此列）。'
+                                       '处理好这一项之后请执行 xq_proxyon 继续，或执行 xq_proxyoff 关闭') from None
                 install_firewall(state)
                 install_routes()
                 if core_active() and core_fault() is None and tun_exists():
@@ -1178,7 +1225,7 @@ def status():
     print(f'只有发往本机地址的 DNS 被改写，改写记录在独立 conntrack zone {DNS_ZONE}，不与其他用户的连接共用跟踪条目。')
     print('公网：TCP 经代理；ICMP/ping、普通 UDP 和 IPv6 主动出站被阻断。')
     print('连通性验证请使用 HTTPS；公网 ping 失败不代表 HTTPS 代理不可用。')
-    print('NSS 的 mdns4_minimal 仅保留本地域名发现，不属于公网 DNS 查询。')
+    print('NSS 的 mdns4_minimal 只处理本地域名和链路本地反查，不把公网名称交给共享解析服务。')
     print('重启默认 OFF；故障保留防直连规则，不会自动恢复公网直连。')
     return 0
 

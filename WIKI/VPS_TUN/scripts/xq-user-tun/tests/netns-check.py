@@ -409,7 +409,10 @@ def check_forged_reply(scope, owner, squatter, who):
 
 
 def check_flushed_ruleset(scope, owner):
-    """A5: selection lives in nft, so without the table the owner's new connections go direct."""
+    """A5: selection lives in nft, so without the table the owner's new connections go direct.
+
+    An on() that finds the table gone loads the rules that only block before it does anything else.
+    """
     probe(owner, '203.0.113.10', 9999)
     assert exits() == (1, 0), f'an owner packet should enter the TUN: {exits()}'
     run([NFT, 'delete', 'table', 'inet', TABLE])        # what `nft flush ruleset` does to this table
@@ -419,6 +422,18 @@ def check_flushed_ruleset(scope, owner):
     expect(probe(owner, STUB), 'stub', 'owner DNS without the table')
     print('PASS: once the table is gone, a new owner connection leaves by the main route and owner DNS '
           'reaches the system resolver directly; table_exists() sees it', flush=True)
+    scope['install_firewall']({}, active=False)          # that first step of on()
+    assert 'dnat' not in run([NFT, 'list', 'table', 'inet', TABLE])
+    before = dns_exits()
+    result = probe(owner, '203.0.113.10', 9999)
+    assert exits() == (1, 1), f'with the guard back, an owner packet still left the host: {exits()} ({result})'
+    for tcp in (False, True):
+        expect(probe(owner, STUB, tcp=tcp), None, 'owner DNS to the stub with only the guard back')
+        expect(probe(owner, REMOTE, tcp=tcp), None, 'owner DNS to a public resolver with only the guard back')
+    assert dns_exits() == before, f'with only the guard back, owner DNS left the host: {dns_exits()} after {before}'
+    print('PASS: the guard-only rules loaded where the table was gone block the owner again: a new connection '
+          'no longer leaves by the main route, and its DNS reaches neither the system resolver nor a public one',
+          flush=True)
 
 
 def check_tun_acl():

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TUN 改动文件清单</title>
-<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14/15 的逐项核对整理，并补记 11-15 至 11-23 的控制器替换和 11-23 的一次真实 systemd 重启。">
+<meta name="description" content="Mico-system 上用户级 TUN 方案放进系统的文件、改过的旧文件、运行时文件和特意没动的设置，按 2026-11-14/15 的逐项核对整理，并补记 11-15 至 11-25 的控制器替换和 11-23 的一次真实 systemd 重启。">
 <style>
 /* Same transit-map tokens as index.html, plus status colours for files:
    blue = added by this solution, amber = existing file changed,
@@ -221,7 +221,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
       <a href="index.html">流量链路</a>
       <a href="files.html" aria-current="page">动了哪些文件</a>
     </nav>
-    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对 · 2026-11-15 更新 · 11-23 补记</p>
+    <p class="eyebrow">Mico-system · 用户级 TUN · 2026-11-14 逐项核对 · 2026-11-15 更新 · 11-25 补记</p>
     <h1>动了哪些文件</h1>
     <p class="lede">系统原有的设置文件一个没改。新文件都放在名字带 xq 的独立位置；被改过的旧文件只有两个，都在你的家目录。</p>
     <ul class="legend" aria-label="标记含义">
@@ -367,7 +367,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
             <li><span class="dir">backups/</span>
               <ul>
                 <li><div class="row"><span class="nm">xq-*/（11 个目录）</span><span class="b bak">备份</span></div><span class="ds">每次安装、更新前的快照，见下方时间线</span></li>
-                <li><div class="row"><span class="nm">xq-user-proxyctl-before-*（7 个文件）</span><span class="b bak">备份</span><span class="md">用户级</span></div><span class="ds">11-15 晚上起每次单独替换控制器前的旧控制器（5 个），以及 11-15 重载规则前后的规则表（2 个 .nft-*.txt），见下方时间线</span></li>
+                <li><div class="row"><span class="nm">xq-user-proxyctl-before-*（9 个文件）</span><span class="b bak">备份</span><span class="md">用户级</span></div><span class="ds">11-15 晚上起每次单独替换控制器前的旧控制器（7 个），以及 11-15 重载规则前后的规则表（2 个 .nft-*.txt），见下方时间线</span></li>
               </ul>
             </li>
           </ul>
@@ -597,7 +597,7 @@ ip rule show | grep 18410; ip route show table 20261
 sudo ls -l /run/xq-user-proxy</pre>
   </section>
 
-  <footer>主体依据 2026-11-14 在本机的逐项核对，以及 2026-11-15 升级后的文件记录；时间线补记 2026-11-15 升级之后至 11-23 的控制器替换和备份（已比对 <code>/var/backups</code> 中各备份的哈希），以及 11-23 的一次真实 systemd 重启。时间为服务器时间（America/Los_Angeles）。</footer>
+  <footer>主体依据 2026-11-14 在本机的逐项核对，以及 2026-11-15 升级后的文件记录；时间线补记 2026-11-15 升级之后至 11-25 的控制器替换和备份（已比对 <code>/var/backups</code> 中各备份的哈希），以及 11-23 的一次真实 systemd 重启。时间为服务器时间（America/Los_Angeles）。</footer>
 </main>
 </body>
 </html>

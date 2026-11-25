@@ -374,7 +374,7 @@ footer code { font-family: var(--mono); font-size: .92em; }
         </section>
 
       </div>
-      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。当前用户级控制器为 <code>e0d3d24</code>，服务定义仍沿用便携包版本；11-15 升级之后控制器的每次替换和备份见下方时间线。房间模式和共用的文件没有被这些用户级更新改动。</figcaption>
+      <figcaption>「用户级」指 <code>xq_proxyon</code>，「房间」指 <code>xq_tun run</code>。当前用户级控制器为 <code>541771c</code>，服务定义仍沿用便携包版本；11-15 升级之后控制器的每次替换和备份见下方时间线。房间模式和共用的文件没有被这些用户级更新改动。</figcaption>
     </figure>
   </section>
 
@@ -529,6 +529,15 @@ footer code { font-family: var(--mono); font-size: .92em; }
                 <p class="bk">没有替换安装的文件，规则未重载；核心重新读取未改动的配置，TUN 重建，core.json 重写</p></div></li>
           </ol>
         </section>
+        <section class="day" aria-labelledby="day-24">
+          <h3 id="day-24">11-24</h3>
+          <ol class="tl">
+            <li><time>17:40</time><span class="rail" aria-hidden="true"></span>
+              <div class="ev"><b>部署 <code class="inline">541771c</code> 控制器</b>
+                <ul class="chips"><li>xq-user-proxyctl</li><li>不停服</li><li>修复先装回只阻断</li></ul>
+                <p class="bk">备份 xq-user-proxyctl-before-541771c-20261124-174030</p></div></li>
+          </ol>
+        </section>
       </div>
       <figcaption>服务器时间（America/Los_Angeles）。蓝色是系统里本方案自己的文件，橙色是你家目录里的文件。系统备份都在 <code>/var/backups/</code>，每一步的“改了哪些”是比对备份里各版本的哈希得出的。</figcaption>
     </figure>
@@ -567,9 +576,9 @@ footer code { font-family: var(--mono); font-size: .92em; }
   <!-- 7. check it yourself -->
   <section class="chapter" aria-labelledby="c-check">
     <h2 id="c-check">自己核对</h2>
-<pre class="cmd"><span class="c"># 装进系统的控制器是不是 e0d3d24 的那一份（两行哈希应相同）。WIKI 里现在的源码此后改过 NSS 检查、修复式开启的顺序和几处报告，没有部署到本机，哈希与它不同</span>
+<pre class="cmd"><span class="c"># 装进系统的控制器是不是 541771c 的那一份（两行哈希应相同）</span>
 sha256sum &lt; /usr/local/sbin/xq-user-proxyctl
-git -C ~/WIKI/vpsinit show e0d3d24:WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl | sha256sum
+git -C ~/WIKI/vpsinit show 541771c:WIKI/VPS_TUN/scripts/xq-user-tun/xq-user-proxyctl | sha256sum
 <span class="c"># 服务定义</span>
 systemctl cat xq-user-proxy.service
 <span class="c"># 内核里的设置（ON 时才有）</span>

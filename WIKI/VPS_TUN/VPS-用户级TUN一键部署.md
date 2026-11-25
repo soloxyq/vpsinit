@@ -42,7 +42,7 @@ Mico-system 在 2026-11-23 06:20（服务器时间）又部署了 `e0d3d24` 的�
 - Debian 12：清单里有 libnss-myhostname，没有 libnss-resolve。按软件包的打包规则，`hosts` 行预计是 `files myhostname dns`；云镜像组 2024 年 6 月初给出的是 `files dns myhostname`，同月中旬软件包才改为把 `myhostname` 插在 `files` 之后。两种都能通过检查，可以安装；本包此前的版本会因 `myhostname` 拒绝。2024 年年中以前构建的镜像装的是 libnss-resolve，`hosts` 行带 `resolve`，会被拒绝。
 - Debian 13：清单里同时有 libnss-resolve 和 libnss-myhostname。按打包规则，`hosts` 行预计是 `files myhostname resolve [!UNAVAIL=return] dns`，会因 `resolve` 被拒绝。
 
-`hosts` 行带 `resolve` 的机器要使用本包，管理员需先把 `resolve` 和紧跟它的 `[!UNAVAIL=return]` 从 `hosts` 行删掉。要留底，就把原来的整行注释掉（行首加 `#`）再另写一行；不要把这两项挪到同一行的 `#` 后面，那样 glibc 仍会加载它们。这会改变全机的名称解析方式，由管理员决定，安装器不代为修改。这项检查只在安装时、从关闭状态开启时和修复式开启时执行。开启之后这一行若被改回去（例如重新安装了 libnss-resolve），`xq_proxystatus` 和 `check` 照样报告正常，经 `resolve` 的查询却不再被接管，所以改动这类软件包之后应重新核对这一行。这时的修复式开启也会被拒绝。记录里的防直连规则还加载着时（例如只是核心停了），被拒绝的修复式开启什么都不改。防直连规则已经丢失时（[规则集被清空](#nftables-规则集被清空时)：表不存在，或已加载的规则与记录不一致），`xq_proxyon` 先把规则装回只阻断、不转发的形态，再做这项检查：被拒绝时规则就停在这个形态，目标用户新发起的公网访问被阻断而不是直连，`xq_proxystatus` 和 `check` 报告“开启尚未完成”，要先改好这一行再执行 `xq_proxyon`，或用 `xq_proxyoff` 关闭。阻断的是目标用户自己的 socket 发出的包：经 `resolve` 这类共享解析服务的名称查询由那个服务代发，不受这些规则约束，这也是检查拒绝它们的原因；规则缺失期间已经建立的连接也不会被切断（见[第 6 节](#nftables-规则集被清空时)）。
+`hosts` 行带 `resolve` 的机器要使用本包，管理员需先把 `resolve` 和紧跟它的 `[!UNAVAIL=return]` 从 `hosts` 行删掉。要留底，就把原来的整行注释掉（行首加 `#`）再另写一行；不要把这两项挪到同一行的 `#` 后面，那样 glibc 仍会加载它们。这会改变全机的名称解析方式，由管理员决定，安装器不代为修改。这项检查在安装时和每次执行 `xq_proxyon` 时进行，开关 ON 期间 `xq_proxystatus` 和 `check` 也做。开启之后这一行若被改回去（例如重新安装了 libnss-resolve），或者 nscd 运行起来，这两个命令报告这一项并返回 1，`xq_proxyon` 被拒绝。这时规则和运行中的核心都没有动，TCP 仍经代理，交给共享解析服务的查询却不被接管，改好之后才恢复。没有常驻的监视，改动这类软件包之后应执行一次 `xq_proxystatus`。记录里的防直连规则还加载着时（例如只是核心停了），被拒绝的修复式开启什么都不改。防直连规则已经丢失时（[规则集被清空](#nftables-规则集被清空时)：表不存在，或已加载的规则与记录不一致），`xq_proxyon` 先把规则装回只阻断、不转发的形态，再做这项检查：被拒绝时规则就停在这个形态，目标用户新发起的公网访问被阻断而不是直连，`xq_proxystatus` 和 `check` 报告“开启尚未完成”，要先改好这一行再执行 `xq_proxyon`，或用 `xq_proxyoff` 关闭。阻断的是目标用户自己的 socket 发出的包：经 `resolve` 这类共享解析服务的名称查询由那个服务代发，不受这些规则约束，这也是检查拒绝它们的原因；规则缺失期间已经建立的连接也不会被切断（见[第 6 节](#nftables-规则集被清空时)）。
 
 例如，当前机器使用的 `192.168.5.34:4066` 是局域网代理。另一台公网 VPS 只有具备到该私网的网络路径时才能继续使用；否则应提供新 VPS 可达的代理地址。脚本会在改动代理网络规则前验证 SOCKS5 连接和 HTTPS。
 
@@ -73,7 +73,7 @@ curl --disable -sS --fail --max-time 30 --proxy "socks5://$UP" --noproxy '' --re
 下列情况会被拒绝，都发生在写入本包文件之前。第一项只在安装时检查，其余各项在安装时和每次从关闭状态开启时都检查：
 
 - iptables-legacy 或 ip6tables-legacy 里有规则、自定义链，或默认策略不是 ACCEPT；
-- 其他 nftables 规则使用了 `meta mark`、`ct mark` 或 `ct zone`。全隧道的 WireGuard（wg-quick）、Tailscale、Kubernetes 一类的软件通常会用到，本文没有逐一核实；
+- 其他 nftables 规则使用了 `meta mark`、`ct mark` 或 `ct zone`。全隧道的 WireGuard（wg-quick）、Tailscale、Kubernetes 一类的软件通常会用到，本文没有逐一核实。iptables-nft 的 `-m mark` 匹配是例外：nft 把它列成不带 `meta` 的 `mark …`（nft 1.0.2 上测得），这项检查认不出，用过 iptables 的机器要按下面命令块的最后一条自己核对；
 - 已有策略路由规则占用优先级 `18410`，或带 `fwmark` 而标记值或掩码含有本方案的路由标记位 `0x40000000`（不写掩码等于全掩码）；
 - 路由表 `20261` 里已有路由，或接口名 `xq-utun`、nft 表 `inet xq_user_proxy` 已经存在；
 - 已有路由（默认路由除外）覆盖 TUN 的地址 `172.30.254.1`，例如 `172.16.0.0/12` 或 `172.30.0.0/16` 的网段路由；
@@ -81,7 +81,7 @@ curl --disable -sS --fail --max-time 30 --proxy "socks5://$UP" --noproxy '' --re
 
 这些检查里，除 iptables-legacy 一项外都排在安装依赖和下载 sing-box 之后；[名称解析（NSS）](#1-安装前提)一项也是。被拒绝时还没有写入本包的文件，处理之后可以直接重跑安装器。处理应由管理员核对后进行，不要为了通过检查去删除不认识的规则或路由。
 
-运行安装器之前可以先用下面的只读命令查一遍，免得装完依赖、下载完 sing-box 才被拒绝。它们不改动系统，查的就是上面清单里的各项，只有两项没有列入：conntrack 一项要用到安装器才装上的工具；iptables-legacy 一项，机器上已经有 `iptables-legacy-save` 时安装器在安装依赖之前就先查，被拒绝也不会白等。
+运行安装器之前可以先用下面的只读命令查一遍，免得装完依赖、下载完 sing-box 才被拒绝。它们不改动系统，查的是上面清单里的各项和名称解析（NSS）一项，只有两项没有列入：conntrack 一项要用到安装器才装上的工具；iptables-legacy 一项，机器上已经有 `iptables-legacy-save` 时安装器在安装依赖之前就先查，被拒绝也不会白等。
 
 ```bash
 [ -x /usr/sbin/nft ] && sudo /usr/sbin/nft list ruleset | grep -nE '\b(meta|ct)[[:space:]]+mark\b|\bct[[:space:]]+((original|reply)[[:space:]]+)?zone\b'
@@ -91,9 +91,12 @@ ip -4 route show table 20261; ip -6 route show table 20261
 ip link show xq-utun
 python3 -I -c 'import ipaddress, json, subprocess; t = ipaddress.ip_address("172.30.254.1"); print([r["dst"] for r in json.loads(subprocess.run(["ip", "-j", "-4", "route", "show", "table", "all"], capture_output=True, text=True, check=True).stdout) if r.get("dst", "default") != "default" and t in ipaddress.ip_network(r["dst"], strict=False)])'
 ss -Hlntu 'sport = :40'
+LC_ALL=C grep -anE '^[[:space:]]*hosts([[:space:]:]|$)' /etc/nsswitch.conf
+ls /run/nscd/socket /var/run/nscd/socket /var/run/.nscd_socket 2>/dev/null; systemctl is-active nscd.service
+{ sudo iptables-nft-save; sudo ip6tables-nft-save; } 2>/dev/null | grep -nE -- '-m mark'
 ```
 
-可以安装时：前两条没有输出（还没有装 nft 时也没有输出，安装器装好依赖后会再查）；`ip rule` 的输出里没有优先级 `18410`，带 `fwmark` 的规则其标记值和掩码都不含 `0x40000000`（不写掩码的算含）；两条 `ip route` 没有输出，或报路由表不存在；`ip link` 报设备不存在；Python 那一条打印 `[]`；`ss` 没有输出。
+可以安装时：前两条没有输出（还没有装 nft 时也没有输出，安装器装好依赖后会再查）；`ip rule` 的输出里没有优先级 `18410`，带 `fwmark` 的规则其标记值和掩码都不含 `0x40000000`（不写掩码的算含）；两条 `ip route` 没有输出，或报路由表不存在；`ip link` 报设备不存在；Python 那一条打印 `[]`；`ss` 没有输出；`grep` 恰好打印一条 `hosts` 行，内容符合[名称解析（NSS）](#1-安装前提)一项；`ls` 没有输出，`systemctl` 打印的不是 `active`。最后一条安装器不查：有输出时，由管理员核对这些规则的标记值或掩码是否含有 `0x40000000`（不写掩码的算含），含有的规则，匹配结果会随本方案打的路由标记而变。
 
 ## 2. 将安装包放到新 VPS
 
@@ -299,12 +302,13 @@ sudo /usr/local/sbin/xq-user-proxyctl off
 
 - 服务单元在核心启动前记下将要加载的配置（`ExecStartPre=… prepare`），核心起来后确认（`ExecStartPost=… attach`），记录在 `/run/xq-user-proxy/core.json`。systemd 自动重启核心时同样会重新记录。
 - `attach` 等核心的 TUN 有了唯一的地址 `172.30.254.1/32` 并且已经启用（UP）之后才给它路由：核心先设地址、后启用网卡，而内核拒绝经过未启用网卡的路由（`Device for nexthop is not up`）。它最多查询 50 次、每次间隔 0.1 秒，放弃前至少等了 5 秒（`ip` 响应慢时更久）；仍不满足则这次启动失败，防直连规则和黑洞路由保留。这时 `xq_proxyon` 只报 `systemctl start xq-user-proxy.service` 失败，缺的是哪一项（查不到 TUN 并附 `ip` 的报错、地址不对或未启用）写在服务日志里（`journalctl -u xq-user-proxy.service`）。核心在运行、它的启动记录与磁盘上的配置一致、TUN 也在而检查不通过时（例如规则表被清空后），`xq_proxyon` 不重启核心，自己执行同样的等待和添加路由；这时仍不满足的话，由 `xq_proxyon` 直接给出上述报告，核心继续运行，防直连规则和黑洞路由保留。
+- 核心运行期间 `xq-utun` 被设为 down（例如有人执行了 `ip link set xq-utun down`）时，内核删掉经它的路由，目标用户的公网访问被阻断，不是直连：`check` 报“TUN 专用默认路由缺失”，`xq_proxyon` 等待之后报“仍未启用（UP）”。执行 `sudo ip link set xq-utun up` 再执行 `xq_proxyon`，核心不重启，已有的连接保留（2026-11-24 审查时用真实核心在隔离命名空间里测得）。
 - 磁盘上的配置与记录不一致时，`check` 返回非零，`xq_proxystatus` 显示运行中的核心实际使用的上游，并注明磁盘上的配置“尚未加载”。它不会把尚未生效的新上游显示成当前上游。
 - `xq_proxyon` 发现不一致时停止并重新启动核心，期间防直连规则和黑洞路由保留，目标用户的公网访问中断几秒，已有的公网连接需要重新建立。配置一致时 `xq_proxyon` 不重启核心。
 - 没有这份记录的核心（不是由当前版本的服务单元启动的）同样按“无法确认”处理，`xq_proxyon` 会重启它。
 - 记录缺失、损坏，或记下的 DNS 入口端口不是现在的端口时，这个核心留下的 DNS 映射可能指向已经不用的入口。`xq_proxyon` 在旧核心停止之后、新核心启动之前删除本功能的全部 DNS 映射，并重新列出、确认一条不剩。删除和确认期间规则换成只阻断、不转发的形态，与 `xq_proxyoff` 清理时相同（在本机的隔离命名空间里测得约 0.1 秒）：目标用户发往本机地址的 DNS 被守卫丢弃，程序得到“不允许的操作”或超时，而不是被空着的入口立即拒绝；不会直连。确认之后换回完整规则，再启动核心。首次启动在写下记录之前就失败（例如核心配置检查不通过）后重新执行 `xq_proxyon`，走的也是这一步。
 
-控制器还记下它所生成规则的摘要。更新控制器之后，已加载的规则不再是它会生成的版本，`check` 返回非零，`xq_proxyon` 原子替换整张表：替换没有空档，不清空 conntrack；核心配置没有变化时核心不重启。
+控制器还记下它所生成规则的摘要。更新控制器之后，若它生成的规则有变化，已加载的规则就不再是它会生成的版本，`check` 返回非零，`xq_proxyon` 原子替换整张表：替换没有空档，不清空 conntrack；核心配置没有变化时核心不重启。
 
 ### 关闭的前提与中断后的继续
 
@@ -323,7 +327,7 @@ sudo /usr/local/sbin/xq-user-proxyctl off
 | `xq_proxystatus`（`xq-user-proxyctl status`） | 开关 ON 且检查通过；或开关 OFF 且没有残留（包括正常开机后从未开启） | 开关 ON 但检查发现异常；或开关 OFF 但有残留：上次操作停在未完成阶段、核心仍在运行、防直连 nft 表、专用策略规则、专用路由或 DNS conntrack 映射仍在。输出逐项列出，并给出恢复入口 `xq_proxyoff` |
 | `xq-user-proxyctl check` | 开关 ON 且检查通过 | 其余情况，包括开关 OFF（“用户代理未开启”） |
 
-开关 ON 时两者都只报告发现的第一个异常，顺序是：先看防直连规则（表是否存在、已加载的规则与记录是否一致、开启是否停在只阻断的形态），再核对 `sing-box.json`，然后是核心是否在运行、规则是否是当前控制器生成的版本、核心加载的配置、TUN、TUN 的 rp_filter、策略规则和专用路由、DNS 入口和默认 DNS。开关 OFF 时两者都不核对 `sing-box.json`，它要到下一次 `xq_proxyon` 才被核对。开关 OFF 且缺少 conntrack 时，`status` 注明“未核验”DNS 映射；只要没有其他残留，仍返回 0。权限不足、参数错误或 `settings.json` 无效时两个命令也返回 1。
+开关 ON 时两者都只报告发现的第一个异常，顺序是：先看防直连规则（表是否存在、已加载的规则与记录是否一致、开启是否停在只阻断的形态），再核对 `sing-box.json`、[名称解析（NSS）](#1-安装前提)的条件和 DNS 入口的端口门槛，然后是核心是否在运行、规则是否是当前控制器生成的版本、核心加载的配置、TUN、TUN 的 rp_filter、策略规则和专用路由、默认 DNS。开关 OFF 时两者都不核对 `sing-box.json` 和 NSS 的条件，它们要到下一次 `xq_proxyon` 才被核对。开关 OFF 且缺少 conntrack 时，`status` 注明“未核验”DNS 映射；只要没有其他残留，仍返回 0。权限不足、参数错误或 `settings.json` 无效时两个命令也返回 1。
 
 ### nftables 规则集被清空时
 
@@ -332,13 +336,15 @@ sudo /usr/local/sbin/xq-user-proxyctl off
 会删除这张表的操作：
 
 - 管理员执行 `nft flush ruleset`；
-- 停止 `nftables.service`（包括 restart 的停止阶段）：它的 `ExecStop` 就是 `nft flush ruleset`；
+- 停止 `nftables.service`（包括 restart 的停止阶段）：它的 `ExecStop` 就是 `nft flush ruleset`。这个服务在运行时升级 nftables 软件包（包括自动升级）也会走到这一步：软件包的安装脚本对它执行 `try-restart`（读的是 Ubuntu 22.04 上 1.0.2 版的安装脚本，没有实际升级验证）；
 - 启动或 reload `nftables.service`，且 `/etc/nftables.conf` 含有 `flush ruleset`。Debian/Ubuntu 默认的 `/etc/nftables.conf` 以这一行开头；管理员改写后去掉这一行的配置不会清空其他表；
 - 其他加载含 `flush ruleset` 文件的脚本或工具。
 
 firewalld、ufw 的重载行为没有核实，本文不作结论。
 
 发现方式：没有常驻监控，也没有定时检查。开关 ON 时，`xq_proxystatus` 和 `sudo /usr/local/sbin/xq-user-proxyctl check` 首先确认这张表存在；缺失时返回非零，并直接说明表不存在、目标用户的新连接和 DNS 可能正在直连、应执行 `xq_proxyon`。表还在而其中的规则被清空或改动时（`nft flush table inet xq_user_proxy`、`nft flush chain`、`nft delete rule`：表、集合和链都留着，规则被清空或删去一部分），接着比较已加载规则与记录的摘要，返回非零并说明“已加载的防直连规则与记录不一致，无法确认（目标用户名）不会直连”，同样执行 `xq_proxyon`；这一项先于“核心未运行”和“开启尚未完成……停在只阻断”的说法检查（记录停在只阻断形态时，报告仍以“开启尚未完成”开头），规则被清空或改动时，报告里不会出现“已加载的防直连规则与记录一致”或“只阻断”。表不存在和规则不一致这两项都排在 `sing-box.json` 的核对之前：配置文件同时有问题时，报告的仍是规则这一项。在下一次查询之前，直连不会被发现。
+
+“已加载的防直连规则与记录不一致”也可能是误报：核对的是 `nft` 列出的文字的摘要，不是内核里的规则本身。`/etc/protocols` 里 tcp、udp 两行被删去或改名，或者 `/etc/iproute2/rt_marks` 给本方案用的标记值起了名字（两种都在 nft 1.0.2 上测过），列出的文字就变了；nft 换版本之后也可能变（没有测过）。这时转发照常；核心若在这期间重启，会因“guard 不完整”得不到路由，目标用户被阻断，不是直连。分不清是误报还是真的被改动，也不需要分：都执行一次 `xq_proxyon`。
 
 恢复方式：执行 `xq_proxyon`。它取得锁、读入状态记录、确认规则确实已经丢失之后，第一步是把这张表装回只阻断、不转发的形态并记下来，从这一步起目标用户新发起的公网连接不再直连；然后核对 `sing-box.json`，重做[名称解析（NSS）](#1-安装前提)的检查，换成完整规则，补齐策略路由，核心在运行时不重启。核对或检查在这时不通过的话（`sing-box.json` 偏离限定范围、与 `settings.json` 不一致、读不出来、不是有效的 JSON，或所在路径的属主、权限不合要求；`hosts` 行不合要求、`nsswitch.conf` 读不出来、有 nscd 的套接字或 nscd 在运行），它在这里拒绝：规则停在只阻断的形态，`xq_proxystatus` 和 `check` 报告“开启尚未完成”；处理好之后再执行 `xq_proxyon`，或用 `xq_proxyoff` 关闭。
 
@@ -385,7 +391,7 @@ firewalld、ufw 的重载行为没有核实，本文不作结论。
 
 这项保证的前提和限度：
 
-- `net.ipv4.ip_unprivileged_port_start` 必须大于 `40`。安装和首次开启在改动之前检查，不满足就拒绝；开启期间被调低时，`status`/`check` 报告为异常（普通用户可以绑定入口，归属无法保证）。此时冒充的回复仍被丢弃，但查询内容可能已被占用者读到。
+- `net.ipv4.ip_unprivileged_port_start` 必须大于 `40`。安装和首次开启在改动之前检查，不满足就拒绝；开启期间被调低时，`status`/`check` 报告为异常（普通用户可以绑定入口，归属无法保证）。此时冒充的回复仍被丢弃，但查询内容可能已被占用者读到。发现时先把它恢复为大于 `40` 的值，再用 `sudo ss -Hlntup --cgroup 'sport = :40'` 确认每一行都带 `cgroup:/system.slice/xq-user-proxy.service`（进程名可以冒充，cgroup 不能；不带的由管理员按 `pid=` 先结束），然后执行 `xq_proxyon`。
 - root，以及被授予 `CAP_NET_BIND_SERVICE` 的程序（包括带文件能力的可执行文件），属于受信任范围，不在防护之内。
 - 状态命令只核对规则和端口门槛，不检查监听进程是谁；保证来自内核对特权端口和发送身份的限制，而不是来自状态检查。
 
@@ -567,9 +573,21 @@ glibc 的读法有四个依据：
 - 规则缺失期间建立的连接只是测量并写明了，规则没有改。给只阻断的规则加一条“目标用户发往公网的 TCP 包在本机复位”能堵住关闭时发出的那一部分，审查在命名空间里试过一种写法；它改变规则的文本，`xq_proxyoff` 和清理 DNS 映射的那一步也用这套规则，需要重做三身份验收，这次没有做。IPv6 连接的关闭包同理。
 - `xq_proxyon` 加载规则之后，凭自己随后列出的结果记下摘要。表若恰好在加载和列出之间被别的程序原地改动，改动后的样子会被记成自己的规则，此后的报告以它为准。加载完整规则的那一次原来就有这个窗口，这次多了加载只阻断规则的一次。`nft flush ruleset` 不属于这种情况：表被删掉之后列出会失败，什么都不会记录。被拒绝时报错里“停在只阻断”的那一句也不在打印之前再查一次：规则若在装回之后、报错之前又被清空，这句话就不成立，要到下一次查询才会报告。
 - 已加载的规则与记录不符时一律按丢失处理，加载的恰好是完整规则时也一样（上一次开启在加载之后、记录之前中断）：下一次 `xq_proxyon` 先换上只阻断的规则，再换回完整规则；检查若恰好在这时被拒绝，原本经代理的目标用户会停在只阻断的形态，直到原因消除。
-- 开关 ON 期间 NSS 条件变坏时，`check`、`xq_proxystatus` 和健康状态下重复执行的 `xq_proxyon` 都发现不了（见[第 1 节](#1-安装前提)）；查询 nscd 是否在运行的 `systemctl` 命令自己失败时，按“没有运行”处理。这两处原来就有，没有改。
+- 开关 ON 期间 NSS 条件变坏时，`check`、`xq_proxystatus` 和健康状态下重复执行的 `xq_proxyon` 当时都发现不了，[2026-11-25](#2026-11-25-开启期间也检查-nss) 已改；查询 nscd 是否在运行的 `systemctl` 命令自己失败时，按“没有运行”处理，这一处原来就有，没有改。
 - 外部事件恰好落在 `xq_proxyon` 最后的检查或状态输出期间时（例如规则在这时被清空，或 `sing-box.json` 在最后一次核对之后被改坏），它可能以 0 退出，而它打印的状态里已经有异常；以随后 `xq_proxystatus` 的退出码为准。原来就有，没有改。
 - 规则丢失之后、修复记下只阻断的规则之前（包括修复里第一次加载只阻断规则之后、记下之前的那一条命令），记录里仍是完整规则。systemd 这时重启核心，`ExecStartPre` 照常放行并改写核心的启动记录，`ExecStartPost` 随后以“guard 不完整”拒绝，核心被停下，拿不到路由；规则还在时 systemd 重启核心，同样改写这份记录。记录里原先的 DNS 入口端口若不是 40（只有 2026-11-15 之前的控制器启动的核心是这样），改写之后 `xq_proxyon` 不再删除指向旧入口的 DNS 映射（离线测得，`main` 上相同）。`e0d3d24` 的控制器已经使用 40。原来就有，没有改。
+
+### 2026-11-25 开启期间也检查 NSS
+
+开关 ON 期间 NSS 条件变坏（`hosts` 行被改回带 `resolve`，或 nscd 运行起来）时，名称查询由共享解析服务代发，原先 `check` 和 `xq_proxystatus` 却照样报告完整。这一版改了 `check` 和 `xq_proxystatus` 三处和几条提示的措辞；生成的规则没有变，关闭和服务单元的步骤也没有变。
+
+- `check` 核对 `sing-box.json` 之后做 NSS 检查。不通过时 `check` 和 `xq_proxystatus` 返回 1 并指出是哪一项，`xq_proxyon` 被拒绝，规则和运行中的核心不动。服务单元的 `prepare` 和 `attach` 不做这项检查：核心这时若退出，systemd 照常重启它。不重启只会让目标用户的 TCP 也断掉，名称查询照样由共享服务发出。NSS 检查的提示因此也出现在状态报告里：结尾的“停止启用”去掉了，nscd 的两条改为写明后果。
+- `check` 把 DNS 入口的端口门槛提到“核心未运行”之前报告。原先门槛被调低而核心又停着时，报告只说核心未运行、请执行 `xq_proxyon`；这时启动核心，入口可能已经被别的用户占用。
+- 开关 OFF 时，`xq_proxystatus` 末尾几行（“公网：TCP 经代理”等）说的是开启后的行为，原先没有注明。现在这几行前面多一行“当前 OFF：……以下各行说明开启后的行为”。
+
+验证：`tests/test_lifecycle.py` 增加到 121 项，新增的 3 项在修改之前的控制器上失败；把这三处逐一改坏，共 14 种，每一种都至少让一项测试失败；两套规则与 `541771c` 生成的逐字节相同。开启结束时的 `check` 和状态输出各多一次对 nscd 的查询，上一小节里成功结束的开启因此各多 2 步（成功的修复 57、61、76 步，拒绝之后完成开启 54、58 步）。`netns-check.py` 不调用 `check` 和 `status`，`core-check.py` 里 NSS 检查由替身代替，这次没有以 root 重做三身份验收。NSS 条件在开启期间变坏的情形，没有在真实 systemd 下制造过，在 Mico-system 的宿主上也没有。
+
+另有几项没有改代码，只在本文写明：nftables 软件包升级清空规则集、摘要的误报、`xq-utun` 被设为 down（[第 6 节](#6-出错时的处理)），端口门槛被调低后的处理（[第 7 节](#7-用户隔离的边界)），iptables 的 `-m mark` 和安装前对 NSS 的自查（[第 1 节](#与已有网络配置共存)）。
 
 修改源码或文档后，可在 `WIKI/VPS_TUN` 目录重新生成部署包及 SHA256 校验文件：
 

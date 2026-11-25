@@ -495,7 +495,7 @@ def check_nss():
             hosts.append([word.decode(errors='backslashreplace') for word in rest.split()])
     if len(hosts) != 1:
         found = f'有 {len(hosts)} 条' if hosts else '没有'
-        raise RuntimeError(f'hosts NSS 配置不能确定由 libc DNS 解析（/etc/nsswitch.conf {found} hosts 行）；停止启用')
+        raise RuntimeError(f'hosts NSS 配置不能确定由 libc DNS 解析（/etc/nsswitch.conf {found} hosts 行）')
     # Accepted is what asks only in ways the rules deal with. dns sends its
     # query from the asking program's own socket, where it is taken over by
     # UID. files reads /etc/hosts. mdns4_minimal takes only names like
@@ -520,12 +520,12 @@ def check_nss():
         raise RuntimeError(f'检测到不在允许范围内的 NSS 项（hosts 行的 {shown}），'
                            '它们可能把查询交给共享解析服务；不能保证按 UID 接管 DNS')
     if 'dns' not in hosts[0]:
-        raise RuntimeError('hosts NSS 配置不能确定由 libc DNS 解析（hosts 行没有 dns）；停止启用')
+        raise RuntimeError('hosts NSS 配置不能确定由 libc DNS 解析（hosts 行没有 dns）')
     for path in ('/run/nscd/socket', '/var/run/nscd/socket', '/var/run/.nscd_socket'):
         if os.path.exists(path):
-            raise RuntimeError('检测到 nscd 套接字；不修改其他用户服务，停止启用')
+            raise RuntimeError('检测到 nscd 套接字：名称查询可能交给 nscd 代发，不能保证按 UID 接管 DNS')
     if run([SYSTEMCTL, 'is-active', '--quiet', 'nscd.service'], check=False).returncode == 0:
-        raise RuntimeError('nscd 正在运行；停止启用')
+        raise RuntimeError('nscd 正在运行：名称查询可能交给 nscd 代发，不能保证按 UID 接管 DNS')
 
 
 def snapshot():
@@ -914,6 +914,14 @@ def check():
         raise RuntimeError(pending + '防直连规则与记录一致，停在只阻断、不转发的形态'
                            + ('' if core_active() else '，核心不会启动') + '。请执行 xq_proxyon 继续')
     check_config()
+    # Both may hand the owner's names to others: a name service that asks on
+    # its behalf, and a port threshold that lets any user take the DNS entry
+    # of a core that is not running. So both are named before such a core:
+    # xq_proxyon, the remedy for it, does not mend them.
+    check_nss()
+    fault = endpoint_fault()
+    if fault:
+        raise RuntimeError(fault)
     if not core_active():
         raise RuntimeError('核心未运行。已加载的防直连规则与记录一致。请执行 xq_proxyon 恢复')
     if state.get('guard_source') != guard_source(loaded):
@@ -934,9 +942,9 @@ def check():
     for owned in (BLACKHOLE, TUN_ROUTE, UNREACHABLE):
         if not has_route(owned):
             raise RuntimeError(owned[0] + '缺失')
-    for fault in (endpoint_fault(), resolver_fault()):
-        if fault:
-            raise RuntimeError(fault)
+    fault = resolver_fault()
+    if fault:
+        raise RuntimeError(fault)
 
 
 def on():
@@ -1211,11 +1219,12 @@ def status():
         print('残留检查：未发现本功能的核心、guard 或策略路由' + ('。' if unchecked else '，也没有 DNS 映射。'))
         for item in unchecked:
             print('未核验：' + item)
+        print(f'当前 OFF：{USER} 的流量和 DNS 走宿主原路径，不经本代理；以下各行说明开启后的行为。')
     print('局域网：私网、链路本地、多播/广播按宿主路由直连（包括局域网 DNS）。')
     print('IPv4 直连范围：' + ', '.join(LAN_V4))
     print('IPv6 直连范围：' + ', '.join(LAN_V6))
     lines, warnings, fault = resolver_report()
-    print('默认 DNS（/etc/resolv.conf）' + ('的实际路径：' if enabled else '在开启后的路径（当前 OFF，按宿主原路径解析）：'))
+    print('默认 DNS（/etc/resolv.conf）' + ('的实际路径：' if enabled else '在开启后的路径：'))
     for line in lines:
         print('  ' + line)
     for warning in ([fault + '；按当前配置 xq_proxyon 会拒绝开启'] if fault else warnings):

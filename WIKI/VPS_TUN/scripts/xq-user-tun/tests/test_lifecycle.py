@@ -1197,6 +1197,29 @@ class PrerequisiteTests(Offline):
                         self.write('/run/nscd/socket', '')
                     self.assert_refused_unchanged('on', 'nscd')
 
+    def test_a_name_service_that_turns_bad_while_on_is_reported_and_nothing_is_changed(self):
+        """Nothing else is wrong then, and names leave through the shared service: check, status and on() say so."""
+        for cause in self.NAME_SERVICE:
+            with self.subTest(turned_bad=cause):
+                self.build()
+                self.healthy_on()
+                said, put_right = self.refuse(cause)
+                self.assertIn(said, str(self.attempt('check')))
+                code, text = self.status()
+                self.assertEqual(code, 1, text)
+                self.assertIn(said, text)
+                self.assertNotIn('完整', text)
+                # The rules and the running core stay; on() does not speak of rules that only block.
+                self.assertNotIn('只阻断', self.assert_refused_unchanged('on', said, kind=REFUSALS))
+                # The unit's hooks do not ask: a core that dies meanwhile is still started again.
+                self.kernel.take_down()
+                self.assertIn(said, str(self.attempt('check')), 'named before the core that is not running')
+                self.assertEqual(self.kernel.answer_systemctl(('start', SERVICE), None)[0], 0, self.kernel.journal)
+                self.assertTrue(self.kernel.core)
+                put_right()
+                self.call('check')
+                self.assertEqual(self.status()[0], 0)
+
     def test_a_configuration_that_is_refused_stops_every_on_before_any_change_while_the_rules_are_in_place(self):
         for cause in self.CONFIGURATION:
             for kind in ('fresh', 'healing', 'repeated'):
@@ -1400,6 +1423,18 @@ class StatusTests(Offline):
         self.assertEqual(code, 0, text)
         self.assertIn('开关：OFF', text)
 
+    def test_status_while_off_says_that_its_closing_lines_describe_on(self):
+        """They read "TCP 经代理", which is not what happens while the switch is off."""
+        said = f'当前 OFF：{OWNER.name} 的流量和 DNS 走宿主原路径，不经本代理；以下各行说明开启后的行为。'
+        code, text = self.status()
+        self.assertEqual(code, 0, text)
+        self.assertIn(said, text)
+        self.assertLess(text.index(said), text.index('局域网：'))
+        self.healthy_on()
+        code, text = self.status()
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('当前 OFF', text)
+
     def test_status_does_not_say_that_mdns4_minimal_asks_no_dns_server(self):
         """For a name like printer.local it first asks the default resolver for the SOA of local, as dns would.
 
@@ -1436,6 +1471,7 @@ class StatusTests(Offline):
                 code, text = self.status()
                 self.assertEqual(code, 1, f'{kind} reported as a clean OFF:\n{text}')
                 self.assertIn('xq_proxyoff', text)
+                self.assertNotIn('当前 OFF', text)
                 self.assertEqual((self.host(), self.kernel.writes[writes:]), (before, []))
                 self.call('off')
                 self.assert_clean()
@@ -2214,6 +2250,17 @@ class DnsEndpointTests(Offline):
         self.threshold(1024)
         self.call('on')
         self.assertEqual(self.status()[0], 0)
+
+    def test_a_lowered_port_threshold_is_named_before_a_core_that_is_not_running(self):
+        """xq_proxyon, the remedy for a stopped core, would start it with its entry open to any user."""
+        self.healthy_on()
+        self.threshold(0)
+        self.kernel.take_down()
+        said = 'ip_unprivileged_port_start 为 0'
+        self.assertIn(said, str(self.attempt('check')))
+        code, text = self.status()
+        self.assertEqual(code, 1, text)
+        self.assertIn(said, text)
 
 
 class LoadedConfigurationTests(Offline):

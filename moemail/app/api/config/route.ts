@@ -75,6 +75,11 @@ export async function POST(request: Request) {
     return Response.json({ error: "无效的角色" }, { status: 400 })
   }
 
+  // 不带这一项表示保持原样；带了就必须是布尔值，否则报错，不能静默忽略后照样返回成功
+  if (allowRegistration !== undefined && typeof allowRegistration !== "boolean") {
+    return Response.json({ error: "allowRegistration 必须是布尔值" }, { status: 400 })
+  }
+
   const turnstileConfig = turnstile ?? {
     enabled: false,
     siteKey: "",

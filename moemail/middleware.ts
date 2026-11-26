@@ -61,6 +61,19 @@ async function handle(request: Request): Promise<NextResponse> {
   // 路由匹配不区分大小写（/api/EMAILS 也会进到 /api/emails 的处理函数），鉴权统一按小写判断
   const apiPath = pathname.toLowerCase()
 
+  // 这里拿到的基本是原始路径（Next 只还原了两处：规范写法的 /_next/data/<buildId>/x.json 变回 /x，结尾小写的 .rsc 被去掉），
+  // 路由器却按改写后的路径选处理函数。下面两类写法会落到 /api 的处理函数上，路径却不在 /api 下，
+  // 后面按路径做的检查就对不上：
+  //   /_next/data/<buildId>/api/…  路由器去掉前缀再匹配（不区分大小写，结尾也不必是 .json）
+  //   //<任意>/api/…               改写时被当成“//主机/路径”重新解析，前面那段被丢掉
+  // 本站只用 App Router，用不到这两类地址，一律 404。
+  if (apiPath.startsWith('/_next/data/') || pathname.startsWith('//')) {
+    return NextResponse.json(
+      { error: "Not Found" },
+      { status: 404 }
+    )
+  }
+
   if (isUnder(apiPath, '/api')) {
     if (PUBLIC_API_ROUTES.some(route => isUnder(apiPath, route))) {
       return NextResponse.next()
@@ -114,8 +127,9 @@ async function handle(request: Request): Promise<NextResponse> {
     return NextResponse.next()
   }
 
-  // 页面只接受 GET/HEAD。本站没有 Server Actions，页面路径收到的 POST 只可能是攻击：
-  // Next 15.1 的 App Router 会先反序列化这类请求体再查 action id（RSC 反序列化 DoS 等公告都走这条路）。
+  // 页面只接受 GET/HEAD。本站没有 Server Actions，页面路径收到的写请求没有正当用途，
+  // 而 App Router 处理这类请求的代码（反序列化请求体）是 Next 历次安全公告集中的地方，干脆不让它们进去。
+  // 以后要加 Server Action，得先放开这里。
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return NextResponse.json(
       { error: "Method Not Allowed" },

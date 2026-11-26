@@ -4,59 +4,98 @@ import { i18n, type Locale } from "@/i18n/config"
 import { PERMISSIONS } from "@/lib/permissions"
 import { checkPermission } from "@/lib/auth"
 import { Permission } from "@/lib/permissions"
-import { handleApiKeyAuth } from "@/lib/apiKey"
+import { getUserId } from "@/lib/apiKey"
 
-const API_PERMISSIONS: Record<string, Permission> = {
-  '/api/emails': PERMISSIONS.MANAGE_EMAIL,
-  '/api/webhook': PERMISSIONS.MANAGE_WEBHOOK,
-  '/api/roles/promote': PERMISSIONS.PROMOTE_USER,
-  '/api/config': PERMISSIONS.MANAGE_CONFIG,
-  '/api/api-keys': PERMISSIONS.MANAGE_API_KEY,
+// 每个 /api 前缀需要的权限，null 表示登录即可。
+// 不在表里的 /api 路径一律拒绝：新增接口要先在这里登记。
+const API_PERMISSIONS: [string, Permission | null][] = [
+  ['/api/emails', PERMISSIONS.MANAGE_EMAIL],
+  ['/api/webhook', PERMISSIONS.MANAGE_WEBHOOK],
+  ['/api/roles/init-emperor', null],
+  ['/api/roles', PERMISSIONS.PROMOTE_USER],
+  ['/api/users', PERMISSIONS.PROMOTE_USER],
+  ['/api/config', PERMISSIONS.MANAGE_CONFIG],
+  ['/api/api-keys', PERMISSIONS.MANAGE_API_KEY],
+]
+
+// 不需要登录的接口：登录、注册，以及凭链接访问的分享内容
+const PUBLIC_API_ROUTES = ['/api/auth', '/api/shared']
+
+// API Key 只能用于这些接口
+const API_KEY_ROUTES = ['/api/emails', '/api/config']
+
+const isUnder = (path: string, route: string) =>
+  path === route || path.startsWith(route + '/')
+
+// 会话靠 Cookie 认证，而浏览器会替任何页面带上 Cookie，所以写请求必须确认是本站页面发起的。
+function isCrossSiteWrite(request: Request, url: URL) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(request.method)) return false
+
+  // Sec-Fetch-Site 由浏览器填写，页面脚本改不了
+  const fetchSite = request.headers.get('Sec-Fetch-Site')
+  if (fetchSite) return fetchSite !== 'same-origin' && fetchSite !== 'none'
+
+  // 旧浏览器没有它，退而比较 Origin。两个头都没有的是非浏览器客户端，不会替别人带 Cookie
+  const origin = request.headers.get('Origin')
+  return !!origin && origin !== url.origin
 }
 
 export async function middleware(request: Request) {
   const url = new URL(request.url)
   const pathname = url.pathname
+  // 路由匹配不区分大小写（/api/EMAILS 也会进到 /api/emails 的处理函数），鉴权统一按小写判断
+  const apiPath = pathname.toLowerCase()
 
-  if (pathname.startsWith('/api')) {
-    if (
-      pathname.startsWith('/api/auth') ||
-      pathname.startsWith('/api/shared')
-    ) {
+  if (isUnder(apiPath, '/api')) {
+    if (PUBLIC_API_ROUTES.some(route => isUnder(apiPath, route))) {
       return NextResponse.next()
     }
 
-    request.headers.delete("X-User-Id")
-    const apiKey = request.headers.get("X-API-Key")
-    if (apiKey) {
-      return handleApiKeyAuth(apiKey, pathname)
+    if (request.headers.get("X-API-Key")) {
+      if (!API_KEY_ROUTES.some(route => isUnder(apiPath, route))) {
+        return NextResponse.json(
+          { error: "无权限查看" },
+          { status: 403 }
+        )
+      }
+
+      if (!await getUserId()) {
+        return NextResponse.json(
+          { error: "无效的 API Key" },
+          { status: 401 }
+        )
+      }
+    } else {
+      if (isCrossSiteWrite(request, url)) {
+        return NextResponse.json(
+          { error: "跨站请求被拒绝" },
+          { status: 403 }
+        )
+      }
+
+      const session = await auth()
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          { error: "未授权" },
+          { status: 401 }
+        )
+      }
     }
 
-    const session = await auth()
-    if (!session?.user) {
+    if (apiPath === '/api/config' && request.method === 'GET') {
+      return NextResponse.next()
+    }
+
+    const rule = API_PERMISSIONS.find(([route]) => isUnder(apiPath, route))
+    const hasAccess = !!rule && (rule[1] === null || await checkPermission(rule[1]))
+
+    if (!hasAccess) {
       return NextResponse.json(
-        { error: "未授权" },
-        { status: 401 }
+        { error: "权限不足" },
+        { status: 403 }
       )
     }
 
-    if (pathname === '/api/config' && request.method === 'GET') {
-      return NextResponse.next()
-    }
-
-    for (const [route, permission] of Object.entries(API_PERMISSIONS)) {
-      if (pathname.startsWith(route)) {
-        const hasAccess = await checkPermission(permission)
-
-        if (!hasAccess) {
-          return NextResponse.json(
-            { error: "权限不足" },
-            { status: 403 }
-          )
-        }
-        break
-      }
-    }
     return NextResponse.next()
   }
 
@@ -134,10 +173,7 @@ function matchLocale(lang: string): Locale | null {
 export const config = {
   matcher: [
     '/((?!_next|.*\\..*).*)', // all pages excluding static assets
-    '/api/emails/:path*',
-    '/api/webhook/:path*',
-    '/api/roles/:path*',
-    '/api/config/:path*',
-    '/api/api-keys/:path*',
+    // 全部 API。上一条不匹配带点号的路径，而 /api/emails.rsc 这类写法同样会进到接口的处理函数
+    '/api/:path*',
   ]
 } 

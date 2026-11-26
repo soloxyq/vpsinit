@@ -1,12 +1,17 @@
 import { createDb } from "@/lib/db";
 import { roles, userRoles } from "@/lib/schema";
 import { eq } from "drizzle-orm";
-import { ROLES } from "@/lib/permissions";
-import { assignRoleToUser } from "@/lib/auth";
+import { ROLES, PERMISSIONS } from "@/lib/permissions";
+import { assignRoleToUser, checkPermission } from "@/lib/auth";
 
 export const runtime = "edge";
 
 export async function POST(request: Request) {
+  const canPromote = await checkPermission(PERMISSIONS.PROMOTE_USER);
+  if (!canPromote) {
+    return Response.json({ error: "权限不足" }, { status: 403 });
+  }
+
   try {
     const { userId, roleName } = await request.json() as { 
       userId: string, 

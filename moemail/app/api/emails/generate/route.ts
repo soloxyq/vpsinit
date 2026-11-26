@@ -7,12 +7,16 @@ import { EXPIRY_OPTIONS } from "@/types/email"
 import { EMAIL_CONFIG } from "@/config"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { getUserId } from "@/lib/apiKey"
-import { getUserRole } from "@/lib/auth"
-import { ROLES } from "@/lib/permissions"
+import { getUserRole, checkPermission } from "@/lib/auth"
+import { ROLES, PERMISSIONS } from "@/lib/permissions"
 
 export const runtime = "edge"
 
 export async function POST(request: Request) {
+  if (!await checkPermission(PERMISSIONS.MANAGE_EMAIL)) {
+    return NextResponse.json({ error: "权限不足" }, { status: 403 })
+  }
+
   const db = createDb()
   const env = getRequestContext().env
 

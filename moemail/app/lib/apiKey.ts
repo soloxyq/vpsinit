@@ -1,7 +1,6 @@
 import { createDb } from "./db"
 import { apiKeys } from "./schema"
 import { eq, and, gt } from "drizzle-orm"
-import { NextResponse } from "next/server"
 import type { User } from "next-auth"
 import { auth } from "./auth"
 import { headers } from "next/headers"
@@ -24,40 +23,18 @@ async function getUserByApiKey(key: string): Promise<User | null> {
   return apiKey.user
 }
 
-export async function handleApiKeyAuth(apiKey: string, pathname: string) {
-  if (!pathname.startsWith('/api/emails') && !pathname.startsWith('/api/config')) {
-    return NextResponse.json(
-      { error: "无权限查看" },
-      { status: 403 }
-    )
-  }
-
-  const user = await getUserByApiKey(apiKey)
-  if (!user?.id) {
-    return NextResponse.json(
-      { error: "无效的 API Key" },
-      { status: 401 }
-    )
-  }
-
-  const requestHeaders = new Headers(await headers())
-  requestHeaders.set("X-User-Id", user.id)
-  
-  const response = NextResponse.next({
-    request: {
-      headers: requestHeaders
-    }
-  })
-  return response
-}
-
+// 当前请求是谁发的：带 X-API-Key 就以这把 Key 的主人为准，否则看登录会话。
+// 身份只能来自这两种服务端验证得了的凭据，不要读取任何由客户端自报身份的请求头。
 export const getUserId = async () => {
   const headersList = await headers()
-  const userId = headersList.get("X-User-Id")
-  
-  if (userId) return userId
+  const apiKey = headersList.get("X-API-Key")
+
+  if (apiKey) {
+    const user = await getUserByApiKey(apiKey)
+    return user?.id
+  }
 
   const session = await auth()
 
-  return session?.user.id
+  return session?.user?.id
 }

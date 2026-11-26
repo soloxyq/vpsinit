@@ -1,6 +1,7 @@
-import { auth } from "@/lib/auth"
+import { auth, checkPermission } from "@/lib/auth"
 import { createDb } from "@/lib/db"
 import { webhooks } from "@/lib/schema"
+import { PERMISSIONS } from "@/lib/permissions"
 import { eq } from "drizzle-orm"
 import { z } from "zod"
 
@@ -13,10 +14,17 @@ const webhookSchema = z.object({
 
 export async function GET() {
   const session = await auth()
+  if (!session?.user?.id) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  if (!await checkPermission(PERMISSIONS.MANAGE_WEBHOOK)) {
+    return Response.json({ error: "权限不足" }, { status: 403 })
+  }
 
   const db = createDb()
   const webhook = await db.query.webhooks.findFirst({
-    where: eq(webhooks.userId, session!.user!.id!)
+    where: eq(webhooks.userId, session.user.id)
   })
 
   return Response.json(webhook || { enabled: false, url: "" })
@@ -26,6 +34,10 @@ export async function POST(request: Request) {
   const session = await auth()
   if (!session?.user?.id) {
     return Response.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  if (!await checkPermission(PERMISSIONS.MANAGE_WEBHOOK)) {
+    return Response.json({ error: "权限不足" }, { status: 403 })
   }
 
   try {

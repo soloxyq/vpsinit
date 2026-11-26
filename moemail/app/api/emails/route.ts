@@ -11,6 +11,9 @@ const PAGE_SIZE = 20
 
 export async function GET(request: Request) {
   const userId = await getUserId()
+  if (!userId) {
+    return NextResponse.json({ error: "未授权" }, { status: 401 })
+  }
 
   const { searchParams } = new URL(request.url)
   const cursor = searchParams.get('cursor')

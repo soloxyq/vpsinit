@@ -40,7 +40,22 @@ function isCrossSiteWrite(request: Request, url: URL) {
   return !!origin && origin !== url.origin
 }
 
+// 不允许任何页面用 iframe 嵌入本站，防点击劫持。next.config.ts 的 headers() 也配了同样的头，
+// 但在 next-on-pages 上那里只作用于静态文件，经过中间件的页面和接口拿不到，所以这里再加一遍。
+const ANTI_FRAMING_HEADERS: [string, string][] = [
+  ['Content-Security-Policy', "frame-ancestors 'none'"],
+  ['X-Frame-Options', 'DENY'],
+]
+
 export async function middleware(request: Request) {
+  const response = await handle(request)
+  for (const [key, value] of ANTI_FRAMING_HEADERS) {
+    response.headers.set(key, value)
+  }
+  return response
+}
+
+async function handle(request: Request): Promise<NextResponse> {
   const url = new URL(request.url)
   const pathname = url.pathname
   // 路由匹配不区分大小写（/api/EMAILS 也会进到 /api/emails 的处理函数），鉴权统一按小写判断

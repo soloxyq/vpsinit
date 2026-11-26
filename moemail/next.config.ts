@@ -27,17 +27,11 @@ const nextConfig = {
       },
     ]
   },
+  // 图片直接用原地址，不走 /_next/image。Cloudflare Pages 上这个接口本来就不做任何优化，只是原样转发；
+  // 而 next-on-pages 的实现能被 url=/\host/… 这类写法骗去抓取任意外部地址，并把对方的 Set-Cookie 转发给访问者。
+  // 根目录的 _routes.json 把 /_next/image* 排除在 worker 之外，这个接口在线上不可达，两处要一起保留。
   images: {
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'avatars.githubusercontent.com',
-      },
-      {
-        protocol: 'https',
-        hostname: '*.googleusercontent.com',
-      }
-    ],
+    unoptimized: true,
   },
 };
 

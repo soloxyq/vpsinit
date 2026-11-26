@@ -62,7 +62,7 @@ export default async function Home({
               </div>
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 px-2 sm:px-0">
-                <ActionButton isLoggedIn={!!session} />
+                <ActionButton isLoggedIn={!!session?.user} />
               </div>
             </div>
           </div>

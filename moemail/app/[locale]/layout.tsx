@@ -60,12 +60,13 @@ export async function generateMetadata({
     authors: [{ name: "SoftMoe Studio" }],
     creator: "SoftMoe Studio",
     publisher: "SoftMoe Studio",
+    // 自用的邮箱站，不让搜索引擎收录
     robots: {
-      index: true,
-      follow: true,
+      index: false,
+      follow: false,
       googleBot: {
-        index: true,
-        follow: true,
+        index: false,
+        follow: false,
       },
     },
     openGraph: {

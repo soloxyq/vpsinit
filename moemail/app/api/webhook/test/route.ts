@@ -2,7 +2,7 @@ import { callWebhook } from "@/lib/webhook"
 import { WEBHOOK_CONFIG } from "@/config"
 import { z } from "zod"
 import { EmailMessage } from "@/lib/webhook"
-import { checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 
 export const runtime = "edge"
@@ -12,9 +12,8 @@ const testSchema = z.object({
 })
 
 export async function POST(request: Request) {
-  if (!await checkPermission(PERMISSIONS.MANAGE_WEBHOOK)) {
-    return Response.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_WEBHOOK)
+  if (guard.error) return guard.error
 
   try {
     const body = await request.json()

@@ -3,17 +3,17 @@ import { and, eq, gt, lt, or, sql } from "drizzle-orm"
 import { NextResponse } from "next/server"
 import { emails } from "@/lib/schema"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
-import { getUserId } from "@/lib/apiKey"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 
 export const runtime = "edge"
 
 const PAGE_SIZE = 20
 
 export async function GET(request: Request) {
-  const userId = await getUserId()
-  if (!userId) {
-    return NextResponse.json({ error: "未授权" }, { status: 401 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const { searchParams } = new URL(request.url)
   const cursor = searchParams.get('cursor')
@@ -22,7 +22,7 @@ export async function GET(request: Request) {
 
   try {
     const baseConditions = and(
-      eq(emails.userId, userId!),
+      eq(emails.userId, userId),
       gt(emails.expiresAt, new Date())
     )
 

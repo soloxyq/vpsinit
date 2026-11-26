@@ -1,16 +1,14 @@
 import { createDb } from "@/lib/db"
 import { users, userRoles, roles } from "@/lib/schema"
 import { eq, like, or, sql } from "drizzle-orm"
-import { checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { PERMISSIONS, ROLES } from "@/lib/permissions"
 
 export const runtime = "edge"
 
 export async function GET(request: Request) {
-  const canPromote = await checkPermission(PERMISSIONS.PROMOTE_USER)
-  if (!canPromote) {
-    return Response.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.PROMOTE_USER)
+  if (guard.error) return guard.error
 
   const { searchParams } = new URL(request.url)
   const page = Math.max(1, Number(searchParams.get("page") || "1"))
@@ -79,10 +77,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const canPromote = await checkPermission(PERMISSIONS.PROMOTE_USER)
-  if (!canPromote) {
-    return Response.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.PROMOTE_USER)
+  if (guard.error) return guard.error
 
   try {
     const json = await request.json()

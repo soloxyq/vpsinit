@@ -1,25 +1,21 @@
-import { auth } from "@/lib/auth"
 import { createDb } from "@/lib/db"
 import { apiKeys } from "@/lib/schema"
 import { nanoid } from "nanoid"
 import { NextResponse } from "next/server"
-import { checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { desc, eq } from "drizzle-orm"
 
 export const runtime = "edge"
 
 export async function GET() {
-  const hasPermission = await checkPermission(PERMISSIONS.MANAGE_API_KEY)
-  if (!hasPermission) {
-    return NextResponse.json({ error: "权限不足" }, { status: 403 })
-  }
-
-  const session = await auth()
+  const guard = await requireUser(PERMISSIONS.MANAGE_API_KEY)
+  if (guard.error) return guard.error
+  const { userId } = guard
   try {
     const db = createDb()
     const keys = await db.query.apiKeys.findMany({
-      where: eq(apiKeys.userId, session!.user.id!),
+      where: eq(apiKeys.userId, userId),
       orderBy: desc(apiKeys.createdAt),
     })
 
@@ -39,12 +35,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const hasPermission = await checkPermission(PERMISSIONS.MANAGE_API_KEY)
-  if (!hasPermission) {
-    return NextResponse.json({ error: "权限不足" }, { status: 403 })
-  }
-
-  const session = await auth()
+  const guard = await requireUser(PERMISSIONS.MANAGE_API_KEY)
+  if (guard.error) return guard.error
+  const { userId } = guard
   try {
     const { name } = await request.json() as { name: string }
     if (!name?.trim()) {
@@ -60,7 +53,7 @@ export async function POST(request: Request) {
     await db.insert(apiKeys).values({
       name,
       key,
-      userId: session!.user.id!,
+      userId: userId,
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year
     })
 

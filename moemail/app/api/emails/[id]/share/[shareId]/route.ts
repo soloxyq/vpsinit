@@ -2,7 +2,8 @@ import { createDb } from "@/lib/db"
 import { emailShares, emails } from "@/lib/schema"
 import { eq, and } from "drizzle-orm"
 import { NextResponse } from "next/server"
-import { getUserId } from "@/lib/apiKey"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 
 export const runtime = "edge"
 
@@ -11,10 +12,9 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string; shareId: string }> }
 ) {
-  const userId = await getUserId()
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const { id: emailId, shareId } = await params
   const db = createDb()

@@ -1,4 +1,5 @@
-import { auth, assignRoleToUser } from "@/lib/auth";
+import { assignRoleToUser } from "@/lib/auth";
+import { requireUser } from "@/lib/guard";
 import { createDb } from "@/lib/db";
 import { roles, userRoles } from "@/lib/schema";
 import { ROLES } from "@/lib/permissions";
@@ -7,10 +8,9 @@ import { eq } from "drizzle-orm";
 export const runtime = "edge";
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return Response.json({ error: "未授权" }, { status: 401 });
-  }
+  const guard = await requireUser(null);
+  if (guard.error) return guard.error;
+  const { userId } = guard;
 
   const db = createDb();
 
@@ -27,7 +27,7 @@ export async function GET() {
 
   try {
     const currentUserRole = await db.query.userRoles.findFirst({
-      where: eq(userRoles.userId, session.user.id),
+      where: eq(userRoles.userId, userId),
       with: {
         role: true,
       },
@@ -48,7 +48,7 @@ export async function GET() {
       roleId = newRole.id;
     }
 
-    await assignRoleToUser(db, session.user.id, roleId);
+    await assignRoleToUser(db, userId, roleId);
 
     return Response.json({ message: "登基成功，你已成为皇帝" });
   } catch (error) {

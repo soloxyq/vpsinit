@@ -1,19 +1,16 @@
 import { NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 import { checkSendPermission } from "@/lib/send-permissions"
 
 export const runtime = "edge"
 
 export async function GET() {
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+
   try {
-    const session = await auth()
-    if (!session?.user?.id) {
-      return NextResponse.json({
-        canSend: false,
-        error: "未授权"
-      })
-    }
-    const result = await checkSendPermission(session.user.id)
+    const result = await checkSendPermission(guard.userId)
     
     return NextResponse.json(result)
   } catch (error) {
@@ -26,4 +23,4 @@ export async function GET() {
       { status: 500 }
     )
   }
-} 
+}

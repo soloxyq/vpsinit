@@ -1,4 +1,4 @@
-import { auth, checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { createDb } from "@/lib/db"
 import { webhooks } from "@/lib/schema"
 import { PERMISSIONS } from "@/lib/permissions"
@@ -13,32 +13,22 @@ const webhookSchema = z.object({
 })
 
 export async function GET() {
-  const session = await auth()
-  if (!session?.user?.id) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 })
-  }
-
-  if (!await checkPermission(PERMISSIONS.MANAGE_WEBHOOK)) {
-    return Response.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_WEBHOOK)
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const db = createDb()
   const webhook = await db.query.webhooks.findFirst({
-    where: eq(webhooks.userId, session.user.id)
+    where: eq(webhooks.userId, userId)
   })
 
   return Response.json(webhook || { enabled: false, url: "" })
 }
 
 export async function POST(request: Request) {
-  const session = await auth()
-  if (!session?.user?.id) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 })
-  }
-
-  if (!await checkPermission(PERMISSIONS.MANAGE_WEBHOOK)) {
-    return Response.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_WEBHOOK)
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   try {
     const body = await request.json()
@@ -48,7 +38,7 @@ export async function POST(request: Request) {
     const now = new Date()
 
     const existingWebhook = await db.query.webhooks.findFirst({
-      where: eq(webhooks.userId, session.user.id)
+      where: eq(webhooks.userId, userId)
     })
 
     if (existingWebhook) {
@@ -59,12 +49,12 @@ export async function POST(request: Request) {
           enabled,
           updatedAt: now
         })
-        .where(eq(webhooks.userId, session.user.id))
+        .where(eq(webhooks.userId, userId))
     } else {
       await db
         .insert(webhooks)
         .values({
-          userId: session.user.id,
+          userId: userId,
           url,
           enabled,
         })

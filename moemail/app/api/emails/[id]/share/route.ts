@@ -2,7 +2,8 @@ import { createDb } from "@/lib/db"
 import { emailShares, emails } from "@/lib/schema"
 import { eq, and } from "drizzle-orm"
 import { NextResponse } from "next/server"
-import { getUserId } from "@/lib/apiKey"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 import { nanoid } from "nanoid"
 
 export const runtime = "edge"
@@ -12,10 +13,9 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const userId = await getUserId()
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const { id: emailId } = await params
   const db = createDb()
@@ -51,10 +51,9 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const userId = await getUserId()
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const { id: emailId } = await params
   const db = createDb()

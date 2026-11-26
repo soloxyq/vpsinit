@@ -6,22 +6,21 @@ import { eq, and, gt, sql } from "drizzle-orm"
 import { EXPIRY_OPTIONS } from "@/types/email"
 import { EMAIL_CONFIG } from "@/config"
 import { getRequestContext } from "@cloudflare/next-on-pages"
-import { getUserId } from "@/lib/apiKey"
-import { getUserRole, checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
+import { getUserRole } from "@/lib/auth"
 import { ROLES, PERMISSIONS } from "@/lib/permissions"
 
 export const runtime = "edge"
 
 export async function POST(request: Request) {
-  if (!await checkPermission(PERMISSIONS.MANAGE_EMAIL)) {
-    return NextResponse.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   const db = createDb()
   const env = getRequestContext().env
 
-  const userId = await getUserId()
-  const userRole = await getUserRole(userId!)
+  const userRole = await getUserRole(userId)
 
   try {
     if (userRole !== ROLES.EMPEROR) {
@@ -31,7 +30,7 @@ export async function POST(request: Request) {
         .from(emails)
         .where(
           and(
-            eq(emails.userId, userId!),
+            eq(emails.userId, userId),
             gt(emails.expiresAt, new Date())
           )
         )
@@ -88,7 +87,7 @@ export async function POST(request: Request) {
       address,
       createdAt: now,
       expiresAt: expires,
-      userId: userId!
+      userId: userId
     }
     
     const result = await db.insert(emails)

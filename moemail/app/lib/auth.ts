@@ -93,6 +93,10 @@ export async function checkPermission(permission: Permission) {
 
   if (!userId) return false
 
+  return userHasPermission(userId, permission)
+}
+
+export async function userHasPermission(userId: string, permission: Permission) {
   const db = createDb()
   const userRoleRecords = await db.query.userRoles.findMany({
     where: eq(userRoles.userId, userId),

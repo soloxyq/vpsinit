@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
-import { getUserId } from "@/lib/apiKey"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 import { createDb } from "@/lib/db"
 import { emails, messages } from "@/lib/schema"
 import { eq } from "drizzle-orm"
@@ -49,13 +50,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const userId = await getUserId()
-    if (!userId) {
-      return NextResponse.json(
-        { error: "未授权" },
-        { status: 401 }
-      )
-    }
+    const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+    if (guard.error) return guard.error
+    const { userId } = guard
 
     const { id } = await params
     const db = createDb()

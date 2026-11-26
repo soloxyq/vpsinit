@@ -1,8 +1,7 @@
-import { auth } from "@/lib/auth"
 import { createDb } from "@/lib/db"
 import { apiKeys } from "@/lib/schema"
 import { NextResponse } from "next/server"
-import { checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { eq, and } from "drizzle-orm"
 
@@ -12,20 +11,18 @@ export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const hasPermission = await checkPermission(PERMISSIONS.MANAGE_API_KEY)
-  if (!hasPermission) {
-    return NextResponse.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_API_KEY)
+  if (guard.error) return guard.error
+  const { userId } = guard
   try {
     const db = createDb()
-    const session = await auth()
     const { id } = await params
     
     const result = await db.delete(apiKeys)
       .where(
         and(
           eq(apiKeys.id, id),
-          eq(apiKeys.userId, session!.user.id!)
+          eq(apiKeys.userId, userId)
         )
       )
       .returning()
@@ -51,13 +48,11 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const hasPermission = await checkPermission(PERMISSIONS.MANAGE_API_KEY)
-  if (!hasPermission) {
-    return NextResponse.json({ error: "权限不足" }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_API_KEY)
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   try {
-    const session = await auth()
     const { id } = await params
 
     const { enabled } = await request.json() as { enabled: boolean }
@@ -68,7 +63,7 @@ export async function PATCH(
       .where(
         and(
           eq(apiKeys.id, id),
-          eq(apiKeys.userId, session!.user.id!)
+          eq(apiKeys.userId, userId)
         )
       )
       .returning()

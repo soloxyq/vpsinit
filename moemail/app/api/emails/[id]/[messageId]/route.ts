@@ -2,14 +2,17 @@ import { NextResponse } from "next/server"
 import { createDb } from "@/lib/db"
 import { messages, emails } from "@/lib/schema"
 import { and, eq } from "drizzle-orm"
-import { getUserId } from "@/lib/apiKey"
+import { requireUser } from "@/lib/guard"
+import { PERMISSIONS } from "@/lib/permissions"
 export const runtime = "edge"
 
 export async function DELETE(
     request: Request,
     { params }: { params: Promise<{ id: string; messageId: string }> }
 ) {
-  const userId = await getUserId()
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
 
   try {
     const db = createDb()
@@ -17,7 +20,7 @@ export async function DELETE(
     const email = await db.query.emails.findFirst({
       where: and(
           eq(emails.id, id),
-          eq(emails.userId, userId!)
+          eq(emails.userId, userId)
       )
     })
 
@@ -59,12 +62,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const { id, messageId } = await params
     const db = createDb()
-    const userId = await getUserId()
+    const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+    if (guard.error) return guard.error
+    const { userId } = guard
 
     const email = await db.query.emails.findFirst({
       where: and(
         eq(emails.id, id),
-        eq(emails.userId, userId!)
+        eq(emails.userId, userId)
       )
     })
 

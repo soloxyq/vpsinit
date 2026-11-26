@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getRequestContext } from "@cloudflare/next-on-pages"
-import { checkPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { EMAIL_CONFIG } from "@/config"
 
@@ -16,13 +16,8 @@ interface EmailServiceConfig {
 }
 
 export async function GET() {
-  const canAccess = await checkPermission(PERMISSIONS.MANAGE_CONFIG)
-
-  if (!canAccess) {
-    return NextResponse.json({
-      error: "权限不足"
-    }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  if (guard.error) return guard.error
 
   try {
     const env = getRequestContext().env
@@ -54,13 +49,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const canAccess = await checkPermission(PERMISSIONS.MANAGE_CONFIG)
-
-  if (!canAccess) {
-    return NextResponse.json({
-      error: "权限不足"
-    }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  if (guard.error) return guard.error
 
   try {
     const config = await request.json() as EmailServiceConfig

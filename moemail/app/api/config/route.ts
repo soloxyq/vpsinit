@@ -1,13 +1,17 @@
 import { PERMISSIONS, Role, ROLES } from "@/lib/permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { EMAIL_CONFIG } from "@/config"
-import { checkPermission, isRegistrationOpen } from "@/lib/auth"
+import { isRegistrationOpen, userHasPermission } from "@/lib/auth"
+import { requireUser } from "@/lib/guard"
 
 export const runtime = "edge"
 
 export async function GET() {
+  const guard = await requireUser(null, { apiKey: true })
+  if (guard.error) return guard.error
+
   const env = getRequestContext().env
-  const canManageConfig = await checkPermission(PERMISSIONS.MANAGE_CONFIG)
+  const canManageConfig = await userHasPermission(guard.userId, PERMISSIONS.MANAGE_CONFIG)
 
   const [
     defaultRole,
@@ -44,13 +48,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const canAccess = await checkPermission(PERMISSIONS.MANAGE_CONFIG)
-
-  if (!canAccess) {
-    return Response.json({
-      error: "权限不足"
-    }, { status: 403 })
-  }
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  if (guard.error) return guard.error
 
   const {
     defaultRole,
@@ -59,7 +58,7 @@ export async function POST(request: Request) {
     maxEmails,
     allowRegistration,
     turnstile
-  } = await request.json() as {
+  } = await request.json() as { 
     defaultRole: Exclude<Role, typeof ROLES.EMPEROR>,
     emailDomains: string,
     adminContact: string,

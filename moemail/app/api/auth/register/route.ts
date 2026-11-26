@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { register } from "@/lib/auth"
+import { register, isRegistrationOpen } from "@/lib/auth"
 import { authSchema, AuthSchema } from "@/lib/validation"
 import { verifyTurnstileToken } from "@/lib/turnstile"
 
@@ -7,6 +7,10 @@ export const runtime = "edge"
 
 export async function POST(request: Request) {
   try {
+    if (!await isRegistrationOpen()) {
+      return NextResponse.json({ error: "注册已关闭" }, { status: 403 })
+    }
+
     const json = await request.json() as AuthSchema
     
     try {
@@ -30,7 +34,8 @@ export async function POST(request: Request) {
 
     const user = await register(username, password)
 
-    return NextResponse.json({ user })
+    // 只回必要字段：整行数据里带着密码哈希
+    return NextResponse.json({ user: { id: user.id, username: user.username } })
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "注册失败" },

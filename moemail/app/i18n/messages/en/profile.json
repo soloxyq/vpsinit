@@ -107,6 +107,8 @@
     "adminContact": "Admin Contact",
     "adminContactPlaceholder": "Email or other contact method",
     "maxEmails": "Max Emails per User",
+    "allowRegistration": "Allow new sign-ups",
+    "allowRegistrationDescription": "When off, the login page hides the sign-up tab and the sign-up API rejects requests. Existing accounts are not affected.",
     "turnstile": {
       "enable": "Enable Cloudflare Turnstile",
       "enableDescription": "When enabled, username/password login and registration require Turnstile verification",

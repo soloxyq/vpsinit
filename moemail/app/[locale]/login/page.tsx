@@ -1,5 +1,5 @@
 import { LoginForm } from "@/components/auth/login-form"
-import { auth } from "@/lib/auth"
+import { auth, isRegistrationOpen, oauthProviders } from "@/lib/auth"
 import { redirect } from "next/navigation"
 import type { Locale } from "@/i18n/config"
 import { getTurnstileConfig } from "@/lib/turnstile"
@@ -20,10 +20,15 @@ export default async function LoginPage({
   }
 
   const turnstile = await getTurnstileConfig()
+  const allowRegistration = await isRegistrationOpen()
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
-      <LoginForm turnstile={{ enabled: turnstile.enabled, siteKey: turnstile.siteKey }} />
+      <LoginForm
+        turnstile={{ enabled: turnstile.enabled, siteKey: turnstile.siteKey }}
+        allowRegistration={allowRegistration}
+        oauth={oauthProviders()}
+      />
     </div>
   )
 }

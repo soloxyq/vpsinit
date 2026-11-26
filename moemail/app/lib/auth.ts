@@ -35,6 +35,21 @@ const getDefaultRole = async (): Promise<Role> => {
   return ROLES.CIVILIAN
 }
 
+// 站点设置里可以关闭注册，没设置过时保持开放。
+// 只管用户名密码注册：配置了 GitHub/Google 登录后，首次用第三方账号登录仍会建号。
+export async function isRegistrationOpen() {
+  const value = await getRequestContext().env.SITE_CONFIG.get("ALLOW_REGISTRATION")
+  return value !== "false"
+}
+
+// 第三方登录只有填了 Client ID 和 Secret 才启用，登录页据此决定显示哪些按钮
+export function oauthProviders() {
+  return {
+    github: !!(process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET),
+    google: !!(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET),
+  }
+}
+
 async function findOrCreateRole(db: Db, roleName: Role) {
   let role = await db.query.roles.findFirst({
     where: eq(roles.name, roleName),
@@ -100,17 +115,17 @@ export const {
     accountsTable: accounts,
   }),
   providers: [
-    GitHub({
+    ...(oauthProviders().github ? [GitHub({
       clientId: process.env.AUTH_GITHUB_ID,
       clientSecret: process.env.AUTH_GITHUB_SECRET,
       allowDangerousEmailAccountLinking: true,
       issuer: "https://github.com/login/oauth",
-    }),
-    Google({
+    })] : []),
+    ...(oauthProviders().google ? [Google({
       clientId: process.env.AUTH_GOOGLE_ID,
       clientSecret: process.env.AUTH_GOOGLE_SECRET,
       allowDangerousEmailAccountLinking: true,
-    }),
+    })] : []),
     CredentialsProvider({
       name: "Credentials",
       credentials: {

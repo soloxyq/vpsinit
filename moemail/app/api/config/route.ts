@@ -1,7 +1,7 @@
 import { PERMISSIONS, Role, ROLES } from "@/lib/permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { EMAIL_CONFIG } from "@/config"
-import { checkPermission } from "@/lib/auth"
+import { checkPermission, isRegistrationOpen } from "@/lib/auth"
 
 export const runtime = "edge"
 
@@ -16,7 +16,8 @@ export async function GET() {
     maxEmails,
     turnstileEnabled,
     turnstileSiteKey,
-    turnstileSecretKey
+    turnstileSecretKey,
+    allowRegistration
   ] = await Promise.all([
     env.SITE_CONFIG.get("DEFAULT_ROLE"),
     env.SITE_CONFIG.get("EMAIL_DOMAINS"),
@@ -24,7 +25,8 @@ export async function GET() {
     env.SITE_CONFIG.get("MAX_EMAILS"),
     env.SITE_CONFIG.get("TURNSTILE_ENABLED"),
     env.SITE_CONFIG.get("TURNSTILE_SITE_KEY"),
-    env.SITE_CONFIG.get("TURNSTILE_SECRET_KEY")
+    env.SITE_CONFIG.get("TURNSTILE_SECRET_KEY"),
+    isRegistrationOpen()
   ])
 
   return Response.json({
@@ -32,6 +34,7 @@ export async function GET() {
     emailDomains: emailDomains || "moemail.app",
     adminContact: adminContact || "",
     maxEmails: maxEmails || EMAIL_CONFIG.MAX_ACTIVE_EMAILS.toString(),
+    allowRegistration,
     turnstile: canManageConfig ? {
       enabled: turnstileEnabled === "true",
       siteKey: turnstileSiteKey || "",
@@ -54,12 +57,14 @@ export async function POST(request: Request) {
     emailDomains,
     adminContact,
     maxEmails,
+    allowRegistration,
     turnstile
-  } = await request.json() as { 
+  } = await request.json() as {
     defaultRole: Exclude<Role, typeof ROLES.EMPEROR>,
     emailDomains: string,
     adminContact: string,
     maxEmails: string,
+    allowRegistration?: boolean,
     turnstile?: {
       enabled: boolean,
       siteKey: string,
@@ -89,7 +94,10 @@ export async function POST(request: Request) {
     env.SITE_CONFIG.put("MAX_EMAILS", maxEmails),
     env.SITE_CONFIG.put("TURNSTILE_ENABLED", turnstileConfig.enabled.toString()),
     env.SITE_CONFIG.put("TURNSTILE_SITE_KEY", turnstileConfig.siteKey),
-    env.SITE_CONFIG.put("TURNSTILE_SECRET_KEY", turnstileConfig.secretKey)
+    env.SITE_CONFIG.put("TURNSTILE_SECRET_KEY", turnstileConfig.secretKey),
+    // 请求里没带这一项（比如浏览器还缓存着旧版页面）就保持原样，不能顺手把注册重新打开
+    typeof allowRegistration === "boolean" &&
+      env.SITE_CONFIG.put("ALLOW_REGISTRATION", allowRegistration.toString())
   ])
 
   return Response.json({ success: true })

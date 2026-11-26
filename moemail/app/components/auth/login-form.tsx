@@ -30,6 +30,8 @@ interface TurnstileConfigProps {
 
 interface LoginFormProps {
   turnstile?: TurnstileConfigProps
+  allowRegistration?: boolean
+  oauth?: { github: boolean; google: boolean }
 }
 
 interface FormErrors {
@@ -38,7 +40,11 @@ interface FormErrors {
   confirmPassword?: string
 }
 
-export function LoginForm({ turnstile }: LoginFormProps) {
+export function LoginForm({
+  turnstile,
+  allowRegistration = true,
+  oauth = { github: true, google: true },
+}: LoginFormProps) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -216,10 +222,12 @@ export function LoginForm({ turnstile }: LoginFormProps) {
       </CardHeader>
       <CardContent className="px-6">
         <Tabs value={activeTab} className="w-full" onValueChange={handleTabChange}>
-          <TabsList className="grid w-full grid-cols-2 mb-6">
-            <TabsTrigger value="login">{t("tabs.login")}</TabsTrigger>
-            <TabsTrigger value="register">{t("tabs.register")}</TabsTrigger>
-          </TabsList>
+          {allowRegistration && (
+            <TabsList className="grid w-full grid-cols-2 mb-6">
+              <TabsTrigger value="login">{t("tabs.login")}</TabsTrigger>
+              <TabsTrigger value="register">{t("tabs.register")}</TabsTrigger>
+            </TabsList>
+          )}
           <div className="min-h-[220px]">
             <TabsContent value="login" className="space-y-4 mt-0">
               <div className="space-y-3">
@@ -282,6 +290,7 @@ export function LoginForm({ turnstile }: LoginFormProps) {
                   {t("actions.login")}
                 </Button>
 
+                {(oauth.github || oauth.google) && (
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center">
                     <span className="w-full border-t" />
@@ -292,7 +301,9 @@ export function LoginForm({ turnstile }: LoginFormProps) {
                     </span>
                   </div>
                 </div>
+                )}
 
+                {oauth.github && (
                 <Button
                   variant="outline"
                   className="w-full"
@@ -301,7 +312,9 @@ export function LoginForm({ turnstile }: LoginFormProps) {
                   <Github className="mr-2 h-4 w-4" />
                   {t("actions.githubLogin")}
                 </Button>
+                )}
 
+                {oauth.google && (
                 <Button
                   variant="outline"
                   className="w-full"
@@ -327,8 +340,10 @@ export function LoginForm({ turnstile }: LoginFormProps) {
                   </svg>
                   {t("actions.googleLogin")}
                 </Button>
+                )}
               </div>
             </TabsContent>
+            {allowRegistration && (
             <TabsContent value="register" className="space-y-4 mt-0">
               <div className="space-y-3">
                 <div className="space-y-1.5">
@@ -415,6 +430,7 @@ export function LoginForm({ turnstile }: LoginFormProps) {
                 </Button>
               </div>
             </TabsContent>
+            )}
           </div>
         </Tabs>
         {turnstileEnabled && turnstileSiteKey && (

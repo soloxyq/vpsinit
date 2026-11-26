@@ -11,8 +11,6 @@ const handleEmail = async (message: ForwardableEmailMessage, env: Env) => {
 
   const parsedMessage = await PostalMime.parse(message.raw)
 
-  console.log("parsedMessage:", parsedMessage)
-
   try {
     const targetEmail = await db.query.emails.findFirst({
       where: eq(sql`LOWER(${emails.address})`, message.to.toLowerCase())
@@ -60,7 +58,8 @@ const handleEmail = async (message: ForwardableEmailMessage, env: Env) => {
       }
     }
 
-    console.log(`Email processed: ${parsedMessage.subject}`)
+    // 日志只记收发双方：正文和主题里常有验证码
+    console.log(`Email processed: ${message.from} -> ${message.to}`)
   } catch (error) {
     console.error('Failed to process email:', error)
   }

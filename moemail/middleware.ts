@@ -114,6 +114,20 @@ async function handle(request: Request): Promise<NextResponse> {
     return NextResponse.next()
   }
 
+  // 页面只接受 GET/HEAD。本站没有 Server Actions，页面路径收到的 POST 只可能是攻击：
+  // Next 15.1 的 App Router 会先反序列化这类请求体再查 action id（RSC 反序列化 DoS 等公告都走这条路）。
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return NextResponse.json(
+      { error: "Method Not Allowed" },
+      { status: 405, headers: { Allow: 'GET, HEAD' } }
+    )
+  }
+
+  // 带点号的路径（静态文件、/en.rsc 这类 RSC 请求）和 /_next 下的路径不做语言跳转
+  if (pathname.startsWith('/_next/') || /\.[^/]*$/.test(pathname)) {
+    return NextResponse.next()
+  }
+
   // Pages: 语言前缀
   const segments = pathname.split('/')
   const maybeLocale = segments[1]
@@ -187,8 +201,9 @@ function matchLocale(lang: string): Locale | null {
 
 export const config = {
   matcher: [
-    '/((?!_next|.*\\..*).*)', // all pages excluding static assets
-    // 全部 API。上一条不匹配带点号的路径，而 /api/emails.rsc 这类写法同样会进到接口的处理函数
+    // 除构建产物外的所有路径，包括带点号的（/en.rsc 这类写法同样会进到页面的处理函数，
+    // 页面的方法限制和防嵌套头都要覆盖到）
+    '/((?!_next/static/).*)',
     '/api/:path*',
   ]
 } 

@@ -790,9 +790,11 @@ purify_dns() {
             log_err "apt update 失败，未做任何修改。"
             return 1
         fi
+        # 不带推荐包：推荐的 libnss-resolve 会把 resolve 写进 /etc/nsswitch.conf 的 hosts 行，净化用不到它，
+        # 而本仓库 WIKI/VPS_TUN 的用户级 TUN 遇到这一项会拒绝安装和开启。预演和实际安装用同样的参数。
         # systemd-resolved 与 resolvconf 等软件包冲突，安装时会把它们卸载；回滚只能恢复配置文件，无法自动重装
         local removals remove_confirm
-        removals=$(apt-get -s install -y systemd-resolved 2>/dev/null | awk '/^Remv / { print $2 }' | paste -sd ' ')
+        removals=$(apt-get -s install -y --no-install-recommends systemd-resolved 2>/dev/null | awk '/^Remv / { print $2 }' | paste -sd ' ')
         if [ -n "$removals" ]; then
             log_warn "安装 systemd-resolved 会卸载: $removals"
             log_warn "如果后续 DNS 验证失败，脚本只会恢复配置文件，不会自动重装这些软件包。"
@@ -802,7 +804,7 @@ purify_dns() {
                 return 0
             fi
         fi
-        if ! apt install -y systemd-resolved; then
+        if ! apt install -y --no-install-recommends systemd-resolved; then
             log_err "systemd-resolved 安装失败，正在恢复修改前的配置..."
             dns_rollback "$backup_dir" "$resolved_was_active" "$ifup_hook_disabled" "${managed[@]}"
             return 1

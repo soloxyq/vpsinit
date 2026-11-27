@@ -11,7 +11,9 @@ export async function GET() {
   if (guard.error) return guard.error
 
   const env = getRequestContext().env
-  const canManageConfig = await userHasPermission(guard.userId, PERMISSIONS.MANAGE_CONFIG)
+  // API Key 只能读公开配置（如可用域名），不返回 Turnstile 密钥块
+  const canManageConfig =
+    !guard.viaApiKey && await userHasPermission(guard.userId, PERMISSIONS.MANAGE_CONFIG)
 
   const [
     defaultRole,
@@ -48,7 +50,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG)
   if (guard.error) return guard.error
 
   const {

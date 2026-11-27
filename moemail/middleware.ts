@@ -21,11 +21,12 @@ const API_PERMISSIONS: [string, Permission | null][] = [
 // 不需要登录的接口：登录、注册，以及凭链接访问的分享内容
 const PUBLIC_API_ROUTES = ['/api/auth', '/api/shared']
 
-// API Key 只能用于这些接口
-const API_KEY_ROUTES = ['/api/emails', '/api/config']
-
 const isUnder = (path: string, route: string) =>
   path === route || path.startsWith(route + '/')
+
+// API Key 只能用于邮箱接口和只读站点配置（GET /api/config），不能改配置或读发件服务密钥
+const isApiKeyAllowed = (apiPath: string, method: string) =>
+  isUnder(apiPath, '/api/emails') || (apiPath === '/api/config' && method === 'GET')
 
 // 会话靠 Cookie 认证，而浏览器会替任何页面带上 Cookie，所以写请求必须确认是本站页面发起的。
 function isCrossSiteWrite(request: Request, url: URL) {
@@ -80,7 +81,7 @@ async function handle(request: Request): Promise<NextResponse> {
     }
 
     if (request.headers.get("X-API-Key")) {
-      if (!API_KEY_ROUTES.some(route => isUnder(apiPath, route))) {
+      if (!isApiKeyAllowed(apiPath, request.method)) {
         return NextResponse.json(
           { error: "无权限查看" },
           { status: 403 }

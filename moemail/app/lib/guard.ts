@@ -5,8 +5,8 @@ import { userHasPermission } from "./auth"
 import type { Permission } from "./permissions"
 
 type GuardResult =
-  | { userId: string; error?: undefined }
-  | { userId?: undefined; error: NextResponse }
+  | { userId: string; viaApiKey: boolean; error?: undefined }
+  | { userId?: undefined; viaApiKey?: undefined; error: NextResponse }
 
 // 每个接口在 handler 里自己确认身份和权限，不依赖中间件已经检查过：
 // 中间件在某些情况下可能不执行（例如 next-on-pages 给预渲染请求留的跳过条件）。
@@ -44,5 +44,5 @@ export async function requireUser(
     return { error: NextResponse.json({ error: "权限不足" }, { status: 403 }) }
   }
 
-  return { userId }
+  return { userId, viaApiKey: hasApiKey }
 }

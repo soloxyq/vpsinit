@@ -16,7 +16,7 @@ interface EmailServiceConfig {
 }
 
 export async function GET() {
-  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG)
   if (guard.error) return guard.error
 
   try {
@@ -49,7 +49,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG, { apiKey: true })
+  const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG)
   if (guard.error) return guard.error
 
   try {

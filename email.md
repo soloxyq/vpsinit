@@ -385,6 +385,7 @@ fi
 | 注册开关 | KV 里的 `ALLOW_REGISTRATION`；没配置的第三方登录不显示；注册接口只返回 id 和用户名 | `moemail/app/lib/auth.ts`、`moemail/app/api/auth/register/route.ts` |
 | 收信日志 | 只记发件人、收件地址和附件个数，不记邮件内容和文件名 | `moemail/workers/email-receiver.ts` |
 | 未注册地址转发 | 收信 Worker 找不到邮箱（包括过期还没清理的）时，把整封信原样转发到 `FORWARD_TO`，不解析；信存不进数据库时也转发；转发失败时报错，不吞掉 | `moemail/workers/email-receiver.ts` |
+| 邮件正文的显示方式 | 正文 HTML 放进 `blob:` 地址的独立页面里，再装进 iframe（`sandbox="allow-same-origin allow-popups"`，脚本不运行）。不能改回用 `document.write` 写进空白 iframe：那样 iframe 的地址就是外层页面的地址，在邮箱分享页上是 `/shared/<token>`，邮件里的外链图片或链接加上 `referrerpolicy="unsafe-url"`，就能通过 Referer 头拿到分享 token。深浅色切换直接改已经显示的页面，不重新加载 | `moemail/app/components/emails/email-html-frame.tsx` |
 | 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，不把下载地址写进邮件 HTML（分享页的地址里带 token）。删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的 | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
 | 登录失败的提示和 404 页面 | 密码错误时显示“用户名或密码错误”；不存在的页面有正常的 404 页 | `moemail/app/lib/auth.ts`、`moemail/app/not-found.tsx` |

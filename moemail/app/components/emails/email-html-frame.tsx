@@ -160,6 +160,9 @@ export function EmailHtmlFrame({ html, attachments, attachmentBaseUrl }: EmailHt
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === "dark"
   const isDarkRef = useRef(isDark)
+  // 附件列表按内容比较，不按数组引用：调用方每次渲染都传一个新数组（例如 attachments ?? []）时，
+  // 正文不会跟着重新加载（重新加载会闪一下、滚动位置回到顶部、内嵌图片重新下载）
+  const attachmentsJson = JSON.stringify(attachments ?? [])
   // 已经显示出来的页面，以及重新适配布局的函数
   const loadedRef = useRef<{ doc: Document; ownColors: boolean; relayout: () => void } | null>(null)
   // 解析完、定好白纸模式和缩放之前不显示，免得先看到空白页、深色模式下闪白，或者没缩放的宽邮件
@@ -241,7 +244,11 @@ export function EmailHtmlFrame({ html, attachments, attachmentBaseUrl }: EmailHt
       // 图片加载完会改变宽度。load 事件不冒泡，在捕获阶段统一监听，后来换成 blob: 地址的内嵌图片也算在内
       doc.addEventListener("load", handleLayout, true)
 
-      const releaseInlineImages = loadInlineImages(doc, attachments, attachmentBaseUrl)
+      const releaseInlineImages = loadInlineImages(
+        doc,
+        JSON.parse(attachmentsJson) as AttachmentInfo[],
+        attachmentBaseUrl
+      )
 
       loadedRef.current = { doc, ownColors, relayout: handleLayout }
       setReady(true)
@@ -266,7 +273,7 @@ export function EmailHtmlFrame({ html, attachments, attachmentBaseUrl }: EmailHt
       loadedRef.current = null
       URL.revokeObjectURL(url)
     }
-  }, [html, attachments, attachmentBaseUrl])
+  }, [html, attachmentsJson, attachmentBaseUrl])
 
   return (
     <iframe

@@ -110,6 +110,15 @@ export function LoginForm({
     return Object.keys(newErrors).length === 0
   }
 
+  const getLoginErrorMessage = (error: string, code?: string, fallback?: string) => {
+    if (error === "CredentialsSignin") {
+      if (code === "turnstile_missing") return t("toast.turnstileRequired")
+      if (code === "turnstile_failed") return t("toast.turnstileFailed")
+      return t("toast.loginFailedDesc")
+    }
+    return fallback ?? t("toast.registerFailedDesc")
+  }
+
   const handleLogin = async () => {
     if (!validateLoginForm()) return
     if (!ensureTurnstileSolved()) return
@@ -126,7 +135,7 @@ export function LoginForm({
       if (result?.error) {
         toast({
           title: t("toast.loginFailed"),
-          description: result.error,
+          description: getLoginErrorMessage(result.error, result.code),
           variant: "destructive",
         })
         setLoading(false)
@@ -182,7 +191,7 @@ export function LoginForm({
       if (result?.error) {
         toast({
           title: t("toast.loginFailed"),
-          description: result.error || t("toast.autoLoginFailed"),
+          description: getLoginErrorMessage(result.error, result.code, t("toast.autoLoginFailed")),
           variant: "destructive",
         })
         setLoading(false)

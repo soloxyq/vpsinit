@@ -1,4 +1,4 @@
-import NextAuth from "next-auth"
+import NextAuth, { CredentialsSignin } from "next-auth"
 import GitHub from "next-auth/providers/github"
 import Google from "next-auth/providers/google"
 import { DrizzleAdapter } from "@auth/drizzle-adapter"
@@ -107,6 +107,16 @@ export async function userHasPermission(userId: string, permission: Permission) 
   return hasPermission(userRoleNames as Role[], permission)
 }
 
+// authorize 里抛普通 Error 会被 @auth/core 包装成 CallbackRouteError，前端只能收到 "Configuration"；
+// 继承 CredentialsSignin 后错误码才会作为客户端安全错误传给前端。
+class LoginError extends CredentialsSignin {
+  code: string
+  constructor(code: string) {
+    super()
+    this.code = code
+  }
+}
+
 export const {
   handlers: { GET, POST },
   auth,
@@ -138,7 +148,7 @@ export const {
       },
       async authorize(credentials) {
         if (!credentials) {
-          throw new Error("请输入用户名和密码")
+          throw new LoginError("invalid_input")
         }
 
         const { username, password, turnstileToken } = credentials as Record<string, string | undefined>
@@ -148,15 +158,15 @@ export const {
           parsedCredentials = authSchema.parse({ username, password, turnstileToken })
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
         } catch (error) {
-          throw new Error("输入格式不正确")
+          throw new LoginError("invalid_input")
         }
 
         const verification = await verifyTurnstileToken(parsedCredentials.turnstileToken)
         if (!verification.success) {
           if (verification.reason === "missing-token") {
-            throw new Error("请先完成安全验证")
+            throw new LoginError("turnstile_missing")
           }
-          throw new Error("安全验证未通过")
+          throw new LoginError("turnstile_failed")
         }
 
         const db = createDb()
@@ -166,12 +176,12 @@ export const {
         })
 
         if (!user) {
-          throw new Error("用户名或密码错误")
+          throw new LoginError("invalid_credentials")
         }
 
         const isValid = await comparePassword(parsedCredentials.password, user.password as string)
         if (!isValid) {
-          throw new Error("用户名或密码错误")
+          throw new LoginError("invalid_credentials")
         }
 
         return {

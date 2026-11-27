@@ -219,16 +219,17 @@ export const {
         token.username = user.username
         token.image = user.image || generateAvatarUrl(token.name as string)
       }
-      // 会话里记着密码哈希的前 8 个字符，和数据库对不上就让会话失效（返回 null 会清掉会话）：
-      // 改密码之后，其它设备上已经登录的会话也跟着退出；账号被删后，它的会话也马上失效
+      // 登录时在会话里记下密码哈希的前 8 个字符，之后每次和数据库比对，对不上就让会话失效（返回 null 会清掉会话）：
+      // 改密码之后，其它设备上已经登录的会话也跟着退出；账号被删后，它的会话也马上失效。
+      // 只在登录时记：没记过的会话（这个功能上线前登录的）也算对不上，要重新登录一次
       if (typeof token.id === "string") {
         const row = await createDb().query.users.findFirst({
           where: eq(users.id, token.id),
           columns: { password: true },
         })
-        const fingerprint = row ? (row.password ?? "").slice(0, 8) : null
-        if (fingerprint === null) return null
-        if (token.pv === undefined) token.pv = fingerprint
+        if (!row) return null
+        const fingerprint = (row.password ?? "").slice(0, 8)
+        if (user) token.pv = fingerprint
         else if (token.pv !== fingerprint) return null
       }
       return token

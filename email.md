@@ -397,7 +397,7 @@ fi
 | 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，不把下载地址写进邮件 HTML（分享页的地址里带 token）。删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的 | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
 | 轮询和列表接口 | 浏览器标签页在后台时暂停轮询，切回前台马上刷新；邮件列表接口只从 D1 取列表要显示的列，不再返回正文（README 里的接口说明本来就不含正文，命令行工具和 MCP 读正文走单封邮件接口） | `moemail/app/hooks/use-polling.ts`、`moemail/app/api/emails/[id]/route.ts` |
 | 验证码一键复制 | 阅读页头部识别验证码，点一下复制。只认关键词附近的，跳过年份、日期、金额；只有 HTML 正文时用 DOMParser 取文字，不用正则剥标签（邮件 HTML 由发件人决定，正则遇到特制的内容会很慢） | `moemail/app/lib/verification-code.ts` |
-| 修改密码 | 个人中心改密码，要输当前密码，API Key 不能调。会话里记着密码哈希的前 8 个字符，和数据库对不上（改过密码，或账号被删）就让会话失效。接口前缀 `/api/account` 登记在中间件的权限表里 | `moemail/app/api/account/password/route.ts`、`moemail/app/lib/auth.ts`、`moemail/middleware.ts` |
+| 修改密码 | 个人中心改密码，要输当前密码，API Key 不能调。会话在登录时记下密码哈希的前 8 个字符，之后每次和数据库比对，对不上（改过密码，或账号被删）就让会话失效；没记过的会话也算对不上，所以这个改动上线后，所有设备都要重新登录一次。接口前缀 `/api/account` 登记在中间件的权限表里 | `moemail/app/api/account/password/route.ts`、`moemail/app/lib/auth.ts`、`moemail/middleware.ts` |
 | 清空邮件 | 邮件列表头部的“清空邮件”，附件一起删 | `moemail/app/api/emails/[id]/messages/route.ts` |
 | 允许双指缩放 | viewport 不再禁止缩放；输入框在手机上用 16px 字号，iOS 聚焦时不会自动放大页面 | `moemail/app/[locale]/layout.tsx`、`moemail/app/components/ui/input.tsx` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |

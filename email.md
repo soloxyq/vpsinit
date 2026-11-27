@@ -154,7 +154,7 @@ unset NEWPW
 
 ## 更新和部署
 
-下面的命令都在工作目录里执行。需要 Node.js（部署时用的是 24）、jq、curl 和 rsync。pnpm 通过 corepack 使用：`package.json` 的 `packageManager` 把版本固定在 9.15.9，corepack 会自动切换。新机器上先执行一次 `corepack enable`；Node.js 25 起不再自带 corepack，要先 `npm install -g corepack`。
+下面的命令都在工作目录里执行。需要 Node.js（部署时用的是 22）、jq、curl 和 rsync。pnpm 通过 corepack 使用：`package.json` 的 `packageManager` 把版本固定在 9.15.9，corepack 会自动切换。新机器上先执行一次 `corepack enable`；Node.js 25 起不再自带 corepack，要先 `npm install -g corepack`。
 
 ```bash
 # 1. 检查和构建，产物在 .vercel/output/static
@@ -254,7 +254,7 @@ curl -s -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 
 ## 换一台机器维护
 
-工作目录丢了或者要换机器时，线上不受影响。新机器上先装好 Node.js 24、git、jq、curl 和 rsync，执行一次 `corepack enable`（Node.js 25 起要先 `npm install -g corepack`），再把本仓库克隆下来：`git clone https://github.com/soloxyq/vpsinit.git ~/WIKI/vpsinit`。然后按下面的步骤恢复出一个和原来一样的工作目录，也就是上游克隆加未提交的本地改动：
+工作目录丢了或者要换机器时，线上不受影响。新机器上先装好 Node.js 22、git、jq、curl 和 rsync，执行一次 `corepack enable`（Node.js 25 起要先 `npm install -g corepack`），再把本仓库克隆下来：`git clone https://github.com/soloxyq/vpsinit.git ~/WIKI/vpsinit`。然后按下面的步骤恢复出一个和原来一样的工作目录，也就是上游克隆加未提交的本地改动：
 
 ```bash
 REPO=~/WIKI/vpsinit        # 本仓库在这台机器上的位置
@@ -266,7 +266,7 @@ git clone https://github.com/beilunyang/moemail.git ~/moemail &&
   rsync -a "$REPO/moemail/" ~/moemail/
 
 # 2. 编辑 ~/moemail/.env（不是仓库里那份）：删掉开头三行脱敏说明，
-#    把 CLOUDFLARE_API_TOKEN 和 AUTH_SECRET 的 "xxxxxx" 换成真实值
+#    把 CLOUDFLARE_API_TOKEN、CLOUDFLARE_ACCOUNT_ID 和 AUTH_SECRET 的 "xxxxxx" 换成真实值
 
 # 3. 装依赖
 pnpm install --frozen-lockfile
@@ -284,10 +284,11 @@ else
 fi
 ```
 
-第 2 步的两个真实值从哪里来：
+第 2 步的三个真实值从哪里来：
 
 - `AUTH_SECRET`：从另存的那一份里取。它必须是原来的值，见[密钥](#密钥)。
 - `CLOUDFLARE_API_TOKEN`：不用找回，按[部署用的令牌](#部署用的令牌)新建一个，再到 Cloudflare 的 API 令牌页删掉旧机器上用的那个。
+- `CLOUDFLARE_ACCOUNT_ID`：在 Cloudflare 控制台域名概览页的 API 一栏能看到。
 
 之后就可以照[更新和部署](#更新和部署)做了。几点注意：
 
@@ -410,7 +411,7 @@ fi
 - `AUTH_SECRET` 既是登录会话的密钥，又掺在密码哈希里。改了它，所有账号的密码都会失效。Cloudflare 上的密钥读不回来，真实值只在工作目录的 `.env` 里，一定要另外存一份，比如放进密码管理器。
 - `AUTH_SECRET` 真的丢了，只能换一个新的：用 `openssl rand -hex 32` 生成，写进工作目录 `.env` 的 `AUTH_SECRET` 并另存一份；导出部署凭据后执行 `pnpm exec wrangler pages secret put AUTH_SECRET --project-name moemail`，按提示粘贴新值；再照[更新和部署](#更新和部署)重新部署网页端，新值要等新部署上线才生效；最后按[忘了密码](#忘了密码)的办法给每个账号重设密码。那里的命令从 `.env` 读 `AUTH_SECRET`，`.env` 里不是新值的话，重设后的密码登不上。这条路没有走过。
 - `CLOUDFLARE_API_TOKEN` 只在部署时用，只放在工作目录的 `.env` 里。
-- 入库的 `moemail/.env` 是脱敏副本：名字以 `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY` 结尾的项，值被换成了 `xxxxxx`。以后新加密钥类的配置项要按这个规则起名，否则同步脚本认不出来。
+- 入库的 `moemail/.env` 是脱敏副本：名字以 `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`ACCOUNT_ID` 结尾的项，值被换成了 `xxxxxx`。以后新加密钥或账号标识类的配置项要按这个规则起名，否则同步脚本认不出来。
 - 同步脚本写完以后会在目标目录里搜一遍真实密钥，搜到就报错。它只同步，不提交。
 - Resend 的 API Key 在“Resend 发件服务配置”里填，Turnstile 的 Secret Key 在“网站配置”里填。它们存在 KV 里，不在 `.env` 里。
 

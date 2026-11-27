@@ -527,7 +527,8 @@ GET /api/emails/{emailId}?cursor=xxx
       "id": "message-uuid-789",
       "from_address": "sender@example.com",
       "subject": "邮件主题",
-      "received_at": 1704110400000
+      "received_at": 1704110400000,
+      "read_at": null
     }
   ],
   "nextCursor": "encoded-cursor-string",
@@ -536,6 +537,7 @@ GET /api/emails/{emailId}?cursor=xxx
 ```
 响应字段说明：
 - `messages`: 邮件列表数组
+- `read_at`: 已读时间（时间戳），`null` 表示未读
 - `nextCursor`: 下一页游标，用于分页请求
 - `total`: 邮件总数量
 
@@ -572,7 +574,8 @@ GET /api/emails/{emailId}/{messageId}
     "subject": "邮件主题",
     "content": "邮件文本内容",
     "html": "<p>邮件HTML内容</p>",
-    "received_at": 1704110400000
+    "received_at": 1704110400000,
+    "read_at": null
   }
 }
 ```
@@ -584,6 +587,47 @@ GET /api/emails/{emailId}/{messageId}
 - `content`: 邮件纯文本内容
 - `html`: 邮件HTML内容
 - `received_at`: 接收时间（时间戳）
+- `read_at`: 这次读取之前的已读时间（时间戳）；`null` 表示这封邮件原来是未读
+
+读取单封邮件会把它记为已读，用 API Key 读取也一样。
+
+#### 获取各邮箱的未读邮件数
+```http
+GET /api/emails/unread
+```
+
+返回响应：
+```json
+{
+  "counts": {
+    "email-uuid-123": 2
+  }
+}
+```
+响应字段说明：
+- `counts`: 邮箱 ID 到未读邮件数的映射，没有未读邮件的邮箱不在其中。每个邮箱最多数到 10，返回 10 表示有 10 封或更多
+
+#### 将邮箱内的邮件全部标为已读
+```http
+PATCH /api/emails/{emailId}/messages
+Content-Type: application/json
+
+{
+  "read": true,
+  "before": 1704110400000
+}
+```
+参数说明：
+- `emailId`: 邮箱的唯一标识符，必填
+- `read`: 固定为 `true`，必填
+- `before`: 时间戳（毫秒），可选。带上以后只把这个时间和它之前收到的邮件标为已读，不带则全部标为已读
+
+返回响应：
+```json
+{
+  "success": true
+}
+```
 
 #### 创建邮箱分享链接
 ```http

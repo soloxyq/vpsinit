@@ -495,6 +495,25 @@ DELETE /api/emails/{emailId}
 ```http
 GET /api/emails/{emailId}/{messageId}
 ```
+Reading a message marks it as read. Messages carry `read_at` (a timestamp, or `null` while unread).
+
+#### Get Unread Counts
+```http
+GET /api/emails/unread
+```
+Returns `{"counts": {"<emailId>": 2}}`. Mailboxes without unread messages are left out. Each count stops at 10, so 10 means "10 or more".
+
+#### Mark All Messages in a Mailbox as Read
+```http
+PATCH /api/emails/{emailId}/messages
+Content-Type: application/json
+
+{
+  "read": true,
+  "before": 1704110400000
+}
+```
+`before` is optional (a timestamp in milliseconds): with it, only messages received at or before that time are marked as read.
 
 #### Create Email Share Link
 ```http

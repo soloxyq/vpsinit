@@ -28,7 +28,8 @@
     "deleteSuccess": "メールボックスを削除しました",
     "deleteFailed": "メールボックスの削除に失敗しました",
     "error": "エラー",
-    "success": "成功"
+    "success": "成功",
+    "unreadCount": "未読 {count} 件"
   },
   "create": {
     "title": "メールボックスを作成",
@@ -61,7 +62,10 @@
     "clearConfirm": "この一覧のメールをすべて削除しますか？",
     "clearDescription": "{count} 件のメールと添付ファイルを削除します。元に戻せません。",
     "clearSuccess": "すべて削除しました",
-    "deleteMessageDescription": "メール「{subject}」を削除しますか？元に戻せません。"
+    "deleteMessageDescription": "メール「{subject}」を削除しますか？元に戻せません。",
+    "markAllRead": "すべて既読",
+    "markAllReadFailed": "既読にできませんでした。しばらくしてからもう一度お試しください",
+    "unread": "未読"
   },
   "send": {
     "title": "メールを送信",

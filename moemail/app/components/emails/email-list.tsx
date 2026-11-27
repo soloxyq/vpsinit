@@ -36,6 +36,8 @@ interface Email {
 interface EmailListProps {
   onEmailSelect: (email: Email | null) => void
   selectedEmailId?: string
+  // 每个邮箱的未读邮件数（邮箱 ID → 数量），没有未读的邮箱不在里面
+  unreadCounts?: Record<string, number>
 }
 
 interface EmailResponse {
@@ -44,7 +46,7 @@ interface EmailResponse {
   total: number
 }
 
-export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
+export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts }: EmailListProps) {
   const { data: session } = useSession()
   const { config } = useConfig()
   const { role } = useUserRole()
@@ -197,6 +199,9 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
             <div className="p-2 space-y-1">
               {emails.map(email => {
                 const isSelected = selectedEmailId === email.id
+                // 接口每个邮箱最多数到 UNREAD_COUNT_CAP：到了上限，实际可能更多
+                const unread = unreadCounts?.[email.id] ?? 0
+                const unreadText = unread >= EMAIL_CONFIG.UNREAD_COUNT_CAP ? `${EMAIL_CONFIG.UNREAD_COUNT_CAP - 1}+` : `${unread}`
                 return (
                   <div
                     key={email.id}
@@ -224,6 +229,15 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
                         )}
                       </div>
                     </div>
+                    {unread > 0 && (
+                      <span
+                        role="img"
+                        aria-label={t("unreadCount", { count: unreadText })}
+                        className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-medium leading-none tabular-nums text-primary-foreground"
+                      >
+                        {unreadText}
+                      </span>
+                    )}
                     <div
                       className="flex shrink-0 transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:hover)]:absolute [@media(hover:hover)]:right-2 [@media(hover:hover)]:top-1/2 [@media(hover:hover)]:-translate-y-1/2 [@media(hover:hover)]:rounded-md [@media(hover:hover)]:bg-card"
                       onClick={(e) => e.stopPropagation()}

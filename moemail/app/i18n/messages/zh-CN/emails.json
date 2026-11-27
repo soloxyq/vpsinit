@@ -28,7 +28,8 @@
     "deleteSuccess": "邮箱已删除",
     "deleteFailed": "删除邮箱失败",
     "error": "错误",
-    "success": "成功"
+    "success": "成功",
+    "unreadCount": "{count} 封未读"
   },
   "create": {
     "title": "创建邮箱",
@@ -61,7 +62,10 @@
     "clearConfirm": "清空这个列表里的邮件？",
     "clearDescription": "将删除 {count} 封邮件和它们的附件，无法恢复。",
     "clearSuccess": "邮件已清空",
-    "deleteMessageDescription": "确定要删除邮件「{subject}」吗？删除后无法恢复。"
+    "deleteMessageDescription": "确定要删除邮件「{subject}」吗？删除后无法恢复。",
+    "markAllRead": "全部已读",
+    "markAllReadFailed": "标记已读失败，请稍后再试",
+    "unread": "未读"
   },
   "send": {
     "title": "发送邮件",

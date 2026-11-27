@@ -46,7 +46,7 @@ mkdir -p "$(dirname "$HARNESS")"
     format: 'esm', packages: 'external', outfile: process.argv[1], logLevel: 'error' })
 " "$HARNESS") || { echo "打包测试桩失败"; exit 3; }
 harness() { (cd "$ROOT" && STATE="$STATE" node "$HARNESS" "$@" 2>"$T/harness.err") | sed -n 's/^RESULT //p' | tail -1; }
-deliver() { harness deliver "$1" "$2" "$3"; } # deliver <from> <to> <eml>
+deliver() { harness deliver "$@"; } # deliver <from> <to> <eml> [投递几次]
 keys_of() { harness keys | jq -r --arg p "att/$1/" '[.[] | select(.name | startswith($p))] | length'; }
 # 删除接口在返回响应之后才删 KV 里的附件，等一会儿再数
 keys_gone() { local n i; for i in 1 2 3 4 5 6 7 8 9 10; do n=$(keys_of "$1"); [ "$n" = 0 ] && break; sleep 0.5; done; echo "$n"; }
@@ -202,6 +202,51 @@ req owner DELETE "/api/emails/$CBOX/messages" -H "Origin: $B"; expect "清空收
 check "删掉了 2 封" "$(jq -r .deleted "$T/body")" 2
 req owner GET "/api/emails/$CBOX"; check "清空后列表是空的" "$(jq -r '.messages | length' "$T/body")" 0
 check "清空后附件也没了" "$(keys_gone "$CMSG")" 0
+
+echo "-- 未读状态"
+# unread_of <jar> <box> [请求头]。接口没返回 counts（出错了）时输出 ERR，免得“期望 0”的检查在接口失败时也通过
+unread_of() { req "$1" GET /api/emails/unread ${3:+-H "$3"}; jq -r --arg b "$2" 'if has("counts") then (.counts[$b] // 0) else "ERR" end' "$T/body"; }
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"attunread","expiryTime":0,"domain":"moemail.app"}'
+UBOX=$(jq -r '.id // empty' "$T/body"); UADDR=$(jq -r '.email // empty' "$T/body")
+deliver sender@example.com "$UADDR" "$T/plain.eml" >/dev/null; deliver sender@example.com "$UADDR" "$T/plain.eml" >/dev/null
+check "新到的两封邮件算未读" "$(unread_of owner "$UBOX")" 2
+check "别人的未读数里没有这个邮箱" "$(unread_of other "$UBOX")" 0
+req owner GET "/api/emails/$UBOX"; UMSG=$(jq -r '.messages[0].id // empty' "$T/body")
+check "列表里两封都标着未读" "$(jq -r '[.messages[].read_at == null] | all' "$T/body")" true
+req owner POST "/api/emails/$UBOX/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":0}'; UT=$(jq -r '.token // empty' "$T/body")
+req - GET "/api/shared/$UT/messages"; check "分享链接的列表不带已读状态" "$(jq -r '[.messages[] | has("read_at")] | any' "$T/body")" false
+req - GET "/api/shared/$UT/messages/$UMSG"; expect "通过分享链接读这封邮件" 200
+check "分享链接的邮件不带已读状态" "$(jq -r '.message | has("read_at")' "$T/body")" false
+req owner POST "/api/emails/$UBOX/messages/$UMSG/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":0}'; UMT=$(jq -r '.token // empty' "$T/body")
+req - GET "/api/shared/message/$UMT"; expect "通过单封分享链接读这封邮件" 200
+check "单封分享链接的邮件不带已读状态" "$(jq -r '.message | has("read_at")' "$T/body")" false
+req other GET "/api/emails/$UBOX/$UMSG"; expect "别人读不到这封邮件" 403
+req other GET "/api/emails/$OTHERBOX/$UMSG"; expect "把这封邮件的 ID 接在自己邮箱下也读不到" 404
+check "分享链接和别人的请求都不算读过" "$(unread_of owner "$UBOX")" 2
+req owner GET "/api/emails/$UBOX/$UMSG"; expect "主人读这封邮件" 200
+check "第一次读，返回的是读之前的状态（未读）" "$(jq -r '.message.read_at' "$T/body")" null
+check "读过一封，未读数减一" "$(unread_of owner "$UBOX")" 1
+req owner GET "/api/emails/$UBOX"; check "列表里这封变成已读" "$(jq -r --arg id "$UMSG" '.messages[] | select(.id == $id) | .read_at != null' "$T/body")" true
+req owner GET "/api/emails/$UBOX/$UMSG"; check "再读一次，返回已读时间" "$(jq -r '.message.read_at != null' "$T/body")" true
+req other PATCH "/api/emails/$UBOX/messages" -H "$J" -H "Origin: $B" -d '{"read":true}'; expect "别人不能把这个邮箱标为已读" 403
+check "别人标记之后未读数没变" "$(unread_of owner "$UBOX")" 1
+deliver sender@example.com "$UADDR" "$T/plain.eml" >/dev/null
+req owner GET "/api/emails/$UBOX"; OLDEST=$(jq -r '.messages[-1].received_at' "$T/body")
+check "又来一封，未读的是最早和最新的两封" "$(jq -r '[.messages[].read_at == null] | join(",")' "$T/body")" "true,false,true"
+req owner PATCH "/api/emails/$UBOX/messages" -H "$J" -H "Origin: $B" -d "{\"read\":true,\"before\":$OLDEST}"; expect "只标到最早那封为止" 200
+req owner GET "/api/emails/$UBOX"; check "比 before 新的那封还是未读" "$(jq -r '[.messages[].read_at == null] | join(",")' "$T/body")" "true,false,false"
+req owner PATCH "/api/emails/$UBOX/messages" -H "$J" -H "Origin: $B" -d '{"read":true,"before":"2026-01-01"}'; expect "before 不是数字被拒" 400
+check "被拒的请求没有改动" "$(unread_of owner "$UBOX")" 1
+req owner PATCH "/api/emails/$UBOX/messages" -H "$J" -H "Origin: $B" -d '{"read":true}'; expect "全部标为已读" 200
+check "全部已读后没有未读" "$(unread_of owner "$UBOX")" 0
+deliver sender@example.com "$UADDR" "$T/plain.eml" >/dev/null
+check "API Key 也能查未读数" "$(unread_of - "$UBOX" "X-API-Key: $KEY")" 1
+req - GET "/api/emails/$UBOX" -H "X-API-Key: $KEY"; UMSG2=$(jq -r '.messages[0].id // empty' "$T/body")
+req - GET "/api/emails/$UBOX/$UMSG2" -H "X-API-Key: $KEY"; expect "用 API Key 读新邮件" 200
+check "用 API Key 读过也算已读" "$(unread_of owner "$UBOX")" 0
+deliver sender@example.com "$UADDR" "$T/plain.eml" 11 >/dev/null
+req owner GET "/api/emails/$UBOX"; check "一次投 11 封都到了" "$(jq -r '[.messages[] | select(.read_at == null)] | length' "$T/body")" 11
+check "未读数每个邮箱最多数到 10" "$(unread_of owner "$UBOX")" 10
 
 echo "-- 清理 Worker 的孤儿扫描"
 ORPHAN="att/00000000-0000-4000-8000-0000000000aa/0"; EXPIRING="att/00000000-0000-4000-8000-0000000000bb/0"

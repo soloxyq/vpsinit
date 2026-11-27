@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2, Share2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,8 @@ interface Message {
   received_at?: number
   sent_at?: number
   attachments?: AttachmentInfo[]
+  // 这次读取之前的已读时间：null 说明原来是未读，接口在这次读取里把它记成了已读
+  read_at?: number | null
 }
 
 interface MessageViewProps {
@@ -30,11 +32,13 @@ interface MessageViewProps {
   messageId: string
   messageType?: 'received' | 'sent'
   onClose: () => void
+  // 打开的是一封未读邮件、接口已经把它记成已读时调用（未读数变了）
+  onRead?: () => void
 }
 
 type ViewMode = "html" | "text"
 
-export function MessageView({ emailId, messageId, messageType = 'received' }: MessageViewProps) {
+export function MessageView({ emailId, messageId, messageType = 'received', onRead }: MessageViewProps) {
   const t = useTranslations("emails.messageView")
   const tList = useTranslations("emails.list")
   const [message, setMessage] = useState<Message | null>(null)
@@ -42,6 +46,11 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
   const [error, setError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>("html")
   const { toast } = useToast()
+  // 放进 ref：回调换了引用不应该让下面的 effect 重新请求邮件
+  const onReadRef = useRef(onRead)
+  useEffect(() => {
+    onReadRef.current = onRead
+  })
   const attachmentBaseUrl = `/api/emails/${emailId}/${messageId}/attachments`
 
   useEffect(() => {
@@ -68,6 +77,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
         
         const data = await response.json() as { message: Message }
         setMessage(data.message)
+        if (data.message.read_at === null) onReadRef.current?.()
         if (!data.message.html) {
           setViewMode("text")
         }

@@ -28,7 +28,8 @@
     "deleteSuccess": "郵箱已刪除",
     "deleteFailed": "刪除郵箱失敗",
     "error": "錯誤",
-    "success": "成功"
+    "success": "成功",
+    "unreadCount": "{count} 封未讀"
   },
   "create": {
     "title": "建立郵箱",
@@ -61,7 +62,10 @@
     "clearConfirm": "清空這個列表裡的郵件？",
     "clearDescription": "將刪除 {count} 封郵件和它們的附件，無法復原。",
     "clearSuccess": "郵件已清空",
-    "deleteMessageDescription": "確定要刪除郵件「{subject}」嗎？刪除後無法復原。"
+    "deleteMessageDescription": "確定要刪除郵件「{subject}」嗎？刪除後無法復原。",
+    "markAllRead": "全部已讀",
+    "markAllReadFailed": "標記已讀失敗，請稍後再試",
+    "unread": "未讀"
   },
   "send": {
     "title": "發送郵件",

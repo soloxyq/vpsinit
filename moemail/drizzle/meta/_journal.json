@@ -141,6 +141,13 @@
       "when": 1795765515322,
       "tag": "0019_steady_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795782675844,
+      "tag": "0020_clear_secret_warriors",
+      "breakpoints": true
     }
   ]
 }

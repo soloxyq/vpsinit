@@ -28,7 +28,8 @@
     "deleteSuccess": "Email deleted successfully",
     "deleteFailed": "Failed to delete email",
     "error": "Error",
-    "success": "Success"
+    "success": "Success",
+    "unreadCount": "{count} unread"
   },
   "create": {
     "title": "Create Email",
@@ -61,7 +62,10 @@
     "clearConfirm": "Delete all messages in this list?",
     "clearDescription": "This deletes {count} messages and their attachments. It can’t be undone.",
     "clearSuccess": "All messages deleted",
-    "deleteMessageDescription": "Delete the message “{subject}”? This can’t be undone."
+    "deleteMessageDescription": "Delete the message “{subject}”? This can’t be undone.",
+    "markAllRead": "Mark all read",
+    "markAllReadFailed": "Couldn’t mark the messages as read. Please try again later",
+    "unread": "Unread"
   },
   "send": {
     "title": "Send Email",

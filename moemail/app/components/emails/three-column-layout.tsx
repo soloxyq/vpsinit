@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { EmailList } from "./email-list"
 import { MessageListContainer } from "./message-list-container"
@@ -9,6 +9,8 @@ import { SendDialog } from "./send-dialog"
 import { cn } from "@/lib/utils"
 import { useCopy } from "@/hooks/use-copy"
 import { useSendPermission } from "@/hooks/use-send-permission"
+import { useMediaQuery } from "@/hooks/use-media-query"
+import { useUnreadCounts } from "@/hooks/use-unread-counts"
 import { Copy, Inbox, MailOpen } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 
@@ -25,6 +27,23 @@ export function ThreeColumnLayout() {
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const { copyToClipboard } = useCopy()
   const { canSend: canSendEmails } = useSendPermission()
+  // 桌面和手机两套布局平时只挂载当前屏幕用的那一套（断点和下面的 lg: 一致）。两套都挂着的话，
+  // 被 CSS 藏起来的那套也在轮询邮件列表、也会再请求一遍邮件正文。
+  // - 首次渲染还不知道屏幕宽度（null），两套都渲染，和服务端输出一致。
+  // - 之后宽度跨过断点（旋转平板、把窗口贴到半屏）时，把另一套也挂上，原来那套不卸载：
+  //   它里面开着的对话框、填了一半的内容都是组件自己的状态，卸载就丢了。
+  //   代价是这以后两套并存、各管各的列表（在一套里删掉的邮件，另一套里要换个邮箱或刷新页面才消失），
+  //   也就是改成只挂一套之前的老样子。刷新页面后又只挂一套。
+  const isDesktop = useMediaQuery("(min-width: 1024px)")
+  const [shown, setShown] = useState({ desktop: false, mobile: false })
+  useEffect(() => {
+    if (isDesktop === null) return
+    const layout = isDesktop ? "desktop" : "mobile"
+    setShown(prev => (prev[layout] ? prev : { ...prev, [layout]: true }))
+  }, [isDesktop])
+  const showDesktop = isDesktop !== false || shown.desktop
+  const showMobile = isDesktop !== true || shown.mobile
+  const { counts: unreadCounts, refresh: refreshUnread } = useUnreadCounts()
 
   const columnClass = "border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden flex flex-col"
   const headerClass = "h-11 px-3.5 py-0 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0"
@@ -57,6 +76,7 @@ export function ThreeColumnLayout() {
   return (
     <div className="pb-5 pt-20 h-full flex flex-col">
       {/* 桌面端三栏布局 */}
+      {showDesktop && (
       <div className="hidden lg:grid grid-cols-12 gap-4 h-full min-h-0">
         <div className={cn("col-span-3", columnClass)}>
           <div className={headerClass}>
@@ -69,6 +89,7 @@ export function ThreeColumnLayout() {
                 setSelectedMessageId(null)
               }}
               selectedEmailId={selectedEmail?.id}
+              unreadCounts={unreadCounts}
             />
           </div>
         </div>
@@ -106,6 +127,8 @@ export function ThreeColumnLayout() {
                 onMessageSelect={handleMessageSelect}
                 selectedMessageId={selectedMessageId}
                 refreshTrigger={refreshTrigger}
+                unreadCount={unreadCounts[selectedEmail.id] ?? 0}
+                onUnreadChange={refreshUnread}
               />
             </div>
           ) : (
@@ -128,6 +151,7 @@ export function ThreeColumnLayout() {
                 messageId={selectedMessageId}
                 messageType={selectedMessageType}
                 onClose={() => setSelectedMessageId(null)}
+                onRead={refreshUnread}
               />
             </div>
           ) : (
@@ -137,8 +161,10 @@ export function ThreeColumnLayout() {
           )}
         </div>
       </div>
+      )}
 
       {/* 移动端单栏布局 */}
+      {showMobile && (
       <div className="lg:hidden h-full min-h-0">
         <div className={cn("h-full", columnClass)}>
           {mobileView === "list" && (
@@ -152,6 +178,7 @@ export function ThreeColumnLayout() {
                     setSelectedEmail(email)
                   }}
                   selectedEmailId={selectedEmail?.id}
+                  unreadCounts={unreadCounts}
                 />
               </div>
             </>
@@ -195,6 +222,8 @@ export function ThreeColumnLayout() {
                   onMessageSelect={handleMessageSelect}
                   selectedMessageId={selectedMessageId}
                   refreshTrigger={refreshTrigger}
+                  unreadCount={unreadCounts[selectedEmail.id] ?? 0}
+                  onUnreadChange={refreshUnread}
                 />
               </div>
             </div>
@@ -218,12 +247,14 @@ export function ThreeColumnLayout() {
                   messageId={selectedMessageId}
                   messageType={selectedMessageType}
                   onClose={() => setSelectedMessageId(null)}
+                  onRead={refreshUnread}
                 />
               </div>
             </div>
           )}
         </div>
       </div>
+      )}
     </div>
   )
-} 
+}

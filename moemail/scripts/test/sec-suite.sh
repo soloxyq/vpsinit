@@ -74,7 +74,7 @@ FAKE=00000000-0000-4000-8000-000000000000
 DENY='401|403|404|405|307|308|400'
 
 echo "== 1. 匿名访问：所有受保护接口及其变体都必须被拒绝，且不泄露数据 =="
-GETS=(/api/emails "/api/emails/$BOX" "/api/emails/$BOX/$FAKE" "/api/emails/$BOX/share" /api/emails/send-permission
+GETS=(/api/emails "/api/emails/$BOX" "/api/emails/$BOX/$FAKE" "/api/emails/$BOX/share" /api/emails/send-permission /api/emails/unread
       /api/config /api/config/email-service /api/api-keys /api/webhook /api/roles/users /api/roles/init-emperor)
 variants() { # 输出一个路径的各种写法
   local p="$1"
@@ -109,6 +109,7 @@ WRITES=("POST /api/emails/generate {\"name\":\"anonbox\",\"expiryTime\":0,\"doma
         "DELETE /api/users/$VICTIM {}"
         "DELETE /api/emails/$BOX {}"
         "DELETE /api/emails/$BOX/messages {}"
+        "PATCH /api/emails/$BOX/messages {\"read\":true}"
         "POST /api/account/password {\"currentPassword\":\"x\",\"newPassword\":\"Hacked-Passw0rd\"}")
 for w in "${WRITES[@]}"; do
   m=${w%% *}; rest=${w#* }; p=${rest%% *}; d=${rest#* }
@@ -128,7 +129,7 @@ req owner GET /api/webhook; absent SEC "匿名没能改 webhook" "attacker.inval
 req owner POST /api/roles/users -H "$J" -H "Origin: $B" -d '{"searchText":"victim1"}'; present SEC "匿名没能删除用户 victim1" "victim1"
 
 echo "== 2. 平民账号（任何人都能注册得到）不能越权 =="
-for v in /api/emails /api/emails.rsc /api/EMAILS /api/EMAILS.rsc /API/emails.rsc /api/emails/.rsc "/api/emails/$BOX" "/api/emails/$BOX.rsc" "/api/EMAILS/$BOX" /api/emails/send-permission.rsc; do
+for v in /api/emails /api/emails.rsc /api/EMAILS /api/EMAILS.rsc /API/emails.rsc /api/emails/.rsc "/api/emails/$BOX" "/api/emails/$BOX.rsc" "/api/EMAILS/$BOX" /api/emails/send-permission.rsc /api/emails/unread /api/emails/unread.rsc /api/EMAILS/unread; do
   for hdr in "" "X-User-Id: $OWNER"; do
     a=(); [ -n "$hdr" ] && a+=(-H "$hdr")
     req civ GET "$v" --path-as-is "${a[@]}"
@@ -180,6 +181,7 @@ req owner POST /api/emails/generate -H 'Content-Type: text/plain' -H 'Origin: ht
 expect SEC "owner 会话 + 外站 Origin 建邮箱" "403"
 req owner DELETE "/api/emails/$BOX" -H 'Origin: https://evil.example'; expect SEC "owner 会话 + 外站 Origin 删邮箱" "403"
 req owner DELETE "/api/emails/$BOX/messages" -H 'Origin: https://evil.example'; expect SEC "owner 会话 + 外站 Origin 清空邮箱" "403"
+req owner PATCH "/api/emails/$BOX/messages" -H "$J" -H 'Origin: https://evil.example' -d '{"read":true}'; expect SEC "owner 会话 + 外站 Origin 把邮件全部标为已读" "403"
 req owner POST /api/account/password -H "$J" -H 'Origin: https://evil.example' -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"Hacked-Passw0rd\"}"; expect SEC "owner 会话 + 外站 Origin 改密码" "403"
 req owner GET /api/webhook; absent SEC "跨站请求没能改 webhook" "attacker.invalid/csrf"
 req owner GET /api/emails; absent SEC "跨站请求没能建邮箱" "csrfbox"; present SEC "跨站请求没能删邮箱" "ownerbox"
@@ -208,6 +210,11 @@ req owner DELETE "/api/emails/$TMPBOX" -H "Origin: $B"; expect FUNC "owner 删�
 req kn DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect SEC "骑士清空 owner 的邮箱" "403|404"
 req owner DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect FUNC "owner 清空自己的邮箱" "200"
 req owner GET /api/emails; present FUNC "清空邮件不删邮箱本身" "ownerbox"
+req owner GET /api/emails/unread; expect FUNC "owner 查各邮箱的未读数" "200"; present FUNC "未读数接口返回 counts" '"counts"'
+req - GET /api/emails/unread -H "X-API-Key: $OKEY"; expect FUNC "API Key 查未读数" "200"
+req kn PATCH "/api/emails/$BOX/messages" -H "$J" -H "Origin: $B" -d '{"read":true}'; expect SEC "骑士把 owner 的邮箱标为已读" "403|404"
+req owner PATCH "/api/emails/$BOX/messages" -H "$J" -H "Origin: $B" -d '{}'; expect FUNC "标记已读的请求体不对被拒" "400"
+req owner PATCH "/api/emails/$BOX/messages" -H "$J" -H "Origin: $B" -d '{"read":true}'; expect FUNC "owner 把自己的邮箱全部标为已读" "200"
 req - POST /api/account/password -H "$J" -H "X-API-Key: $OKEY" -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"Hacked-Passw0rd\"}"; expect SEC "API Key 不能改密码" "401|403"
 req civ POST /api/account/password -H "$J" -H "Origin: $B" -d '{"currentPassword":"wrong-password","newPassword":"Another-Passw0rd"}'; expect SEC "当前密码不对不能改" "400"
 req civ POST /api/account/password -H "$J" -H "Origin: $B" -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"short\"}"; expect FUNC "新密码太短被拒" "400"
@@ -218,6 +225,11 @@ req civ GET /api/emails; expect SEC "改密码后，旧会话不能再调接口"
 [ -z "$(login civold civ1 "$PW")" ] && ok "[SEC] 旧密码不能再登录" || bad "[SEC] 改密码后旧密码还能登录"
 req civnew POST /api/account/password -H "$J" -H "Origin: $B" -d "{\"currentPassword\":\"Changed-Passw0rd\",\"newPassword\":\"$PW\"}"; expect FUNC "改回原密码" "200"
 CIV=$(login civ civ1 "$PW"); [ -n "$CIV" ] && ok "[FUNC] 改回后用原密码重新登录" || bad "[FUNC] 改回原密码后登录失败"
+register owner1 "$PW"; expect FUNC "重名注册被拒" "409"; present FUNC "重名注册提示用户名已存在" "用户名已存在"
+req - POST /api/auth/register -H "$J" -d "{\"username\":\"bad name!\",\"password\":\"$PW\"}"; expect FUNC "用户名不合规被拒" "400"
+present FUNC "校验失败给出一句提示" "用户名只能包含"; absent SEC "校验失败不返回 zod 的整段 JSON" '\"code\"'
+req - POST /api/auth/register -H "$J" -d '{not json'; expect FUNC "注册请求体不是 JSON" "500"
+present SEC "内部错误只回固定的文字" "注册失败"; absent SEC "内部错误不带解析器的报错原文" "JSON"
 req kn GET /api/emails; expect FUNC "骑士列邮箱" "200"
 req kn GET /api/api-keys; expect FUNC "骑士无 API Key 权限" "403"
 req civ GET /api/roles/init-emperor; expect FUNC "已有皇帝后 init-emperor 拒绝" "400"

@@ -6,6 +6,7 @@ import { emails, messages } from "@/lib/schema"
 import { eq } from "drizzle-orm"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { checkSendPermission } from "@/lib/send-permissions"
+import { PublicError } from "@/lib/errors"
 
 export const runtime = "edge"
 
@@ -39,7 +40,8 @@ async function sendWithResend(
   if (!response.ok) {
     const errorData = await response.json() as { message?: string }
     console.error('Resend API error:', errorData)
-    throw new Error(errorData.message || "Resend发送失败，请稍后重试")
+    // Resend 给的失败原因（域名没验证、收件人受限等）是写给调用方看的，发信的人要靠它排查，原样返回
+    throw new PublicError(errorData.message || "Resend发送失败，请稍后重试")
   }
 
   return { success: true }
@@ -113,7 +115,9 @@ export async function POST(
       subject,
       content: '',
       type: "sent",
-      html: content
+      html: content,
+      // 自己发出的邮件不算未读
+      readAt: new Date()
     })
 
     return NextResponse.json({ 
@@ -123,8 +127,9 @@ export async function POST(
     })
   } catch (error) {
     console.error('Failed to send email:', error)
+    // 其它错误（数据库、KV、网络）的原文只进日志，不回给客户端
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "发送邮件失败" },
+      { error: error instanceof PublicError ? error.message : "发送邮件失败" },
       { status: 500 }
     )
   }

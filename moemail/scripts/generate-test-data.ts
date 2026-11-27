@@ -81,6 +81,8 @@ async function generateTestData(env: Env, userIdentifier: string) {
         content: '',
         type: 'sent',
         sentAt: new Date(now.getTime() - index * 60 * 60 * 1000),
+        // 发出的邮件不算未读
+        readAt: new Date(now.getTime() - index * 60 * 60 * 1000),
       }))
 
       const allMessages = [...receivedMessages, ...sentMessages]

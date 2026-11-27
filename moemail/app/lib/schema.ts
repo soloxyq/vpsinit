@@ -73,9 +73,13 @@ export const messages = sqliteTable("message", {
   sentAt: integer("sent_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),
+  // 读过的时间，NULL 是未读。读取单封邮件的接口负责记下；发出的邮件写入时就记上
+  readAt: integer("read_at", { mode: "timestamp_ms" }),
 }, (table) => ({
   emailIdIdx: index("message_email_id_idx").on(table.emailId),
   emailIdReceivedAtTypeIdx: index("message_email_id_received_at_type_idx").on(table.emailId, table.receivedAt, table.type),
+  // 数各邮箱的未读邮件（read_at IS NULL）时只扫未读的那几条，不用把邮箱里的邮件全读一遍
+  emailIdReadAtIdx: index("message_email_id_read_at_idx").on(table.emailId, table.readAt),
 }))
 
 export const webhooks = sqliteTable('webhook', {

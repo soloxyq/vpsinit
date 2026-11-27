@@ -19,6 +19,9 @@ interface CreateDialogProps {
   onEmailCreated: () => void
 }
 
+// 默认选“永久”：有效期建好以后不能改，选短了，到期后邮箱和里面的邮件都会被清理
+const DEFAULT_EXPIRY = EXPIRY_OPTIONS.find(option => option.key === "permanent")!.value.toString()
+
 export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
   const { config } = useConfig()
   const t = useTranslations("emails.create")
@@ -28,7 +31,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
   const [loading, setLoading] = useState(false)
   const [emailName, setEmailName] = useState("")
   const [currentDomain, setCurrentDomain] = useState("")
-  const [expiryTime, setExpiryTime] = useState(EXPIRY_OPTIONS[1].value.toString())
+  const [expiryTime, setExpiryTime] = useState(DEFAULT_EXPIRY)
   const { toast } = useToast()
   const { copyToClipboard } = useCopy()
 

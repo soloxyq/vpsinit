@@ -13,6 +13,7 @@ import { authSchema, AuthSchema } from "@/lib/validation"
 import { generateAvatarUrl } from "./avatar"
 import { getUserId } from "./apiKey"
 import { verifyTurnstileToken } from "./turnstile"
+import { PublicError } from "./errors"
 
 const ROLE_DESCRIPTIONS: Record<Role, string> = {
   [ROLES.EMPEROR]: "皇帝（网站所有者）",
@@ -286,7 +287,7 @@ export async function register(username: string, password: string) {
   })
 
   if (existing) {
-    throw new Error("用户名已存在")
+    throw new PublicError("用户名已存在")
   }
 
   const hashedPassword = await hashPassword(password)

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createDb } from "@/lib/db"
 import { messages, emails } from "@/lib/schema"
-import { and, eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
@@ -99,8 +99,19 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         { status: 404 }
       )
     }
-    
-    return NextResponse.json({ 
+
+    // 读取就算读过：原来未读的记下已读时间。记不上不影响看信，只打日志
+    if (!message.readAt) {
+      try {
+        await db.update(messages)
+          .set({ readAt: new Date() })
+          .where(and(eq(messages.id, messageId), isNull(messages.readAt)))
+      } catch (error) {
+        console.error('Failed to mark message as read:', error)
+      }
+    }
+
+    return NextResponse.json({
       message: {
         id: message.id,
         from_address: message.fromAddress,
@@ -111,6 +122,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         received_at: message.receivedAt.getTime(),
         sent_at: message.receivedAt.getTime(),
         type: message.type as 'received' | 'sent',
+        // 这次读取之前的值：null 表示原来是未读，刚被这次读取记成已读
+        read_at: message.readAt?.getTime() ?? null,
         attachments: publicAttachments(message.attachments)
       }
     })

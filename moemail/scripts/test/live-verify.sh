@@ -45,7 +45,7 @@ req GET /api/auth/session; expect "匿名 GET /api/auth/session" "200"; absent "
 req POST /api/auth/register -H "$J" -d '{}'; expect "注册已关闭（空请求体，不会创建账号）" "${REGISTER_EXPECT:-403}"
 
 echo "== 3. 受保护的接口：匿名一律 401，写法变体也一样 =="
-for p in /api/emails /api/config /api/config/email-service /api/api-keys /api/webhook /api/roles/users /api/emails/send-permission \
+for p in /api/emails /api/config /api/config/email-service /api/api-keys /api/webhook /api/roles/users /api/emails/send-permission /api/emails/unread \
          /api/emails.rsc /api/config.rsc /API/EMAILS /Api/Config "/_next/data/$BUILD_ID/api/emails.json"; do
   req GET "$p" -H 'X-User-Id: 00000000-0000-4000-8000-000000000000'; expect "匿名 GET $p（带伪造的 X-User-Id）" "401"; absent "匿名 GET $p 不返回站点配置" "emailDomains"
 done

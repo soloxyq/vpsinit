@@ -134,7 +134,7 @@ export async function GET(
     
     const results = await db.query.messages.findMany({
       // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
-      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
+      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, readAt: true, attachments: true },
       where: and(...conditions),
       orderBy: (messages, { desc }) => [
         desc(orderByTime),
@@ -162,6 +162,8 @@ export async function GET(
         subject: msg.subject,
         sent_at: msg.sentAt?.getTime(),
         received_at: msg.receivedAt?.getTime(),
+        // 读过的时间，null 是未读
+        read_at: msg.readAt?.getTime() ?? null,
         has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,

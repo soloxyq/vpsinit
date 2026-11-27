@@ -2,7 +2,7 @@
 // 直接调用收信 Worker 的 email() 投递一封信，或查看、清理附件。不连 Cloudflare。
 // 由 attachments-suite.sh 先用 esbuild 打包成普通 JS 再用 node 运行（用 tsx 直接跑，miniflare 会报
 // "Cannot set properties of undefined (setting 'compositeIndex')"），在仓库根目录调用：
-//   STATE=<pages dev 的 --persist-to 目录> node <打包结果> deliver <from> <to> <eml 文件>
+//   STATE=<pages dev 的 --persist-to 目录> node <打包结果> deliver <from> <to> <eml 文件> [投递几次，默认 1]
 //   ... keys                # 列出 KV 里的附件键和到期时间
 //   ... put-orphan <key> [expiring]  # 写一个没有对应邮件的附件（expiring：带到期时间）
 //   ... expire <邮箱 ID>     # 把邮箱的到期时间改到过去
@@ -31,22 +31,24 @@ async function main() {
 
   try {
     if (mode === "deliver") {
-      const [from, to, file] = args
+      const [from, to, file, times = "1"] = args
       const raw = readFileSync(file)
       let forwardedTo: string | null = null
-      const message = {
-        from,
-        to,
-        raw: new Response(raw).body,
-        rawSize: raw.byteLength,
-        headers: new Headers(),
-        forward: async (rcpt: string) => {
-          forwardedTo = rcpt
-        },
-        setReject: () => {},
-        reply: async () => {},
+      for (let i = 0; i < Number(times); i++) {
+        const message = {
+          from,
+          to,
+          raw: new Response(raw).body,
+          rawSize: raw.byteLength,
+          headers: new Headers(),
+          forward: async (rcpt: string) => {
+            forwardedTo = rcpt
+          },
+          setReject: () => {},
+          reply: async () => {},
+        }
+        await worker.email(message as unknown as ForwardableEmailMessage, env)
       }
-      await worker.email(message as unknown as ForwardableEmailMessage, env)
       console.log(`RESULT ${JSON.stringify({ forwardedTo })}`)
     } else if (mode === "keys") {
       const list = await kv.list({ prefix: ATTACHMENT_KEY_PREFIX })

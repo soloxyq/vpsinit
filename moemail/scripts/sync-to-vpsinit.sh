@@ -15,8 +15,8 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DST="${1:-$HOME/WIKI/vpsinit/moemail}"
-# 名字以这些词结尾的配置项视为密钥
-SECRET_KEYS='(TOKEN|SECRET|PASSWORD|API_KEY)$'
+# 名字以这些词结尾的配置项视为脱敏项（密钥或账号标识）
+SECRET_KEYS='(TOKEN|SECRET|PASSWORD|API_KEY|ACCOUNT_ID)$'
 
 [ -f "$SRC/.env" ] || { echo "找不到 $SRC/.env" >&2; exit 1; }
 [ -d "$DST" ] || { echo "目标目录不存在: $DST" >&2; exit 1; }
@@ -42,7 +42,7 @@ fi
 
 # 2. 写脱敏后的 .env
 {
-  echo '# 【已脱敏的入库副本】名字以 TOKEN / SECRET / PASSWORD / API_KEY 结尾的项，值已替换为 "xxxxxx"。'
+  echo '# 【已脱敏的入库副本】名字以 TOKEN / SECRET / PASSWORD / API_KEY / ACCOUNT_ID 结尾的项，值已替换为 "xxxxxx"。'
   echo '# 真实值只在部署机工作目录的 .env 里；用本文件部署前必须先填回真实值，'
   echo '# 尤其是 AUTH_SECRET：填错会让已有账号的密码全部失效。'
   echo

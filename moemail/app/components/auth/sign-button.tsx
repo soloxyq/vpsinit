@@ -34,10 +34,10 @@ export function SignButton({ size = "default" }: SignButtonProps) {
   }
 
   return (
-    <div className="flex items-center gap-y-4 gap-x-3 sm:gap-x-4">
-      <Link 
+    <div className="flex items-center gap-2 sm:gap-3">
+      <Link
         href={`/${locale}/profile`}
-        className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+        className="flex items-center gap-2 rounded-full px-2 py-1 hover:bg-accent/80 transition-colors"
       >
         {session.user.image && (
           <Image
@@ -45,12 +45,12 @@ export function SignButton({ size = "default" }: SignButtonProps) {
             alt={session.user.name || t("userAvatar")}
             width={24}
             height={24}
-            className="rounded-full"
+            className="rounded-full ring-1 ring-border"
           />
         )}
-        <span className="hidden sm:inline-block text-sm">{session.user.name}</span>
+        <span className="hidden sm:inline-block text-sm font-medium text-foreground">{session.user.name}</span>
       </Link>
-      <Button onClick={() => signOut({ callbackUrl: `/${locale}` })} variant="outline" className={cn("flex-shrink-0", size === "lg" ? "px-8" : "")} size={size}>
+      <Button onClick={() => signOut({ callbackUrl: `/${locale}` })} variant="outline" className={cn("flex-shrink-0", size === "lg" ? "px-7" : "")} size={size}>
         {t("logout")}
       </Button>
     </div>

@@ -23,7 +23,7 @@ export default async function LoginPage({
   const allowRegistration = await isRegistrationOpen()
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
+    <div className="min-h-screen flex items-center justify-center bg-page bg-hero-glow px-4">
       <LoginForm
         turnstile={{ enabled: turnstile.enabled, siteKey: turnstile.siteKey }}
         allowRegistration={allowRegistration}

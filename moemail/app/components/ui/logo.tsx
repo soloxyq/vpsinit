@@ -4,60 +4,38 @@ import Link from "next/link"
 
 export function Logo() {
   return (
-    <Link 
+    <Link
       href="/"
-      className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+      className="flex items-center gap-2.5 group transition-opacity hover:opacity-90"
     >
-      <div className="relative w-8 h-8">
-        <div className="absolute inset-0 grid grid-cols-8 grid-rows-8 gap-px">
-          <svg
-            width="32"
-            height="32"
-            viewBox="0 0 32 32"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            className="text-primary"
-          >
-            {/* 信封主体 */}
-            <path
-              d="M4 8h24v16H4V8z"
-              className="fill-primary/20"
-            />
-            
-            {/* 信封边框 */}
-            <path
-              d="M4 8h24v2H4V8zM4 22h24v2H4v-2z"
-              className="fill-primary"
-            />
-            
-            {/* @ 符号 */}
-            <path
-              d="M14 12h4v4h-4v-4zM12 14h2v4h-2v-4zM18 14h2v4h-2v-4zM14 18h4v2h-4v-2z"
-              className="fill-primary"
-            />
-            
-            {/* 折线装饰 */}
-            <path
-              d="M4 8l12 8 12-8"
-              className="stroke-primary stroke-2"
-              fill="none"
-            />
-            
-            {/* 装饰点 */}
-            <path
-              d="M8 18h2v2H8v-2zM22 18h2v2h-2v-2z"
-              className="fill-primary/60"
-            />
-            
-            {/* 底部装饰线 */}
-            <path
-              d="M8 14h2v2H8v-2zM22 14h2v2h-2v-2z"
-              className="fill-primary/40"
-            />
-          </svg>
-        </div>
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-inset ring-primary/20 transition-colors group-hover:bg-primary/15">
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <rect
+            x="2.5"
+            y="4.5"
+            width="19"
+            height="15"
+            rx="3"
+            className="stroke-current"
+            strokeWidth="1.8"
+          />
+          <path
+            d="M3.5 6.5L11.1 12.2C11.63 12.6 12.37 12.6 12.9 12.2L20.5 6.5"
+            className="stroke-current"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       </div>
-      <span className="font-bold tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-primary to-purple-600">
+      <span className="text-[15px] font-semibold tracking-tight text-foreground">
         MoeMail
       </span>
     </Link>

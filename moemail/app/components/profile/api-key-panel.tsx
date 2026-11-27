@@ -158,11 +158,11 @@ export function ApiKeyPanel() {
   }
 
   return (
-    <div className="bg-background rounded-lg border-2 border-primary/20 p-6 space-y-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6 space-y-5">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Key className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">{t("title")}</h2>
+          <Key className="w-4 h-4 text-primary" />
+          <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
         </div>
         {
           canManageApiKey && (
@@ -336,7 +336,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/config \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -362,7 +362,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl -X POST ${window.location.protocol}//${window.location.host}/api/emails/generate \\
   -H "X-API-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -388,7 +388,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/emails?cursor=CURSOR \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -408,7 +408,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/emails/{emailId}?cursor=CURSOR \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -428,7 +428,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/{messageId} \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -450,7 +450,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl -X POST ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/share \\
   -H "X-API-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -472,7 +472,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/share \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -492,7 +492,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl -X DELETE ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/share/{shareId} \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -514,7 +514,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl -X POST ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/messages/{messageId}/share \\
   -H "X-API-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -536,7 +536,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/messages/{messageId}/share \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>
@@ -556,7 +556,7 @@ export function ApiKeyPanel() {
                             <Copy className="w-4 h-4" />
                           </Button>
                         </div>
-                        <pre className="text-xs bg-muted/50 rounded-lg p-4 overflow-x-auto">
+                        <pre className="font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                           {`curl -X DELETE ${window.location.protocol}//${window.location.host}/api/emails/{emailId}/messages/{messageId}/share/{shareId} \\
   -H "X-API-Key: YOUR_API_KEY"`}
                         </pre>

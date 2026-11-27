@@ -173,7 +173,7 @@ export function SharedEmailPageClient({
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-page">
       <div className="container mx-auto p-4 max-w-7xl">
         <BrandHeader
           title={email.address}
@@ -193,7 +193,7 @@ export function SharedEmailPageClient({
 
         {/* 桌面端双栏布局 */}
         <div className="hidden lg:grid grid-cols-2 gap-4 h-[calc(100vh-280px)] mt-6">
-          <div className="border-2 border-primary/20 bg-background rounded-lg overflow-hidden">
+          <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden">
             <SharedMessageList
               messages={messages.map(msg => ({
                 ...msg,
@@ -235,7 +235,7 @@ export function SharedEmailPageClient({
             />
           </div>
 
-          <div className="border-2 border-primary/20 bg-background rounded-lg overflow-hidden">
+          <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden">
             <SharedMessageDetail
               message={selectedMessage ? {
                 ...selectedMessage,
@@ -276,7 +276,7 @@ export function SharedEmailPageClient({
 
         {/* 移动端单栏布局 */}
         <div className="lg:hidden h-[calc(100vh-260px)] mt-6">
-          <div className="border-2 border-primary/20 bg-background rounded-lg overflow-hidden h-full flex flex-col">
+          <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden h-full flex flex-col">
             {!selectedMessage ? (
               // 消息列表视图
               <SharedMessageList
@@ -321,7 +321,7 @@ export function SharedEmailPageClient({
             ) : (
               // 消息详情视图
               <>
-                <div className="p-2 border-b-2 border-primary/20 flex items-center justify-between shrink-0">
+                <div className="px-3.5 py-2.5 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0">
                   <button
                     onClick={() => setSelectedMessage(null)}
                     className="text-sm text-primary"

@@ -103,7 +103,7 @@ const SlidingTabsList = React.forwardRef<
       {...props}
     >
       <div 
-        className="absolute top-1 bottom-1 bg-primary rounded-md shadow-sm transition-all duration-300 ease-in-out"
+        className="absolute top-1 bottom-1 bg-background border border-border/60 rounded-md shadow-sm transition-all duration-200 ease-out"
         style={{
           width: tabWidth,
           left: slidePosition
@@ -122,7 +122,7 @@ const SlidingTabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "relative z-10 flex-1 h-8 gap-2 flex items-center justify-center text-sm font-medium transition-colors duration-200 rounded-md px-3 py-2 data-[state=active]:text-primary-foreground data-[state=active]:bg-transparent data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+      "relative z-10 flex-1 h-8 gap-2 flex items-center justify-center text-xs font-medium transition-colors duration-150 rounded-md px-3 py-1.5 data-[state=active]:text-foreground data-[state=active]:bg-transparent data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-50",
       className
     )}
     {...props}

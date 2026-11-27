@@ -5,47 +5,47 @@
 @layer base {
   :root {
     --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --foreground: 222 25% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 222 25% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 255 65% 52%;  /* #826DD9 */
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 255 65% 52%;  /* #826DD9 */
-    --radius: 0.75rem;
+    --popover-foreground: 222 25% 11%;
+    --primary: 239 76% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 25% 14%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 95%;
+    --accent-foreground: 222 25% 14%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 90%;
+    --input: 220 13% 88%;
+    --ring: 239 76% 58%;
+    --radius: 0.625rem;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 255 65% 52%;  /* #826DD9 */
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 255 65% 52%;  /* #826DD9 */
+    --background: 224 14% 7%;
+    --foreground: 210 20% 96%;
+    --card: 224 13% 10%;
+    --card-foreground: 210 20% 96%;
+    --popover: 224 13% 10%;
+    --popover-foreground: 210 20% 96%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 224 11% 15%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 224 11% 14%;
+    --muted-foreground: 220 9% 62%;
+    --accent: 224 11% 16%;
+    --accent-foreground: 210 20% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 224 11% 18%;
+    --input: 224 11% 20%;
+    --ring: 239 84% 67%;
   }
 }
 
@@ -55,44 +55,60 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
 
 @layer utilities {
-  .bg-grid-primary {
-    background-image: linear-gradient(var(--primary) 1px, transparent 1px),
-      linear-gradient(90deg, var(--primary) 1px, transparent 1px);
-    background-size: 20px 20px;
+  .bg-page {
+    background-color: #fafafb;
+  }
+  .dark .bg-page {
+    background-color: #0b0d11;
   }
 
-  /* 整体滚动条 */
+  .bg-grid-primary {
+    background-image: radial-gradient(hsl(var(--foreground) / 0.08) 1px, transparent 1px);
+    background-size: 24px 24px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 40%, transparent 100%);
+  }
+
+  .bg-hero-glow {
+    background-image: radial-gradient(
+      ellipse 55% 40% at 50% -5%,
+      hsl(var(--primary) / 0.10),
+      transparent 70%
+    );
+  }
+  .dark .bg-hero-glow {
+    background-image: radial-gradient(
+      ellipse 55% 40% at 50% -5%,
+      hsl(var(--primary) / 0.16),
+      transparent 70%
+    );
+  }
+
+  /* 细窄中性滚动条 */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
 
-  /* 滚动条轨道 */
   ::-webkit-scrollbar-track {
     background: transparent;
   }
 
-  /* 滚动条滑块 */
   ::-webkit-scrollbar-thumb {
-    @apply bg-primary/20 rounded-full hover:bg-primary/40 transition-colors;
+    @apply bg-border rounded-full hover:bg-muted-foreground/40 transition-colors;
   }
 
-  /* Firefox 滚动条 */
   * {
     scrollbar-width: thin;
-    scrollbar-color: hsl(var(--primary) / 0.2) transparent;
+    scrollbar-color: hsl(var(--border)) transparent;
   }
 
-  /* 深色模式下的滚动条 */
   .dark ::-webkit-scrollbar-thumb {
-    @apply bg-primary/30 hover:bg-primary/50;
-  }
-
-  .dark * {
-    scrollbar-color: hsl(var(--primary) / 0.3) transparent;
+    @apply bg-border hover:bg-muted-foreground/40;
   }
 }

@@ -71,23 +71,23 @@ export function ProfileCard({ user }: ProfileCardProps) {
   const canManageConfig = checkPermission(PERMISSIONS.MANAGE_CONFIG)
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      <div className="bg-background rounded-lg border-2 border-primary/20 p-6">
-        <div className="flex items-center gap-6">
+    <div className="max-w-2xl mx-auto space-y-5">
+      <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+        <div className="flex items-center gap-5">
           <div className="relative">
             {user.image && (
               <Image
                 src={user.image}
                 alt={user.name || tAuth("userAvatar")}
-                width={80}
-                height={80}
-                className="rounded-full ring-2 ring-primary/20"
+                width={72}
+                height={72}
+                className="rounded-full ring-1 ring-border"
               />
             )}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="text-xl font-bold truncate">{user.name}</h2>
+              <h2 className="text-lg font-semibold tracking-tight truncate text-foreground">{user.name}</h2>
               {!!user?.providers?.length && (
                 <div className="flex gap-2">
                   {user.providers.map((provider) => {
@@ -107,13 +107,13 @@ export function ProfileCard({ user }: ProfileCardProps) {
                 </div>
               )}
             </div>
-            <p className="text-sm text-muted-foreground truncate mt-1">
+            <p className="text-sm text-muted-foreground truncate mt-0.5">
               {
                 user.email ? user.email : `${t("name")}: ${user.username}`
               }
             </p>
             {user.roles && (
-              <div className="flex gap-2 mt-2">
+              <div className="flex gap-2 mt-2.5">
                 {user.roles.map(({ name }) => {
                   const roleConfig = roleConfigs[name as keyof typeof roleConfigs]
                   const Icon = roleConfig.icon
@@ -121,7 +121,7 @@ export function ProfileCard({ user }: ProfileCardProps) {
                   return (
                     <div
                       key={name}
-                      className="flex items-center gap-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded"
+                      className="flex items-center gap-1 text-xs font-medium bg-primary/10 text-primary ring-1 ring-inset ring-primary/15 px-2.5 py-0.5 rounded-full"
                       title={roleName}
                     >
                       <Icon className="w-3 h-3" />
@@ -136,10 +136,10 @@ export function ProfileCard({ user }: ProfileCardProps) {
       </div>
 
       {canManageWebhook && (
-        <div className="bg-background rounded-lg border-2 border-primary/20 p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <Settings className="w-5 h-5 text-primary" />
-            <h2 className="text-lg font-semibold">{tWebhook("title")}</h2>
+        <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Settings className="w-4 h-4 text-primary" />
+            <h2 className="text-base font-semibold tracking-tight">{tWebhook("title")}</h2>
           </div>
           <WebhookConfig />
         </div>

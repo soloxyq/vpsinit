@@ -25,9 +25,9 @@ export function ThreeColumnLayout() {
   const { copyToClipboard } = useCopy()
   const { canSend: canSendEmails } = useSendPermission()
 
-  const columnClass = "border-2 border-primary/20 bg-background rounded-lg overflow-hidden flex flex-col"
-  const headerClass = "p-2 border-b-2 border-primary/20 flex items-center justify-between shrink-0"
-  const titleClass = "text-sm font-bold px-2 w-full overflow-hidden"
+  const columnClass = "border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden flex flex-col"
+  const headerClass = "px-3.5 py-2.5 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0 min-h-[44px]"
+  const titleClass = "text-[13px] font-semibold text-foreground w-full overflow-hidden"
 
   // 移动端视图逻辑
   const getMobileView = () => {
@@ -75,11 +75,15 @@ export function ThreeColumnLayout() {
             <h2 className={titleClass}>
               {selectedEmail ? (
                 <div className="w-full flex justify-between items-center gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate min-w-0">{selectedEmail.address}</span>
-                    <div className="shrink-0 cursor-pointer text-primary" onClick={copyEmailAddress}>
-                      <Copy className="size-4" />
-                    </div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="truncate min-w-0 font-mono text-[13px]">{selectedEmail.address}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                      onClick={copyEmailAddress}
+                    >
+                      <Copy className="size-3.5" />
+                    </button>
                   </div>
                   {selectedEmail && canSendEmails && (
                     <SendDialog 
@@ -156,11 +160,15 @@ export function ThreeColumnLayout() {
                   {t("backToEmailList")}
                 </button>
                 <div className="flex-1 flex justify-between items-center gap-2 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="truncate min-w-0 flex-1 text-right">{selectedEmail.address}</span>
-                    <div className="shrink-0 cursor-pointer text-primary" onClick={copyEmailAddress}>
-                      <Copy className="size-4" />
-                    </div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="truncate min-w-0 flex-1 text-right font-mono text-[13px]">{selectedEmail.address}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                      onClick={copyEmailAddress}
+                    >
+                      <Copy className="size-3.5" />
+                    </button>
                   </div>
                   {canSendEmails && (
                     <SendDialog 

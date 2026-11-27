@@ -161,7 +161,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
             <span className="shrink-0">{t("domain")}:</span>
             {emailName ? (
               <div className="flex items-center gap-2 min-w-0">
-                <span className="truncate">{`${emailName}@${currentDomain}`}</span>
+                <span className="truncate font-mono text-foreground">{`${emailName}@${currentDomain}`}</span>
                 <div
                   className="shrink-0 cursor-pointer hover:text-primary transition-colors"
                   onClick={copyEmailAddress}
@@ -170,7 +170,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
                 </div>
               </div>
             ) : (
-              <span className="text-gray-400">...</span>
+              <span className="text-muted-foreground/60">...</span>
             )}
           </div>
         </div>

@@ -59,8 +59,27 @@ const config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: ['var(--font-zpix)'],
-        zpix: ['var(--font-zpix)'],
+        sans: [
+          'var(--font-inter)',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei"',
+          '"Noto Sans CJK SC"',
+          '"Noto Sans SC"',
+          'system-ui',
+          'sans-serif',
+        ],
+        mono: [
+          'var(--font-mono)',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace',
+        ],
       },
       keyframes: {
         "accordion-down": {

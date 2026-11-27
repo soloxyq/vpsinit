@@ -220,34 +220,34 @@ export function LoginForm({
   }
 
   return (
-    <Card className="w-[95%] max-w-lg border-2 border-primary/20">
-      <CardHeader className="space-y-2">
-        <CardTitle className="text-2xl text-center bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
+    <Card className="w-full max-w-[420px] rounded-2xl border border-border/80 bg-card shadow-lg shadow-black/[0.03] dark:shadow-black/30">
+      <CardHeader className="space-y-2 pb-5 pt-7">
+        <CardTitle className="text-xl font-semibold tracking-tight text-center text-foreground">
           {t("title")}
         </CardTitle>
-        <CardDescription className="text-center">
+        <CardDescription className="text-center text-sm text-muted-foreground">
           {t("subtitle")}
         </CardDescription>
       </CardHeader>
-      <CardContent className="px-6">
+      <CardContent className="px-6 pb-7">
         <Tabs value={activeTab} className="w-full" onValueChange={handleTabChange}>
           {allowRegistration && (
-            <TabsList className="grid w-full grid-cols-2 mb-6">
+            <TabsList className="grid w-full grid-cols-2 mb-5">
               <TabsTrigger value="login">{t("tabs.login")}</TabsTrigger>
               <TabsTrigger value="register">{t("tabs.register")}</TabsTrigger>
             </TabsList>
           )}
-          <div className="min-h-[220px]">
+          <div>
             <TabsContent value="login" className="space-y-4 mt-0">
               <div className="space-y-3">
                 <div className="space-y-1.5">
                   <div className="relative">
-                    <div className="absolute left-2.5 top-2 text-muted-foreground">
-                      <User2 className="h-5 w-5" />
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                      <User2 className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
-                        "h-9 pl-9 pr-3",
+                        "h-10 pl-9 pr-3",
                         errors.username && "border-destructive focus-visible:ring-destructive"
                       )}
                       placeholder={t("fields.username")}
@@ -265,12 +265,12 @@ export function LoginForm({
                 </div>
                 <div className="space-y-1.5">
                   <div className="relative">
-                    <div className="absolute left-2.5 top-2 text-muted-foreground">
-                      <KeyRound className="h-5 w-5" />
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                      <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
-                        "h-9 pl-9 pr-3",
+                        "h-10 pl-9 pr-3",
                         errors.password && "border-destructive focus-visible:ring-destructive"
                       )}
                       type="password"
@@ -291,7 +291,7 @@ export function LoginForm({
 
               <div className="space-y-3 pt-1">
                 <Button
-                  className="w-full"
+                  className="w-full h-10"
                   onClick={handleLogin}
                   disabled={loading}
                 >
@@ -300,12 +300,12 @@ export function LoginForm({
                 </Button>
 
                 {(oauth.github || oauth.google) && (
-                <div className="relative">
+                <div className="relative py-1">
                   <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t" />
+                    <span className="w-full border-t border-border/80" />
                   </div>
                   <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-background px-2 text-muted-foreground">
+                    <span className="bg-card px-2.5 text-muted-foreground">
                       {t("actions.or")}
                     </span>
                   </div>
@@ -315,7 +315,7 @@ export function LoginForm({
                 {oauth.github && (
                 <Button
                   variant="outline"
-                  className="w-full"
+                  className="w-full h-10"
                   onClick={handleGithubLogin}
                 >
                   <Github className="mr-2 h-4 w-4" />
@@ -326,7 +326,7 @@ export function LoginForm({
                 {oauth.google && (
                 <Button
                   variant="outline"
-                  className="w-full"
+                  className="w-full h-10"
                   onClick={handleGoogleLogin}
                 >
                   <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
@@ -357,12 +357,12 @@ export function LoginForm({
               <div className="space-y-3">
                 <div className="space-y-1.5">
                   <div className="relative">
-                    <div className="absolute left-2.5 top-2 text-muted-foreground">
-                      <User2 className="h-5 w-5" />
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                      <User2 className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
-                        "h-9 pl-9 pr-3",
+                        "h-10 pl-9 pr-3",
                         errors.username && "border-destructive focus-visible:ring-destructive"
                       )}
                       placeholder={t("fields.username")}
@@ -380,12 +380,12 @@ export function LoginForm({
                 </div>
                 <div className="space-y-1.5">
                   <div className="relative">
-                    <div className="absolute left-2.5 top-2 text-muted-foreground">
-                      <KeyRound className="h-5 w-5" />
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                      <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
-                        "h-9 pl-9 pr-3",
+                        "h-10 pl-9 pr-3",
                         errors.password && "border-destructive focus-visible:ring-destructive"
                       )}
                       type="password"
@@ -404,12 +404,12 @@ export function LoginForm({
                 </div>
                 <div className="space-y-1.5">
                   <div className="relative">
-                    <div className="absolute left-2.5 top-2 text-muted-foreground">
-                      <KeyRound className="h-5 w-5" />
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                      <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
-                        "h-9 pl-9 pr-3",
+                        "h-10 pl-9 pr-3",
                         errors.confirmPassword && "border-destructive focus-visible:ring-destructive"
                       )}
                       type="password"
@@ -430,7 +430,7 @@ export function LoginForm({
 
               <div className="space-y-3 pt-1">
                 <Button
-                  className="w-full"
+                  className="w-full h-10"
                   onClick={handleRegister}
                   disabled={loading}
                 >

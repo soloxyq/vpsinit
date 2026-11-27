@@ -1,7 +1,13 @@
-import localFont from 'next/font/local'
+import { Inter, JetBrains_Mono } from 'next/font/google'
 
-export const zpix = localFont({
-  src: '../public/fonts/zpix.ttf',
-  variable: '--font-zpix',
+export const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
   display: 'swap',
-}) 
+})
+
+export const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  display: 'swap',
+})

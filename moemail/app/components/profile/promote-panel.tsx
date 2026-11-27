@@ -162,11 +162,11 @@ export function PromotePanel() {
   }
 
   return (
-    <div className="bg-background rounded-lg border-2 border-primary/20 p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <Users className="w-5 h-5 text-primary" />
-        <h2 className="text-lg font-semibold">{t("title")}</h2>
-        <span className="text-sm text-muted-foreground ml-auto">
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+      <div className="flex items-center gap-2 mb-5">
+        <Users className="w-4 h-4 text-primary" />
+        <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
+        <span className="text-xs text-muted-foreground ml-auto tabular-nums">
           {t("totalUsers", { count: total })}
         </span>
       </div>

@@ -87,10 +87,10 @@ export function EmailServiceConfig() {
   }
 
   return (
-    <div className="bg-background rounded-lg border-2 border-primary/20 p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <Zap className="w-5 h-5 text-primary" />
-        <h2 className="text-lg font-semibold">{t("title")}</h2>
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+      <div className="flex items-center gap-2 mb-5">
+        <Zap className="w-4 h-4 text-primary" />
+        <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
       </div>
 
       <div className="space-y-4">
@@ -147,26 +147,26 @@ export function EmailServiceConfig() {
                 {t("roleLimits")}
               </Label>
               <div className="space-y-4">
-                <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg text-sm">
-                  <p className="font-semibold text-blue-900 mb-3 flex items-center gap-2">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                <div className="p-4 bg-primary/[0.04] border border-primary/15 rounded-xl text-sm">
+                  <div className="font-medium text-foreground mb-2.5 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-primary rounded-full"></div>
                     {t("fixedRoleLimits")}
-                  </p>
-                  <div className="space-y-2 text-blue-800">
+                  </div>
+                  <div className="space-y-1.5 text-muted-foreground text-xs">
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-                      <span><strong>{tCard("roles.EMPEROR")}</strong> - {t("emperorLimit")}</span>
+                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+                      <span><strong className="text-foreground">{tCard("roles.EMPEROR")}</strong> - {t("emperorLimit")}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
-                      <span><strong>{tCard("roles.CIVILIAN")}</strong> - {t("civilianLimit")}</span>
+                      <div className="w-1.5 h-1.5 bg-rose-500 rounded-full"></div>
+                      <span><strong className="text-foreground">{tCard("roles.CIVILIAN")}</strong> - {t("civilianLimit")}</span>
                     </div>
                   </div>
                 </div>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
-                    <p className="text-sm font-medium text-gray-900">{t("configRoleLabel")}</p>
+                    <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
+                    <p className="text-sm font-medium text-foreground">{t("configRoleLabel")}</p>
                   </div>
                   {[
                     { value: "duke", label: tCard("roles.DUKE"), key: "duke" as const },
@@ -174,14 +174,14 @@ export function EmailServiceConfig() {
                   ].map((role) => {
                     const isDisabled = config.roleLimits[role.key] === -1
                     const isEnabled = !isDisabled
-                    
+
                     return (
-                      <div 
-                        key={role.value} 
-                        className={`group relative p-4 border-2 rounded-xl transition-all duration-200 ${
+                      <div
+                        key={role.value}
+                        className={`group relative p-4 border rounded-xl transition-all duration-150 ${
                           isEnabled
-                            ? 'border-primary/30 bg-primary/5 shadow-sm' 
-                            : 'border-gray-200 hover:border-primary/20 hover:shadow-sm'
+                            ? 'border-primary/30 bg-primary/[0.04]'
+                            : 'border-border/80 hover:border-border bg-muted/20'
                         }`}
                       >
                         <div className="flex items-center justify-between">
@@ -218,7 +218,7 @@ export function EmailServiceConfig() {
                           </div>
                           <div className="flex items-center space-x-3">
                             <div className="text-right">
-                              <Label className="text-xs font-medium text-gray-600 block mb-1">{t("dailyLimit")}</Label>
+                              <Label className="text-xs font-medium text-muted-foreground block mb-1">{t("dailyLimit")}</Label>
                               <div className="flex items-center space-x-2">
                                 <Input
                                   type="number"

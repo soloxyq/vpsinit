@@ -37,7 +37,8 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
   const [error, setError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>("html")
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const { theme } = useTheme()
+  const { resolvedTheme } = useTheme()
+  const isDark = resolvedTheme === "dark"
   const { toast } = useToast()
 
   useEffect(() => {
@@ -101,19 +102,21 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
                   margin: 0;
                   padding: 0;
                   min-height: 100%;
-                  font-family: system-ui, -apple-system, sans-serif;
-                  color: ${theme === 'dark' ? '#fff' : '#000'};
-                  background: ${theme === 'dark' ? '#1a1a1a' : '#fff'};
+                  font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+                  font-size: 14px;
+                  line-height: 1.65;
+                  color: ${isDark ? '#e5e7eb' : '#151923'};
+                  background: ${isDark ? '#16191f' : '#ffffff'};
                 }
                 body {
-                  padding: 20px;
+                  padding: 20px 24px;
                 }
                 img {
                   max-width: 100%;
                   height: auto;
                 }
                 a {
-                  color: #2563eb;
+                  color: ${isDark ? '#818cf8' : '#4f46e5'};
                 }
                 /* 滚动条样式 */
                 ::-webkit-scrollbar {
@@ -124,23 +127,23 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
                   background: transparent;
                 }
                 ::-webkit-scrollbar-thumb {
-                  background: ${theme === 'dark'
-                    ? 'rgba(130, 109, 217, 0.3)'
-                    : 'rgba(130, 109, 217, 0.2)'};
+                  background: ${isDark
+                    ? 'rgba(161, 161, 170, 0.25)'
+                    : 'rgba(113, 113, 122, 0.25)'};
                   border-radius: 9999px;
                   transition: background-color 0.2s;
                 }
                 ::-webkit-scrollbar-thumb:hover {
-                  background: ${theme === 'dark'
-                    ? 'rgba(130, 109, 217, 0.5)'
-                    : 'rgba(130, 109, 217, 0.4)'};
+                  background: ${isDark
+                    ? 'rgba(161, 161, 170, 0.45)'
+                    : 'rgba(113, 113, 122, 0.45)'};
                 }
                 /* Firefox 滚动条 */
                 * {
                   scrollbar-width: thin;
-                  scrollbar-color: ${theme === 'dark'
-                    ? 'rgba(130, 109, 217, 0.3) transparent'
-                    : 'rgba(130, 109, 217, 0.2) transparent'};
+                  scrollbar-color: ${isDark
+                    ? 'rgba(161, 161, 170, 0.25) transparent'
+                    : 'rgba(113, 113, 122, 0.25) transparent'};
                 }
               </style>
             </head>
@@ -180,13 +183,13 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
   // 监听主题变化和内容变化
   useEffect(() => {
     updateIframeContent()
-  }, [message?.html, viewMode, theme])
+  }, [message?.html, viewMode, isDark])
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-32">
-        <Loader2 className="w-5 h-5 animate-spin text-primary/60" />
-        <span className="ml-2 text-sm text-gray-500">{t("loading")}</span>
+        <Loader2 className="w-5 h-5 animate-spin text-primary/70" />
+        <span className="ml-2 text-sm text-muted-foreground">{t("loading")}</span>
       </div>
     )
   }
@@ -195,8 +198,8 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
     return (
       <div className="flex flex-col items-center justify-center h-32 text-center">
         <p className="text-sm text-destructive mb-2">{error}</p>
-        <button 
-          onClick={() => window.location.reload()} 
+        <button
+          onClick={() => window.location.reload()}
           className="text-xs text-primary hover:underline"
         >
           {t("retry")}
@@ -209,33 +212,42 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
 
   return (
     <div className="h-full flex flex-col">
-      <div className="p-4 space-y-3 border-b border-primary/20">
+      <div className="px-5 py-4 space-y-2.5 border-b border-border/70 bg-muted/20">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="text-base font-bold flex-1">{message.subject}</h3>
-          <ShareMessageDialog 
+          <h3 className="text-base font-semibold tracking-tight text-foreground flex-1">{message.subject}</h3>
+          <ShareMessageDialog
             emailId={emailId}
-            messageId={message.id} 
+            messageId={message.id}
             messageSubject={message.subject}
             trigger={
-              <button className="p-1.5 hover:bg-primary/10 rounded-md transition-colors">
-                <Share2 className="h-4 w-4 text-gray-500" />
+              <button className="p-1.5 hover:bg-accent rounded-md transition-colors text-muted-foreground hover:text-foreground">
+                <Share2 className="h-4 w-4" />
               </button>
             }
           />
         </div>
-        <div className="text-xs text-gray-500 space-y-1">
+        <div className="text-xs text-muted-foreground space-y-1">
           {message.from_address && (
-            <p>{t("from")}: {message.from_address}</p>
+            <p className="truncate">
+              <span className="text-muted-foreground/80">{t("from")}: </span>
+              <span className="font-mono text-foreground/85">{message.from_address}</span>
+            </p>
           )}
           {message.to_address && (
-            <p>{t("to")}: {message.to_address}</p>
+            <p className="truncate">
+              <span className="text-muted-foreground/80">{t("to")}: </span>
+              <span className="font-mono text-foreground/85">{message.to_address}</span>
+            </p>
           )}
-          <p>{t("time")}: {new Date(message.sent_at || message.received_at || 0).toLocaleString()}</p>
+          <p className="tabular-nums">
+            <span className="text-muted-foreground/80">{t("time")}: </span>
+            {new Date(message.sent_at || message.received_at || 0).toLocaleString()}
+          </p>
         </div>
       </div>
-      
+
       {message.html && message.content && (
-        <div className="border-b border-primary/20 p-2">
+        <div className="border-b border-border/70 px-4 py-2 bg-muted/10">
           <RadioGroup
             value={viewMode}
             onValueChange={(value) => setViewMode(value as ViewMode)}
@@ -243,8 +255,8 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
           >
             <div className="flex items-center space-x-2">
               <RadioGroupItem value="html" id="html" />
-              <Label 
-                htmlFor="html" 
+              <Label
+                htmlFor="html"
                 className="text-xs cursor-pointer"
               >
                 {t("htmlFormat")}
@@ -252,8 +264,8 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
             </div>
             <div className="flex items-center space-x-2">
               <RadioGroupItem value="text" id="text" />
-              <Label 
-                htmlFor="text" 
+              <Label
+                htmlFor="text"
                 className="text-xs cursor-pointer"
               >
                 {t("textFormat")}
@@ -262,7 +274,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
           </RadioGroup>
         </div>
       )}
-      
+
       <div className="flex-1 overflow-auto relative">
         {viewMode === "html" && message.html ? (
           <iframe
@@ -271,7 +283,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
             sandbox="allow-same-origin allow-popups"
           />
         ) : (
-          <div className="p-4 text-sm whitespace-pre-wrap">
+          <div className="p-5 text-sm leading-relaxed whitespace-pre-wrap text-foreground">
             {message.content}
           </div>
         )}

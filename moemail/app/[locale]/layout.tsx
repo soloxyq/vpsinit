@@ -7,14 +7,14 @@ import { FloatMenu } from "@/components/float-menu"
 import { ThemeProvider } from "@/components/theme/theme-provider"
 import { Toaster } from "@/components/ui/toaster"
 import { cn } from "@/lib/utils"
-import { zpix } from "../fonts"
+import { inter, jetbrainsMono } from "../fonts"
 import "../globals.css"
 import { Providers } from "../providers"
 
 export const runtime = "edge"
 
 export const viewport: Viewport = {
-  themeColor: '#826DD9',
+  themeColor: '#4F46E5',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
@@ -118,12 +118,13 @@ export default async function LocaleLayout({
         <meta name="format-detection" content="telephone=no" />
         <meta name="mobile-web-app-capable" content="yes" />
       </head>
-      <body 
+      <body
         className={cn(
-          zpix.variable,
-          "font-zpix min-h-screen antialiased",
+          inter.variable,
+          jetbrainsMono.variable,
+          "font-sans min-h-screen antialiased selection:bg-primary/15 selection:text-primary",
           "bg-background text-foreground",
-          "transition-colors duration-300"
+          "transition-colors duration-200"
         )}
       >
         <ThemeProvider

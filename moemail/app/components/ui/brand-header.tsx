@@ -22,72 +22,50 @@ export function BrandHeader({
   const displaySubtitle = subtitle || t("subtitle")
   const displayCtaText = ctaText || t("cta")
   return (
-    <div className="text-center space-y-4 lg:pb-4">
+    <div className="text-center space-y-4 lg:pb-2">
       <div className="flex justify-center pt-2">
         <Link
           href="https://moemail.app"
-          className="flex items-center gap-3 hover:opacity-80 transition-opacity group"
+          className="flex items-center gap-3 hover:opacity-85 transition-opacity group"
         >
-          <div className="relative w-12 h-12">
-            <div className="absolute inset-0 grid grid-cols-8 grid-rows-8 gap-px">
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 32 32"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                className="text-primary group-hover:scale-105 transition-transform duration-200"
-              >
-                {/* 信封主体 */}
-                <path
-                  d="M4 8h24v16H4V8z"
-                  className="fill-primary/20"
-                />
-
-                {/* 信封边框 */}
-                <path
-                  d="M4 8h24v2H4V8zM4 22h24v2H4v-2z"
-                  className="fill-primary"
-                />
-
-                {/* @ 符号 */}
-                <path
-                  d="M14 12h4v4h-4v-4zM12 14h2v4h-2v-4zM18 14h2v4h-2v-4zM14 18h4v2h-4v-2z"
-                  className="fill-primary"
-                />
-
-                {/* 折线装饰 */}
-                <path
-                  d="M4 8l12 8 12-8"
-                  className="stroke-primary stroke-2"
-                  fill="none"
-                />
-
-                {/* 装饰点 */}
-                <path
-                  d="M8 18h2v2H8v-2zM22 18h2v2h-2v-2z"
-                  className="fill-primary/60"
-                />
-
-                {/* 底部装饰线 */}
-                <path
-                  d="M8 14h2v2H8v-2zM22 14h2v2h-2v-2z"
-                  className="fill-primary/40"
-                />
-              </svg>
-            </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/20 transition-transform duration-200 group-hover:scale-105">
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <rect
+                x="2.5"
+                y="4.5"
+                width="19"
+                height="15"
+                rx="3"
+                className="stroke-current"
+                strokeWidth="1.8"
+              />
+              <path
+                d="M3.5 6.5L11.1 12.2C11.63 12.6 12.37 12.6 12.9 12.2L20.5 6.5"
+                className="stroke-current"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </div>
-          <span className="text-3xl font-bold tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-primary to-purple-600">
+          <span className="text-xl font-semibold tracking-tight text-foreground">
             MoeMail
           </span>
         </Link>
       </div>
 
-      <div className="space-y-3">
-        <h1 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">
+      <div className="space-y-1.5">
+        <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-foreground font-mono">
           {displayTitle}
         </h1>
-        <p className="text-gray-600 dark:text-gray-300 max-w-md mx-auto">
+        <p className="text-sm text-muted-foreground max-w-md mx-auto">
           {displaySubtitle}
         </p>
       </div>
@@ -95,13 +73,13 @@ export function BrandHeader({
       <div className="flex justify-center">
         <Button
           asChild
-          size="lg"
-          className="gap-2 bg-primary hover:bg-primary/90 text-white px-8 min-h-10 h-auto py-1"
+          size="default"
+          className="gap-2 px-5"
         >
           <Link href="/" target="_blank" rel="noopener noreferrer">
-            <Mail className="w-5 h-5" />
+            <Mail className="w-4 h-4" />
             {displayCtaText}
-            <ExternalLink className="w-4 h-4" />
+            <ExternalLink className="w-3.5 h-3.5 opacity-80" />
           </Link>
         </Button>
       </div>

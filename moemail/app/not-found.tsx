@@ -22,25 +22,28 @@ export default function NotFound() {
             display: flex;
             align-items: center;
             justify-content: center;
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-            background: #ffffff;
-            color: #111827;
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+            background: #fafafb;
+            color: #151923;
           }
           .box { text-align: center; padding: 24px; }
-          .code { font-size: 48px; font-weight: 700; margin: 0 0 8px; color: #826DD9; }
-          .msg { font-size: 16px; margin: 0 0 24px; color: #4b5563; }
+          .code { font-size: 48px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; color: #4f46e5; }
+          .msg { font-size: 15px; margin: 0 0 24px; color: #6b7280; }
           .btn {
             display: inline-block;
-            padding: 10px 20px;
+            padding: 9px 20px;
             border-radius: 8px;
-            background: #826DD9;
+            background: #4f46e5;
             color: #ffffff;
             text-decoration: none;
             font-size: 14px;
+            font-weight: 500;
           }
-          .btn:hover { opacity: 0.9; }
+          .btn:hover { opacity: 0.92; }
           @media (prefers-color-scheme: dark) {
-            body { background: #111827; color: #f9fafb; }
+            body { background: #0b0d11; color: #f3f4f6; }
+            .code { color: #6366f1; }
+            .btn { background: #6366f1; }
             .msg { color: #9ca3af; }
           }
         `}</style>

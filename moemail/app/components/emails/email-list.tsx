@@ -163,18 +163,18 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
   return (
     <>
       <div className="flex flex-col h-full">
-        <div className="p-2 flex justify-between items-center border-b border-primary/20">
+        <div className="px-2.5 py-2 flex justify-between items-center border-b border-border/70">
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               size="icon"
               onClick={handleRefresh}
               disabled={refreshing}
-              className={cn("h-8 w-8", refreshing && "animate-spin")}
+              className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", refreshing && "animate-spin")}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-muted-foreground tabular-nums">
               {role === ROLES.EMPEROR ? (
                 t("emailCountUnlimited", { count: total })
               ) : (
@@ -187,22 +187,29 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
         
         <div className="flex-1 overflow-auto p-2" onScroll={handleScroll}>
           {loading ? (
-            <div className="text-center text-sm text-gray-500">{t("loading")}</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{t("loading")}</div>
           ) : emails.length > 0 ? (
             <div className="space-y-1">
               {emails.map(email => (
                 <div
                   key={email.id}
-                  className={cn("flex items-center gap-2 p-2 rounded cursor-pointer text-sm group",
-                    "hover:bg-primary/5",
-                    selectedEmailId === email.id && "bg-primary/10"
+                  className={cn(
+                    "flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-sm group transition-colors duration-150",
+                    selectedEmailId === email.id
+                      ? "bg-primary/[0.08] ring-1 ring-inset ring-primary/20"
+                      : "hover:bg-accent/70"
                   )}
                   onClick={() => onEmailSelect(email)}
                 >
-                  <Mail className="h-4 w-4 text-primary/60" />
-                  <div className="truncate flex-1">
-                    <div className="font-medium truncate">{email.address}</div>
-                    <div className="text-xs text-gray-500">
+                  <Mail
+                    className={cn(
+                      "h-4 w-4 shrink-0 transition-colors",
+                      selectedEmailId === email.id ? "text-primary" : "text-muted-foreground/70"
+                    )}
+                  />
+                  <div className="truncate flex-1 min-w-0">
+                    <div className="font-mono text-[13px] font-medium truncate text-foreground">{email.address}</div>
+                    <div className="text-[11px] text-muted-foreground tabular-nums mt-0.5">
                       {new Date(email.expiresAt).getFullYear() === 9999 ? (
                         t("permanent")
                       ) : (
@@ -210,30 +217,30 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
                       )}
                     </div>
                   </div>
-                  <div className="opacity-0 group-hover:opacity-100 flex gap-1" onClick={(e) => e.stopPropagation()}>
+                  <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity" onClick={(e) => e.stopPropagation()}>
                     <ShareDialog emailId={email.id} emailAddress={email.address} />
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
                       onClick={(e) => {
                         e.stopPropagation()
                         setEmailToDelete(email)
                       }}
                     >
-                      <Trash2 className="h-4 w-4 text-destructive" />
+                      <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
               ))}
               {loadingMore && (
-                <div className="text-center text-sm text-gray-500 py-2">
+                <div className="text-center text-xs text-muted-foreground py-2">
                   {t("loadingMore")}
                 </div>
               )}
             </div>
           ) : (
-            <div className="text-center text-sm text-gray-500">
+            <div className="py-8 text-center text-sm text-muted-foreground">
               {t("noEmails")}
             </div>
           )}

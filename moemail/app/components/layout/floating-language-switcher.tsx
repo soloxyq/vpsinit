@@ -3,7 +3,8 @@
 import { useLocaleSwitcher } from "@/hooks/use-locale-switcher"
 import { LOCALE_LABELS } from "@/i18n/config"
 import { Button } from "@/components/ui/button"
-import { Languages } from "lucide-react"
+import { Check, Languages } from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,16 +16,16 @@ export function FloatingLanguageSwitcher() {
   const { locale, locales, switchLocale } = useLocaleSwitcher()
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
+    <div className="fixed bottom-4 right-4 z-50 sm:bottom-6 sm:right-6">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="outline"
             size="icon"
-            className="bg-white dark:bg-background rounded-full shadow-lg group relative border-primary/20 hover:border-primary/40 transition-all"
+            className="h-10 w-10 sm:h-9 sm:w-9 bg-card/90 backdrop-blur-md rounded-full shadow-md group relative border-border/80 text-muted-foreground hover:text-foreground hover:border-border transition-colors"
             aria-label="Switch language"
           >
-            <Languages className="h-5 w-5 text-primary group-hover:scale-110 transition-transform" />
+            <Languages className="h-4 w-4 transition-transform duration-200 group-hover:scale-105" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="mb-2">
@@ -32,9 +33,17 @@ export function FloatingLanguageSwitcher() {
             <DropdownMenuItem
               key={loc}
               onClick={() => switchLocale(loc)}
-              className={locale === loc ? "bg-accent" : ""}
+              lang={loc}
+              className={cn(locale === loc && "font-medium")}
             >
               {LOCALE_LABELS[loc]}
+              <Check
+                aria-hidden="true"
+                className={cn(
+                  "ml-auto h-4 w-4 shrink-0 text-primary",
+                  locale === loc ? "opacity-100" : "opacity-0"
+                )}
+              />
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>

@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
-import { Zap, Eye, EyeOff } from "lucide-react"
+import { Zap, Eye, EyeOff, Gem, Sword, Loader2 } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -87,15 +87,15 @@ export function EmailServiceConfig() {
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">
       <div className="flex items-center gap-2 mb-5">
         <Zap className="w-4 h-4 text-primary" />
         <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
       </div>
 
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5 min-w-0">
             <Label htmlFor="enabled" className="text-sm font-medium">
               {t("enable")}
             </Label>
@@ -125,12 +125,13 @@ export function EmailServiceConfig() {
                   value={config.apiKey}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfig((prev: EmailServiceConfig) => ({ ...prev, apiKey: e.target.value }))}
                   placeholder={t("apiKeyPlaceholder")}
+                  className="pr-10 font-mono"
                 />
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                  className="absolute right-0 top-0 h-full w-10 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
                   onClick={() => setShowToken(!showToken)}
                 >
                   {showToken ? (
@@ -147,25 +148,25 @@ export function EmailServiceConfig() {
                 {t("roleLimits")}
               </Label>
               <div className="space-y-4">
-                <div className="p-4 bg-primary/[0.04] border border-primary/15 rounded-xl text-sm">
+                <div className="p-3 sm:p-4 bg-primary/[0.04] border border-primary/15 rounded-xl text-sm">
                   <div className="font-medium text-foreground mb-2.5 flex items-center gap-2">
-                    <div className="w-2 h-2 bg-primary rounded-full"></div>
+                    <div className="w-1.5 h-1.5 shrink-0 bg-primary/60 rounded-full"></div>
                     {t("fixedRoleLimits")}
                   </div>
                   <div className="space-y-1.5 text-muted-foreground text-xs">
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+                      <div className="w-1.5 h-1.5 shrink-0 bg-muted-foreground/50 rounded-full"></div>
                       <span><strong className="text-foreground">{tCard("roles.EMPEROR")}</strong> - {t("emperorLimit")}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-rose-500 rounded-full"></div>
+                      <div className="w-1.5 h-1.5 shrink-0 bg-muted-foreground/50 rounded-full"></div>
                       <span><strong className="text-foreground">{tCard("roles.CIVILIAN")}</strong> - {t("civilianLimit")}</span>
                     </div>
                   </div>
                 </div>
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
+                    <div className="w-1.5 h-1.5 shrink-0 bg-primary/60 rounded-full"></div>
                     <p className="text-sm font-medium text-foreground">{t("configRoleLabel")}</p>
                   </div>
                   {[
@@ -178,15 +179,15 @@ export function EmailServiceConfig() {
                     return (
                       <div
                         key={role.value}
-                        className={`group relative p-4 border rounded-xl transition-all duration-150 ${
+                        className={`group relative p-3 sm:p-4 border rounded-xl transition-colors duration-150 ${
                           isEnabled
                             ? 'border-primary/30 bg-primary/[0.04]'
                             : 'border-border/80 hover:border-border bg-muted/20'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-4">
-                            <div className="relative">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="relative shrink-0">
                               <Checkbox
                                 id={`role-${role.value}`}
                                 checked={isEnabled}
@@ -201,25 +202,27 @@ export function EmailServiceConfig() {
                                 }}
                               />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                               <Label 
                                 htmlFor={`role-${role.value}`} 
-                                className="text-base font-semibold cursor-pointer select-none flex items-center gap-2"
+                                className="text-sm font-medium cursor-pointer select-none flex items-center gap-1.5"
                               >
-                                <span className="text-2xl">
-                                  {role.value === 'duke' ? '🏰' : '⚔️'}
-                                </span>
-                                {role.label}
+                                {role.value === 'duke' ? (
+                                  <Gem className="w-4 h-4 shrink-0 text-primary" />
+                                ) : (
+                                  <Sword className="w-4 h-4 shrink-0 text-primary" />
+                                )}
+                                <span className="truncate">{role.label}</span>
                               </Label>
                               <p className="text-xs text-muted-foreground mt-1">
                                 {isEnabled ? t("enabled") : t("disabled")}
                               </p>
                             </div>
                           </div>
-                          <div className="flex items-center space-x-3">
+                          <div className="flex items-center shrink-0">
                             <div className="text-right">
                               <Label className="text-xs font-medium text-muted-foreground block mb-1">{t("dailyLimit")}</Label>
-                              <div className="flex items-center space-x-2">
+                              <div className="flex items-center gap-2">
                                 <Input
                                   type="number"
                                   min="-1"
@@ -233,7 +236,7 @@ export function EmailServiceConfig() {
                                       }
                                     }))
                                   }
-                                  className="w-20 h-9 text-center text-sm font-medium"
+                                  className="w-20 h-9 text-center text-sm font-medium tabular-nums"
                                   placeholder="0"
                                   disabled={isDisabled}
                                 />
@@ -252,13 +255,16 @@ export function EmailServiceConfig() {
           </>
         )}
 
-        <Button 
-          onClick={handleSave}
-          disabled={loading}
-          className="w-full"
-        >
-          {loading ? t("saving") : t("save")}
-        </Button>
+        <div className="flex justify-end border-t border-border/60 pt-4 mt-2">
+          <Button
+            onClick={handleSave}
+            disabled={loading}
+            className="w-full sm:w-auto sm:min-w-[7rem] gap-2"
+          >
+            {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+            {loading ? t("saving") : t("save")}
+          </Button>
+        </div>
       </div>
     </div>
   )

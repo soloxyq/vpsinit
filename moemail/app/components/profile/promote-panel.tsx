@@ -24,13 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-
-const roleIcons = {
-  [ROLES.EMPEROR]: Crown,
-  [ROLES.DUKE]: Gem,
-  [ROLES.KNIGHT]: Sword,
-  [ROLES.CIVILIAN]: User2,
-} as const
+import { EmptyState } from "@/components/ui/empty-state"
 
 type RoleWithoutEmperor = Exclude<Role, typeof ROLES.EMPEROR>
 
@@ -162,13 +156,15 @@ export function PromotePanel() {
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">
       <div className="flex items-center gap-2 mb-5">
         <Users className="w-4 h-4 text-primary" />
         <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
-        <span className="text-xs text-muted-foreground ml-auto tabular-nums">
-          {t("totalUsers", { count: total })}
-        </span>
+        {!loading && (
+          <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+            {t("totalUsers", { count: total })}
+          </span>
+        )}
       </div>
 
       <div className="relative mb-4">
@@ -182,35 +178,32 @@ export function PromotePanel() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-primary" />
-          <span className="ml-2 text-muted-foreground">{t("loading")}</span>
+        <div className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-muted-foreground" role="status">
+          <Loader2 className="w-5 h-5 animate-spin text-primary" />
+          <span>{t("loading")}</span>
         </div>
       ) : users.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground">
-          {t("noUsers")}
-        </div>
+        <EmptyState icon={Users} title={t("noUsers")} className="min-h-0" />
       ) : (
         <>
-          <div className="space-y-2">
+          <div className="rounded-lg border border-border/80 divide-y divide-border/60 overflow-hidden">
             {users.map((user) => {
               const isEmperor = user.role === ROLES.EMPEROR
-              const RoleIcon = roleIcons[user.role as Role] || User2
               const isUpdating = updatingUserId === user.id
 
               return (
                 <div
                   key={user.id}
-                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors"
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-accent/50 transition-colors"
                 >
                   {user.image ? (
                     <img
                       src={user.image}
                       alt=""
-                      className="w-8 h-8 rounded-full"
+                      className="w-8 h-8 rounded-full shrink-0 ring-1 ring-border"
                     />
                   ) : (
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <div className="w-8 h-8 shrink-0 rounded-full bg-primary/10 flex items-center justify-center">
                       <User2 className="w-4 h-4 text-primary" />
                     </div>
                   )}
@@ -225,15 +218,20 @@ export function PromotePanel() {
                   </div>
 
                   {isEmperor ? (
-                    <div className="flex items-center gap-1.5 text-sm text-amber-600 font-medium px-3">
-                      <Crown className="w-4 h-4" />
-                      {roleNames[ROLES.EMPEROR]}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex w-[7.5rem] items-center">
+                        <span className="inline-flex max-w-full items-center gap-1 text-xs font-medium bg-primary/10 text-primary ring-1 ring-inset ring-primary/15 px-2.5 py-0.5 rounded-full">
+                          <Crown className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{roleNames[ROLES.EMPEROR]}</span>
+                        </span>
+                      </div>
+                      <div className="h-9 w-9 sm:h-8 sm:w-8" aria-hidden="true" />
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       <div className="relative">
                         {isUpdating && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-background/80 rounded z-10">
+                          <div className="absolute inset-0 flex items-center justify-center bg-background/80 rounded-md z-10">
                             <Loader2 className="w-4 h-4 animate-spin" />
                           </div>
                         )}
@@ -242,28 +240,25 @@ export function PromotePanel() {
                           onValueChange={(v) => handleRoleChange(user.id, v as RoleWithoutEmperor)}
                           disabled={isUpdating}
                         >
-                          <SelectTrigger className="w-32 h-8 text-sm">
-                            <div className="flex items-center gap-1.5">
-                              <RoleIcon className="w-3.5 h-3.5" />
-                              <SelectValue />
-                            </div>
+                          <SelectTrigger className="w-[7.5rem] h-9 sm:h-8 text-sm">
+                            <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value={ROLES.DUKE}>
-                              <div className="flex items-center gap-2">
-                                <Gem className="w-4 h-4" />
+                              <div className="flex items-center gap-1.5">
+                                <Gem className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
                                 {roleNames[ROLES.DUKE]}
                               </div>
                             </SelectItem>
                             <SelectItem value={ROLES.KNIGHT}>
-                              <div className="flex items-center gap-2">
-                                <Sword className="w-4 h-4" />
+                              <div className="flex items-center gap-1.5">
+                                <Sword className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
                                 {roleNames[ROLES.KNIGHT]}
                               </div>
                             </SelectItem>
                             <SelectItem value={ROLES.CIVILIAN}>
-                              <div className="flex items-center gap-2">
-                                <User2 className="w-4 h-4" />
+                              <div className="flex items-center gap-1.5">
+                                <User2 className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
                                 {roleNames[ROLES.CIVILIAN]}
                               </div>
                             </SelectItem>
@@ -273,9 +268,10 @@ export function PromotePanel() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                        className="h-9 w-9 sm:h-8 sm:w-8 text-muted-foreground hover:text-destructive"
                         onClick={() => setUserToDelete(user)}
                         title={t("deleteUser")}
+                        aria-label={t("deleteUser")}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -287,7 +283,7 @@ export function PromotePanel() {
           </div>
 
           {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t">
+            <div className="flex items-center justify-between gap-2 mt-4 pt-4 border-t border-border/60">
               <Button
                 variant="outline"
                 size="sm"
@@ -297,7 +293,7 @@ export function PromotePanel() {
                 <ChevronLeft className="w-4 h-4 mr-1" />
                 {t("prevPage")}
               </Button>
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground tabular-nums">
                 {t("pageInfo", { current: page, total: totalPages })}
               </span>
               <Button

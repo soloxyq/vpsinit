@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { BrandHeader } from "@/components/ui/brand-header"
+import { Button } from "@/components/ui/button"
 import { FloatingLanguageSwitcher } from "@/components/layout/floating-language-switcher"
 import { SharedMessageList } from "@/components/emails/shared-message-list"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
@@ -174,7 +175,7 @@ export function SharedEmailPageClient({
 
   return (
     <div className="min-h-screen bg-page">
-      <div className="container mx-auto p-4 max-w-7xl">
+      <div className="container mx-auto p-4 pb-20 lg:pb-6 max-w-7xl">
         <BrandHeader
           title={email.address}
           subtitle={(() => {
@@ -192,7 +193,7 @@ export function SharedEmailPageClient({
         />
 
         {/* 桌面端双栏布局 */}
-        <div className="hidden lg:grid grid-cols-2 gap-4 h-[calc(100vh-280px)] mt-6">
+        <div className="hidden lg:grid grid-cols-2 gap-4 h-[calc(100dvh-280px)] lg:min-h-[480px] mt-6">
           <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden">
             <SharedMessageList
               messages={messages.map(msg => ({
@@ -275,7 +276,7 @@ export function SharedEmailPageClient({
         </div>
 
         {/* 移动端单栏布局 */}
-        <div className="lg:hidden h-[calc(100vh-260px)] mt-6">
+        <div className="lg:hidden h-[calc(100dvh-260px)] min-h-[420px] mt-6">
           <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden h-full flex flex-col">
             {!selectedMessage ? (
               // 消息列表视图
@@ -321,14 +322,17 @@ export function SharedEmailPageClient({
             ) : (
               // 消息详情视图
               <>
-                <div className="px-3.5 py-2.5 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0">
-                  <button
+                <div className="px-3.5 py-2 border-b border-border/70 bg-muted/30 flex items-center justify-between gap-2 shrink-0">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setSelectedMessage(null)}
-                    className="text-sm text-primary"
+                    className="-ml-2 h-8 gap-1 text-primary hover:text-primary hover:bg-primary/10 shrink-0"
                   >
                     {t("layout.backToMessageList")}
-                  </button>
-                  <span className="text-sm font-medium">{t("layout.messageContent")}</span>
+                  </Button>
+                  <span className="text-sm font-medium truncate">{t("layout.messageContent")}</span>
                 </div>
                 <div className="flex-1 overflow-auto">
                   <SharedMessageDetail

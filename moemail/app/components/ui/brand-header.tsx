@@ -4,17 +4,20 @@ import Link from "next/link"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { ExternalLink, Mail } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 interface BrandHeaderProps {
   title?: string
   subtitle?: string
   ctaText?: string
+  monoTitle?: boolean
 }
 
 export function BrandHeader({
   title,
   subtitle,
   ctaText,
+  monoTitle = true,
 }: BrandHeaderProps) {
   const t = useTranslations("emails.shared.brand")
 
@@ -22,7 +25,7 @@ export function BrandHeader({
   const displaySubtitle = subtitle || t("subtitle")
   const displayCtaText = ctaText || t("cta")
   return (
-    <div className="text-center space-y-4 lg:pb-2">
+    <div className="text-center space-y-3 lg:space-y-4 lg:pb-2">
       <div className="flex justify-center pt-2">
         <Link
           href="https://moemail.app"
@@ -62,10 +65,18 @@ export function BrandHeader({
       </div>
 
       <div className="space-y-1.5">
-        <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-foreground font-mono">
+        <h1
+          className={cn(
+            "text-xl md:text-2xl font-semibold tracking-tight text-foreground",
+            monoTitle ? "font-mono break-all sm:break-normal" : "break-words"
+          )}
+        >
           {displayTitle}
         </h1>
-        <p className="text-sm text-muted-foreground max-w-md mx-auto">
+        <p
+          className="text-sm text-muted-foreground max-w-md mx-auto tabular-nums"
+          suppressHydrationWarning
+        >
           {displaySubtitle}
         </p>
       </div>

@@ -2,14 +2,13 @@
 
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
-import { Settings } from "lucide-react"
+import { SlidersHorizontal, Loader2, Eye, EyeOff } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import { useState, useEffect } from "react"
 import { Role, ROLES } from "@/lib/permissions"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
-import { Eye, EyeOff } from "lucide-react"
 import {
   Select,
   SelectContent,
@@ -103,17 +102,19 @@ export function WebsiteConfigPanel() {
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+    <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">
       <div className="flex items-center gap-2 mb-5">
-        <Settings className="w-4 h-4 text-primary" />
+        <SlidersHorizontal className="w-4 h-4 text-primary" />
         <h2 className="text-base font-semibold tracking-tight">{t("title")}</h2>
       </div>
 
       <div className="space-y-4">
-        <div className="flex items-center gap-4">
-          <span className="text-sm">{t("defaultRole")}:</span>
+        <div className="space-y-2">
+          <Label htmlFor="cfg-default-role" className="text-sm font-medium">
+            {t("defaultRole")}
+          </Label>
           <Select value={defaultRole} onValueChange={setDefaultRole}>
-            <SelectTrigger className="w-32">
+            <SelectTrigger id="cfg-default-role" className="w-full sm:w-48">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -124,44 +125,48 @@ export function WebsiteConfigPanel() {
           </Select>
         </div>
 
-        <div className="flex items-center gap-4">
-          <span className="text-sm">{t("emailDomains")}:</span>
-          <div className="flex-1">
-            <Input 
-              value={emailDomains}
-              onChange={(e) => setEmailDomains(e.target.value)}
-              placeholder={t("emailDomainsPlaceholder")}
-            />
-          </div>
+        <div className="space-y-2">
+          <Label htmlFor="cfg-email-domains" className="text-sm font-medium">
+            {t("emailDomains")}
+          </Label>
+          <Input
+            id="cfg-email-domains"
+            value={emailDomains}
+            onChange={(e) => setEmailDomains(e.target.value)}
+            placeholder={t("emailDomainsPlaceholder")}
+          />
         </div>
 
-        <div className="flex items-center gap-4">
-          <span className="text-sm">{t("adminContact")}:</span>
-          <div className="flex-1">
-            <Input 
-              value={adminContact}
-              onChange={(e) => setAdminContact(e.target.value)}
-              placeholder={t("adminContactPlaceholder")}
-            />
-          </div>
+        <div className="space-y-2">
+          <Label htmlFor="cfg-admin-contact" className="text-sm font-medium">
+            {t("adminContact")}
+          </Label>
+          <Input
+            id="cfg-admin-contact"
+            value={adminContact}
+            onChange={(e) => setAdminContact(e.target.value)}
+            placeholder={t("adminContactPlaceholder")}
+          />
         </div>
 
-        <div className="flex items-center gap-4">
-          <span className="text-sm">{t("maxEmails")}:</span>
-          <div className="flex-1">
-            <Input 
-              type="number"
-              min="1"
-              max="100"
-              value={maxEmails}
-              onChange={(e) => setMaxEmails(e.target.value)}
-              placeholder={`${EMAIL_CONFIG.MAX_ACTIVE_EMAILS}`}
-            />
-          </div>
+        <div className="space-y-2">
+          <Label htmlFor="cfg-max-emails" className="text-sm font-medium">
+            {t("maxEmails")}
+          </Label>
+          <Input
+            id="cfg-max-emails"
+            type="number"
+            min="1"
+            max="100"
+            value={maxEmails}
+            onChange={(e) => setMaxEmails(e.target.value)}
+            placeholder={`${EMAIL_CONFIG.MAX_ACTIVE_EMAILS}`}
+            className="tabular-nums sm:max-w-[10rem]"
+          />
         </div>
 
-        <div className="flex items-center justify-between">
-          <div className="space-y-1">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-1 min-w-0">
             <Label htmlFor="allow-registration" className="text-sm font-medium">
               {t("allowRegistration")}
             </Label>
@@ -176,9 +181,9 @@ export function WebsiteConfigPanel() {
           />
         </div>
 
-        <div className="space-y-4 rounded-xl border border-dashed border-border bg-muted/20 p-4">
-          <div className="flex items-center justify-between">
-            <div className="space-y-1">
+        <div className="space-y-4 rounded-xl border border-dashed border-border bg-muted/20 p-3 sm:p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1 min-w-0">
               <Label htmlFor="turnstile-enabled" className="text-sm font-medium">
                 {t("turnstile.enable")}
               </Label>
@@ -202,6 +207,7 @@ export function WebsiteConfigPanel() {
               value={turnstileSiteKey}
               onChange={(e) => setTurnstileSiteKey(e.target.value)}
               placeholder={t("turnstile.siteKeyPlaceholder")}
+              className="font-mono"
             />
           </div>
 
@@ -216,12 +222,13 @@ export function WebsiteConfigPanel() {
                 value={turnstileSecretKey}
                 onChange={(e) => setTurnstileSecretKey(e.target.value)}
                 placeholder={t("turnstile.secretKeyPlaceholder")}
+                className="pr-10 font-mono"
               />
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                className="absolute right-0 top-0 h-full w-10 px-0 text-muted-foreground hover:text-foreground hover:bg-transparent"
                 onClick={() => setShowSecretKey((prev) => !prev)}
               >
                 {showSecretKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -233,13 +240,16 @@ export function WebsiteConfigPanel() {
           </div>
         </div>
 
-        <Button 
-          onClick={handleSave}
-          disabled={loading}
-          className="w-full"
-        >
-          {t("save")}
-        </Button>
+        <div className="flex justify-end border-t border-border/60 pt-4 mt-2">
+          <Button
+            onClick={handleSave}
+            disabled={loading}
+            className="w-full sm:w-auto sm:min-w-[7rem] gap-2"
+          >
+            {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+            {t("save")}
+          </Button>
+        </div>
       </div>
     </div>
   )

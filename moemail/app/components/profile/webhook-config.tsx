@@ -42,13 +42,9 @@ export function WebhookConfig() {
 
   if (initialLoading) {
     return (
-      <div className="text-center">
-        <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
-          <Loader2 className="w-6 h-6 text-primary animate-spin" />
-        </div>
-        <div>
-          <p className="text-sm text-muted-foreground">{tMessages("loading")}</p>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-muted-foreground" role="status">
+        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+        <p>{tMessages("loading")}</p>
       </div>
     )
   }
@@ -112,8 +108,8 @@ export function WebhookConfig() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-0.5 min-w-0">
           <Label>{t("enable")}</Label>
           <div className="text-sm text-muted-foreground">
             {t("description")}
@@ -129,7 +125,7 @@ export function WebhookConfig() {
         <div className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="webhook-url">{t("url")}</Label>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <Input
                 id="webhook-url"
                 placeholder={t("urlPlaceholder")}
@@ -138,34 +134,38 @@ export function WebhookConfig() {
                 type="url"
                 required
               />
-              <Button type="submit" disabled={loading} className="flex-shrink-0">
-                {loading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  tCommon("save")
-                )}
-              </Button>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleTest}
-                      disabled={testing || !url}
-                    >
-                      {testing ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Send className="w-4 h-4" />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>{t("test")}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <div className="flex gap-2 sm:shrink-0">
+                <Button type="submit" disabled={loading} className="flex-1 sm:flex-none sm:min-w-[4.5rem]">
+                  {loading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    tCommon("save")
+                  )}
+                </Button>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleTest}
+                        disabled={testing || !url}
+                        className="shrink-0"
+                        aria-label={t("test")}
+                      >
+                        {testing ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Send className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{t("test")}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">
               {t("description2")}
@@ -175,23 +175,24 @@ export function WebhookConfig() {
           <div className="space-y-2">
             <button
               type="button"
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-1 rounded-md text-sm text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={() => setShowDocs(!showDocs)}
+              aria-expanded={showDocs}
             >
               {showDocs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               {t("description3")}
             </button>
 
             {showDocs && (
-              <div className="rounded-md bg-muted p-4 text-sm space-y-3">
-                <p>{t("docs.intro")}</p>
-                <pre className="bg-background p-2 rounded text-xs">
+              <div className="rounded-lg border border-border/80 bg-card p-3 sm:p-4 text-sm space-y-4">
+                <p className="text-muted-foreground">{t("docs.intro")}</p>
+                <pre className="relative font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                   Content-Type: application/json{'\n'}
                   X-Webhook-Event: new_message
                 </pre>
 
-                <p>{t("docs.exampleBody")}</p>
-                <pre className="bg-background p-2 rounded text-xs overflow-auto">
+                <p className="text-muted-foreground">{t("docs.exampleBody")}</p>
+                <pre className="relative font-mono text-xs bg-muted/60 border border-border/60 rounded-lg p-3.5 overflow-x-auto">
                   {`{
   "emailId": "email-uuid",
   "messageId": "message-uuid",

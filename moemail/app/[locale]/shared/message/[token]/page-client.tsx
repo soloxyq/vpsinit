@@ -29,7 +29,7 @@ export function SharedMessagePageClient({ message }: SharedMessagePageClientProp
 
   return (
     <div className="min-h-screen bg-page">
-      <div className="container mx-auto p-4 max-w-7xl">
+      <div className="container mx-auto p-4 pb-20 lg:pb-6 max-w-7xl">
         <BrandHeader
           title={message.emailAddress || message.to_address || message.subject}
           subtitle={message.emailExpiresAt && new Date(message.emailExpiresAt).getFullYear() === 9999
@@ -40,8 +40,8 @@ export function SharedMessagePageClient({ message }: SharedMessagePageClientProp
           ctaText={tShared("createOwnEmail")}
         />
 
-        <div className="mt-6">
-          <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden h-[calc(100vh-260px)] lg:h-[calc(100vh-280px)]">
+        <div className="mt-6 mx-auto max-w-4xl">
+          <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden h-[calc(100dvh-260px)] min-h-[420px] lg:h-[calc(100dvh-280px)] lg:min-h-[480px]">
             <SharedMessageDetail
               message={{
                 ...message,

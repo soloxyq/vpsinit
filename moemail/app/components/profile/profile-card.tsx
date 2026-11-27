@@ -5,7 +5,7 @@ import { useTranslations, useLocale } from "next-intl"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { signOut } from "next-auth/react"
-import { Github, Settings, Crown, Sword, User2, Gem, Mail } from "lucide-react"
+import { Github, Webhook, Crown, Sword, User2, Gem, Mail } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { WebhookConfig } from "./webhook-config"
 import { PromotePanel } from "./promote-panel"
@@ -72,8 +72,8 @@ export function ProfileCard({ user }: ProfileCardProps) {
 
   return (
     <div className="max-w-2xl mx-auto space-y-5">
-      <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
-        <div className="flex items-center gap-5">
+      <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">
+        <div className="flex items-center gap-4 sm:gap-5">
           <div className="relative">
             {user.image && (
               <Image
@@ -136,9 +136,9 @@ export function ProfileCard({ user }: ProfileCardProps) {
       </div>
 
       {canManageWebhook && (
-        <div className="bg-card rounded-xl border border-border/80 shadow-sm p-6">
+        <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">
           <div className="flex items-center gap-2 mb-5">
-            <Settings className="w-4 h-4 text-primary" />
+            <Webhook className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold tracking-tight">{tWebhook("title")}</h2>
           </div>
           <WebhookConfig />
@@ -150,7 +150,7 @@ export function ProfileCard({ user }: ProfileCardProps) {
       {canPromote && <PromotePanel />}
       {canManageWebhook && <ApiKeyPanel />}
 
-      <div className="flex flex-col sm:flex-row gap-4 px-1">
+      <div className="flex flex-col sm:flex-row gap-3">
         <Button
           onClick={() => router.push(`/${locale}/moe`)}
           className="gap-2 flex-1"
@@ -159,9 +159,9 @@ export function ProfileCard({ user }: ProfileCardProps) {
           {tNav("backToMailbox")}
         </Button>
         <Button
-          variant="outline"
+          variant="ghost"
           onClick={() => signOut({ callbackUrl: `/${locale}` })}
-          className="flex-1"
+          className="flex-1 text-muted-foreground hover:text-foreground"
         >
           {tAuth("logout")}
         </Button>

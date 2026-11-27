@@ -107,7 +107,9 @@ WRITES=("POST /api/emails/generate {\"name\":\"anonbox\",\"expiryTime\":0,\"doma
         "POST /api/config {\"defaultRole\":\"duke\",\"emailDomains\":\"evil.invalid\",\"adminContact\":\"x\",\"maxEmails\":\"99\"}"
         "POST /api/api-keys {\"name\":\"anon\"}"
         "DELETE /api/users/$VICTIM {}"
-        "DELETE /api/emails/$BOX {}")
+        "DELETE /api/emails/$BOX {}"
+        "DELETE /api/emails/$BOX/messages {}"
+        "POST /api/account/password {\"currentPassword\":\"x\",\"newPassword\":\"Hacked-Passw0rd\"}")
 for w in "${WRITES[@]}"; do
   m=${w%% *}; rest=${w#* }; p=${rest%% *}; d=${rest#* }
   for v in "$p" "$p.rsc" "$p/.rsc" "${p/\/api\//\/API\/}.rsc"; do
@@ -177,6 +179,8 @@ expect SEC "owner 会话 + Sec-Fetch-Site: same-site 写 webhook" "403"
 req owner POST /api/emails/generate -H 'Content-Type: text/plain' -H 'Origin: https://evil.example' -d '{"name":"csrfbox","expiryTime":0,"domain":"moemail.app"}'
 expect SEC "owner 会话 + 外站 Origin 建邮箱" "403"
 req owner DELETE "/api/emails/$BOX" -H 'Origin: https://evil.example'; expect SEC "owner 会话 + 外站 Origin 删邮箱" "403"
+req owner DELETE "/api/emails/$BOX/messages" -H 'Origin: https://evil.example'; expect SEC "owner 会话 + 外站 Origin 清空邮箱" "403"
+req owner POST /api/account/password -H "$J" -H 'Origin: https://evil.example' -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"Hacked-Passw0rd\"}"; expect SEC "owner 会话 + 外站 Origin 改密码" "403"
 req owner GET /api/webhook; absent SEC "跨站请求没能改 webhook" "attacker.invalid/csrf"
 req owner GET /api/emails; absent SEC "跨站请求没能建邮箱" "csrfbox"; present SEC "跨站请求没能删邮箱" "ownerbox"
 req owner POST /api/webhook -H "$J" -H "Origin: $B" -d '{"url":"https://example.com/hook","enabled":false}'; expect FUNC "owner 同源 Origin 写 webhook" "200"
@@ -201,6 +205,19 @@ req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"tmpbox"
 req owner POST "/api/emails/$BOX/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":3600000}'; expect FUNC "owner 建分享链接" "200|201"; TOKEN=$(jq -r '.token // empty' "$T/body")
 if [ -n "$TOKEN" ]; then req - GET "/api/shared/$TOKEN"; expect FUNC "匿名通过分享链接读邮箱" "200"; fi
 req owner DELETE "/api/emails/$TMPBOX" -H "Origin: $B"; expect FUNC "owner 删临时邮箱" "200"
+req kn DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect SEC "骑士清空 owner 的邮箱" "403|404"
+req owner DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect FUNC "owner 清空自己的邮箱" "200"
+req owner GET /api/emails; present FUNC "清空邮件不删邮箱本身" "ownerbox"
+req - POST /api/account/password -H "$J" -H "X-API-Key: $OKEY" -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"Hacked-Passw0rd\"}"; expect SEC "API Key 不能改密码" "401|403"
+req civ POST /api/account/password -H "$J" -H "Origin: $B" -d '{"currentPassword":"wrong-password","newPassword":"Another-Passw0rd"}'; expect SEC "当前密码不对不能改" "400"
+req civ POST /api/account/password -H "$J" -H "Origin: $B" -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"short\"}"; expect FUNC "新密码太短被拒" "400"
+req civ POST /api/account/password -H "$J" -H "Origin: $B" -d "{\"currentPassword\":\"$PW\",\"newPassword\":\"Changed-Passw0rd\"}"; expect FUNC "平民改自己的密码" "200"
+req civ GET /api/auth/session; absent SEC "改密码后，之前登录的会话失效" "civ1"
+req civ GET /api/emails; expect SEC "改密码后，旧会话不能再调接口" "401"
+[ -n "$(login civnew civ1 'Changed-Passw0rd')" ] && ok "[FUNC] 新密码能登录" || bad "[FUNC] 新密码登录失败"
+[ -z "$(login civold civ1 "$PW")" ] && ok "[SEC] 旧密码不能再登录" || bad "[SEC] 改密码后旧密码还能登录"
+req civnew POST /api/account/password -H "$J" -H "Origin: $B" -d "{\"currentPassword\":\"Changed-Passw0rd\",\"newPassword\":\"$PW\"}"; expect FUNC "改回原密码" "200"
+CIV=$(login civ civ1 "$PW"); [ -n "$CIV" ] && ok "[FUNC] 改回后用原密码重新登录" || bad "[FUNC] 改回原密码后登录失败"
 req kn GET /api/emails; expect FUNC "骑士列邮箱" "200"
 req kn GET /api/api-keys; expect FUNC "骑士无 API Key 权限" "403"
 req civ GET /api/roles/init-emperor; expect FUNC "已有皇帝后 init-emperor 拒绝" "400"

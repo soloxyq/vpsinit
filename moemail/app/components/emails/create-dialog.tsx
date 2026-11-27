@@ -144,17 +144,14 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
               onValueChange={setExpiryTime}
               className="flex flex-wrap gap-x-5 gap-y-2"
             >
-              {EXPIRY_OPTIONS.map((option, index) => {
-                const labels = [t("oneHour"), t("oneDay"), t("threeDays"), t("permanent")]
-                return (
-                  <div key={option.value} className="flex items-center gap-2">
-                    <RadioGroupItem value={option.value.toString()} id={option.value.toString()} />
-                    <Label htmlFor={option.value.toString()} className="cursor-pointer text-sm whitespace-nowrap">
-                      {labels[index]}
-                    </Label>
-                  </div>
-                )
-              })}
+              {EXPIRY_OPTIONS.map(option => (
+                <div key={option.value} className="flex items-center gap-2">
+                  <RadioGroupItem value={option.value.toString()} id={option.value.toString()} />
+                  <Label htmlFor={option.value.toString()} className="cursor-pointer text-sm whitespace-nowrap">
+                    {t(option.key)}
+                  </Label>
+                </div>
+              ))}
             </RadioGroup>
           </div>
 

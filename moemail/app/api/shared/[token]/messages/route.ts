@@ -85,6 +85,8 @@ export async function GET(
     }
 
     const results = await db.query.messages.findMany({
+      // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
+      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
       where: and(...conditions),
       orderBy: (messages, { desc }) => [
         desc(messages.receivedAt),

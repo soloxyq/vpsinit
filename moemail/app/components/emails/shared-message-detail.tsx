@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Loader2, Mail } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Segmented, SegmentedItem } from "@/components/ui/segmented"
@@ -8,6 +8,8 @@ import { useMounted } from "@/hooks/use-mounted"
 import { AttachmentList } from "./attachment-list"
 import type { AttachmentInfo } from "@/lib/attachments"
 import { EmailHtmlFrame } from "./email-html-frame"
+import { VerificationCode } from "./verification-code"
+import { findVerificationCode } from "@/lib/verification-code"
 
 interface MessageDetail {
   id: string
@@ -61,6 +63,16 @@ export function SharedMessageDetail({
     }
   }, [message])
 
+  // 挂载后再识别：单封分享页在服务端渲染，那里没有 DOMParser，结果会和浏览器里不一致。
+  // 依赖字符串而不是 message 对象：父组件每次渲染都传一个新对象
+  const subject = message?.subject
+  const content = message?.content
+  const html = message?.html
+  const verificationCode = useMemo(
+    () => (mounted && subject !== undefined ? findVerificationCode(subject, content, html) : null),
+    [mounted, subject, content, html]
+  )
+
   if (loading) {
     return (
       <div className="flex h-full min-h-[10rem] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -100,6 +112,7 @@ export function SharedMessageDetail({
               : "\u00a0"}
           </span>
         </div>
+        {verificationCode && <VerificationCode code={verificationCode} />}
         <AttachmentList attachments={message.attachments} baseUrl={attachmentBaseUrl} />
       </div>
 

@@ -133,6 +133,8 @@ export async function GET(
     const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
     
     const results = await db.query.messages.findMany({
+      // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
+      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
       where: and(...conditions),
       orderBy: (messages, { desc }) => [
         desc(orderByTime),
@@ -158,8 +160,6 @@ export async function GET(
         from_address: msg?.fromAddress,
         to_address: msg?.toAddress,
         subject: msg.subject,
-        content: msg.content,
-        html: msg.html,
         sent_at: msg.sentAt?.getTime(),
         received_at: msg.receivedAt?.getTime(),
         has_attachments: hasListedAttachments(msg.attachments)

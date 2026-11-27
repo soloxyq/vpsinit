@@ -148,5 +148,17 @@
     "cancel": "취소",
     "deleteSuccess": "사용자가 삭제되었습니다",
     "deleteFailed": "사용자 삭제에 실패했습니다"
+  },
+  "password": {
+    "title": "비밀번호 변경",
+    "current": "현재 비밀번호",
+    "new": "새 비밀번호",
+    "confirm": "새 비밀번호 확인",
+    "submit": "변경",
+    "tooShort": "새 비밀번호는 8자 이상이어야 합니다",
+    "mismatch": "새 비밀번호가 일치하지 않습니다",
+    "success": "비밀번호를 변경했습니다. 새 비밀번호로 다시 로그인하세요",
+    "failed": "변경하지 못했습니다",
+    "wrongCurrent": "현재 비밀번호가 올바르지 않습니다"
   }
 }

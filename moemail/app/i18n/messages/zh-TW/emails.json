@@ -56,7 +56,12 @@
     "subject": "主旨",
     "date": "日期",
     "loading": "載入中...",
-    "loadingMore": "載入更多..."
+    "loadingMore": "載入更多...",
+    "clearAll": "清空郵件",
+    "clearConfirm": "清空這個列表裡的郵件？",
+    "clearDescription": "將刪除 {count} 封郵件和它們的附件，無法復原。",
+    "clearSuccess": "郵件已清空",
+    "deleteMessageDescription": "確定要刪除郵件「{subject}」嗎？刪除後無法復原。"
   },
   "send": {
     "title": "發送郵件",
@@ -87,7 +92,9 @@
     "textFormat": "純文字格式",
     "attachments": "附件",
     "attachmentNotSaved": "未儲存",
-    "attachmentNotSavedHint": "這個附件沒有儲存：超過了大小或數量上限，或者儲存額度已滿"
+    "attachmentNotSavedHint": "這個附件沒有儲存：超過了大小或數量上限，或者儲存額度已滿",
+    "verificationCode": "驗證碼",
+    "copyCode": "複製驗證碼"
   },
   "share": {
     "title": "分享郵箱",

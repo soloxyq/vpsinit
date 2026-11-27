@@ -148,5 +148,17 @@
     "cancel": "取消",
     "deleteSuccess": "使用者刪除成功",
     "deleteFailed": "刪除使用者失敗"
+  },
+  "password": {
+    "title": "修改密碼",
+    "current": "目前密碼",
+    "new": "新密碼",
+    "confirm": "確認新密碼",
+    "submit": "修改密碼",
+    "tooShort": "新密碼至少 8 位",
+    "mismatch": "兩次輸入的新密碼不一致",
+    "success": "密碼已修改，請用新密碼重新登入",
+    "failed": "修改失敗",
+    "wrongCurrent": "目前密碼不正確"
   }
 }

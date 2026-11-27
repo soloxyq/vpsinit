@@ -56,7 +56,12 @@
     "subject": "Subject",
     "date": "Date",
     "loading": "Loading...",
-    "loadingMore": "Loading more..."
+    "loadingMore": "Loading more...",
+    "clearAll": "Clear all",
+    "clearConfirm": "Delete all messages in this list?",
+    "clearDescription": "This deletes {count} messages and their attachments. It can’t be undone.",
+    "clearSuccess": "All messages deleted",
+    "deleteMessageDescription": "Delete the message “{subject}”? This can’t be undone."
   },
   "send": {
     "title": "Send Email",
@@ -87,7 +92,9 @@
     "textFormat": "Plain Text Format",
     "attachments": "Attachments",
     "attachmentNotSaved": "Not saved",
-    "attachmentNotSavedHint": "This attachment was not saved: it was too large, there were too many attachments, or the storage quota was full"
+    "attachmentNotSavedHint": "This attachment was not saved: it was too large, there were too many attachments, or the storage quota was full",
+    "verificationCode": "Code",
+    "copyCode": "Copy code"
   },
   "share": {
     "title": "Share Mailbox",

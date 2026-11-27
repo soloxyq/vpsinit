@@ -17,8 +17,7 @@ export const viewport: Viewport = {
   themeColor: '#4F46E5',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  // 允许双指缩放（缩到 0.6 的宽邮件可以放大看）。输入框在手机上用 16px 字号，iOS 聚焦时就不会自动放大页面
 }
 
 async function getMessages(locale: Locale) {

@@ -107,6 +107,8 @@ export async function getSharedEmailMessages(token: string, limit = 20): Promise
 
     // 获取邮箱的消息列表（多获取一条用于判断是否有更多）
     const messageList = await db.query.messages.findMany({
+      // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
+      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
       where: baseConditions,
       orderBy: [desc(messages.receivedAt), desc(messages.id)],
       limit: limit + 1

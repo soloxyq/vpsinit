@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { EmptyState, ListSkeleton } from "@/components/ui/empty-state"
 import { useThrottle } from "@/hooks/use-throttle"
+import { usePolling } from "@/hooks/use-polling"
 import { EMAIL_CONFIG } from "@/config"
 import { useToast } from "@/components/ui/use-toast"
 import { ShareMessageDialog } from "./share-message-dialog"
@@ -28,8 +29,6 @@ interface Message {
   subject: string
   received_at?: number
   sent_at?: number
-  content?: string
-  html?: string
   has_attachments?: boolean
 }
 
@@ -59,10 +58,12 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   const [refreshing, setRefreshing] = useState(false)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
-  const pollTimeoutRef = useRef<Timer>(null)
   const messagesRef = useRef<Message[]>([]) // 添加 ref 来追踪最新的消息列表
   const [total, setTotal] = useState(0)
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
+  // 清空或删除之后加一：之前发出、还没返回的列表请求作废，免得把删掉的邮件又放回列表
+  const listVersionRef = useRef(0)
   const { toast } = useToast()
 
   // 当 messages 改变时更新 ref
@@ -71,6 +72,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   }, [messages])
 
   const fetchMessages = async (cursor?: string) => {
+    const version = listVersionRef.current
     try {
       const url = new URL(`/api/emails/${email.id}`, window.location.origin)
       if (messageType === 'sent') {
@@ -81,6 +83,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
       }
       const response = await fetch(url)
       const data = await response.json() as MessageResponse
+      if (version !== listVersionRef.current) return
       
       if (!cursor) {
         const newMessages = data.messages
@@ -110,22 +113,6 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
       setLoading(false)
       setRefreshing(false)
       setLoadingMore(false)
-    }
-  }
-
-  const startPolling = () => {
-    stopPolling()
-    pollTimeoutRef.current = setInterval(() => {
-      if (!refreshing && !loadingMore) {
-        fetchMessages()
-      }
-    }, EMAIL_CONFIG.POLL_INTERVAL)
-  }
-
-  const stopPolling = () => {
-    if (pollTimeoutRef.current) {
-      clearInterval(pollTimeoutRef.current)
-      pollTimeoutRef.current = null
     }
   }
 
@@ -163,6 +150,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         return
       }
 
+      listVersionRef.current++
       setMessages(prev => prev.filter(e => e.id !== message.id))
       setTotal(prev => prev - 1)
 
@@ -192,13 +180,13 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     setLoading(true)
     setNextCursor(null)
     fetchMessages()
-    startPolling() 
-
-    return () => {
-      stopPolling() 
-    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.id])
+
+  // 定时刷新列表；标签页在后台时暂停
+  usePolling(() => {
+    if (!refreshing && !loadingMore) fetchMessages()
+  }, EMAIL_CONFIG.POLL_INTERVAL, !!email.id)
 
   useEffect(() => {
     if (refreshTrigger && refreshTrigger > 0) {
@@ -207,6 +195,31 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTrigger])
+
+  // 清空当前列表（收到的或发出的）里的全部邮件，附件由接口一起删掉
+  const handleClear = async () => {
+    try {
+      const response = await fetch(
+        `/api/emails/${email.id}/messages${messageType === 'sent' ? '?type=sent' : ''}`,
+        { method: "DELETE" }
+      )
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string }
+        toast({ title: tList("error"), description: data.error || tList("deleteFailed"), variant: "destructive" })
+        return
+      }
+      listVersionRef.current++
+      setMessages([])
+      setTotal(0)
+      setNextCursor(null)
+      onMessageSelect(null)
+      toast({ title: tList("success"), description: t("clearSuccess") })
+    } catch {
+      toast({ title: tList("error"), description: tList("deleteFailed"), variant: "destructive" })
+    } finally {
+      setConfirmClear(false)
+    }
+  }
 
   const currentYear = new Date().getFullYear()
 
@@ -230,6 +243,16 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
             {`${total} ${t("messageCount")}`}
           </span>
         ) : null}
+        {!loading && total > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmClear(true)}
+            className="ml-auto h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+          >
+            {t("clearAll")}
+          </Button>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto" onScroll={handleScroll}>
@@ -342,7 +365,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         <AlertDialogHeader>
           <AlertDialogTitle>{tList("deleteConfirm")}</AlertDialogTitle>
           <AlertDialogDescription>
-            {tList("deleteDescription", { email: messageToDelete?.subject || "" })}
+            {t("deleteMessageDescription", { subject: messageToDelete?.subject || "" })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -352,6 +375,25 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
               onClick={() => messageToDelete && handleDelete(messageToDelete)}
           >
             {tCommon("delete")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("clearConfirm")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("clearDescription", { count: total })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive hover:bg-destructive/90"
+            onClick={handleClear}
+          >
+            {t("clearAll")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

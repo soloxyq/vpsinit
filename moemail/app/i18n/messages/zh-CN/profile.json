@@ -148,5 +148,17 @@
     "cancel": "取消",
     "deleteSuccess": "用户删除成功",
     "deleteFailed": "删除用户失败"
+  },
+  "password": {
+    "title": "修改密码",
+    "current": "当前密码",
+    "new": "新密码",
+    "confirm": "确认新密码",
+    "submit": "修改密码",
+    "tooShort": "新密码至少 8 位",
+    "mismatch": "两次输入的新密码不一致",
+    "success": "密码已修改，请用新密码重新登录",
+    "failed": "修改失败",
+    "wrongCurrent": "当前密码不正确"
   }
 }

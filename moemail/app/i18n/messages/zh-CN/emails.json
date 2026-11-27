@@ -56,7 +56,12 @@
     "subject": "主题",
     "date": "日期",
     "loading": "加载中...",
-    "loadingMore": "加载更多..."
+    "loadingMore": "加载更多...",
+    "clearAll": "清空邮件",
+    "clearConfirm": "清空这个列表里的邮件？",
+    "clearDescription": "将删除 {count} 封邮件和它们的附件，无法恢复。",
+    "clearSuccess": "邮件已清空",
+    "deleteMessageDescription": "确定要删除邮件「{subject}」吗？删除后无法恢复。"
   },
   "send": {
     "title": "发送邮件",
@@ -87,7 +92,9 @@
     "textFormat": "纯文本格式",
     "attachments": "附件",
     "attachmentNotSaved": "未保存",
-    "attachmentNotSavedHint": "这个附件没有保存：超过了大小或数量上限，或者存储额度已满"
+    "attachmentNotSavedHint": "这个附件没有保存：超过了大小或数量上限，或者存储额度已满",
+    "verificationCode": "验证码",
+    "copyCode": "复制验证码"
   },
   "share": {
     "title": "分享邮箱",

@@ -236,7 +236,7 @@ export function EmailServiceConfig() {
                                       }
                                     }))
                                   }
-                                  className="w-20 h-9 text-center text-sm font-medium tabular-nums"
+                                  className="w-20 h-9 text-center font-medium tabular-nums"
                                   placeholder="0"
                                   disabled={isDisabled}
                                 />

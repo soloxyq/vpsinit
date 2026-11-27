@@ -1,11 +1,14 @@
+// 有效期选项。显示文字在各对话框的翻译里（emails.create / share / shareMessage 下的同名 key）
+export type ExpiryKey = "oneHour" | "oneDay" | "threeDays" | "permanent"
+
 export interface ExpiryOption {
-  label: string
+  key: ExpiryKey
   value: number
 }
 
 export const EXPIRY_OPTIONS: ExpiryOption[] = [
-  { label: '1小时', value: 1000 * 60 * 60 },
-  { label: '24小时', value: 1000 * 60 * 60 * 24 },
-  { label: '3天', value: 1000 * 60 * 60 * 24 * 3 },
-  { label: '永久', value: 0 }
+  { key: "oneHour", value: 1000 * 60 * 60 },
+  { key: "oneDay", value: 1000 * 60 * 60 * 24 },
+  { key: "threeDays", value: 1000 * 60 * 60 * 24 * 3 },
+  { key: "permanent", value: 0 }
 ]

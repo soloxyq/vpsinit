@@ -206,7 +206,7 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
                   <SelectContent>
                     {EXPIRY_OPTIONS.map(option => (
                       <SelectItem key={option.value} value={option.value.toString()}>
-                        {option.label}
+                        {t(option.key)}
                       </SelectItem>
                     ))}
                   </SelectContent>

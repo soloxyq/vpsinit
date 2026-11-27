@@ -9,6 +9,7 @@ import { SharedMessageList } from "@/components/emails/shared-message-list"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
 import { EMAIL_CONFIG } from "@/config"
 import { useMounted } from "@/hooks/use-mounted"
+import { usePolling } from "@/hooks/use-polling"
 import type { AttachmentInfo } from "@/lib/attachments"
 
 interface Email {
@@ -60,7 +61,6 @@ export function SharedEmailPageClient({
   const [loadingMore, setLoadingMore] = useState(false)
   const [total, setTotal] = useState(initialTotal)
   const [refreshing, setRefreshing] = useState(false)
-  const pollTimeoutRef = useRef<Timer | null>(null)
   const messagesRef = useRef<Message[]>(initialMessages)
 
   // 当 messages 改变时更新 ref
@@ -123,35 +123,15 @@ export function SharedEmailPageClient({
     }
   }
 
-  const startPolling = () => {
-    stopPolling()
-    pollTimeoutRef.current = setInterval(() => {
-      if (!refreshing && !loadingMore) {
-        fetchMessages()
-      }
-    }, EMAIL_CONFIG.POLL_INTERVAL)
-  }
-
-  const stopPolling = () => {
-    if (pollTimeoutRef.current) {
-      clearInterval(pollTimeoutRef.current)
-      pollTimeoutRef.current = null
-    }
-  }
-
   const handleRefresh = async () => {
     setRefreshing(true)
     await fetchMessages()
   }
 
-  // 启动轮询
-  useEffect(() => {
-    startPolling()
-    return () => {
-      stopPolling()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
+  // 定时刷新列表；标签页在后台时暂停
+  usePolling(() => {
+    if (!refreshing && !loadingMore) fetchMessages()
+  }, EMAIL_CONFIG.POLL_INTERVAL)
 
   const handleLoadMore = () => {
     if (nextCursor && !loadingMore) {

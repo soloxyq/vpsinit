@@ -116,6 +116,7 @@ check "已过期、还没被清理的邮箱按未注册处理（转发）" "$(jq
 MSG=$(latest_message owner "$BOX" "Attachment test"); OTHERMSG=$(latest_message other "$OTHERBOX" "Attachment test")
 [ -n "$MSG" ] && [ -n "$OTHERMSG" ] || { echo "没找到投递的邮件：$(body)"; cat "$T/harness.err" | tail -5; exit 3; }
 req owner GET "/api/emails/$BOX"
+check "列表不带正文（正文要读单封邮件）" "$(jq -r '[.messages[] | has("content") or has("html")] | any' "$T/body")" false
 check "列表标出有附件" "$(jq -r --arg id "$MSG" '.messages[] | select(.id == $id) | .has_attachments' "$T/body")" true
 check "没附件的信不标" "$(jq -r '[.messages[] | select(.subject == "Plain test")][0].has_attachments' "$T/body")" false
 req owner GET "/api/emails/$BOX/$MSG"; expect "读邮件" 200
@@ -187,6 +188,20 @@ NOW=$(date +%s)
 if [ "$EXP" != null ] && [ "$EXP" -gt $((NOW + 7000)) ] && [ "$EXP" -lt $((NOW + 7400)) ]; then ok "临时邮箱的附件在邮箱到期一小时后到期"; else bad "临时邮箱附件的到期时间 $EXP，现在 $NOW"; fi
 req owner DELETE "/api/users/$VICTIM" -H "Origin: $B"; expect "删除用户" 200
 check "删用户后其邮件的附件也没了" "$(keys_gone "$VMSG")" 0
+
+echo "-- 清空邮箱"
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"attclear","expiryTime":0,"domain":"moemail.app"}'
+CBOX=$(jq -r '.id // empty' "$T/body"); CADDR=$(jq -r '.email // empty' "$T/body")
+deliver sender@example.com "$CADDR" "$T/mixed.eml" >/dev/null; deliver sender@example.com "$CADDR" "$T/plain.eml" >/dev/null
+CMSG=$(latest_message owner "$CBOX" "Attachment test")
+check "清空前有 6 个附件" "$(keys_of "$CMSG")" 6
+req other DELETE "/api/emails/$CBOX/messages" -H "Origin: $B"; expect "别人不能清空这个邮箱" 403
+req owner DELETE "/api/emails/$CBOX/messages?type=sent" -H "Origin: $B"; expect "清空发出的邮件" 200
+check "没有发出的邮件，一封也没删" "$(jq -r .deleted "$T/body")" 0
+req owner DELETE "/api/emails/$CBOX/messages" -H "Origin: $B"; expect "清空收到的邮件" 200
+check "删掉了 2 封" "$(jq -r .deleted "$T/body")" 2
+req owner GET "/api/emails/$CBOX"; check "清空后列表是空的" "$(jq -r '.messages | length' "$T/body")" 0
+check "清空后附件也没了" "$(keys_gone "$CMSG")" 0
 
 echo "-- 清理 Worker 的孤儿扫描"
 ORPHAN="att/00000000-0000-4000-8000-0000000000aa/0"; EXPIRING="att/00000000-0000-4000-8000-0000000000bb/0"

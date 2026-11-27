@@ -88,11 +88,12 @@ const EXTENSIONS: Record<string, string> = {
 
 // 控制字符，以及能让文件名反向显示的 Unicode 双向控制符（防止把 “invoice‮fdp.exe” 显示成 invoiceexe.pdf）
 const UNSAFE_NAME_CHARS = /[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
-// 落单的代理项：encodeURIComponent 遇到会抛错，那个附件就永远下载不了
-const LONE_SURROGATES = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
-
+// 落单的代理项换成 U+FFFD：encodeURIComponent 遇到会抛错，那个附件就永远下载不了。
+// Array.from 按码点拆分，成对的代理项是一个 2 个字符的元素，落单的是 1 个字符
 export const safeFilename = (name: string) =>
-  name.replace(UNSAFE_NAME_CHARS, "").replace(LONE_SURROGATES, "\uFFFD")
+  Array.from(name.replace(UNSAFE_NAME_CHARS, ""), (ch) =>
+    ch.length === 1 && ch >= "\uD800" && ch <= "\uDFFF" ? "\uFFFD" : ch
+  ).join("")
 
 function cleanFilename(name: string | null, index: number, mimeType: string) {
   // 按码点截断，不把 emoji 这类字符截成两半

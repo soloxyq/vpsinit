@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2, Share2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -10,6 +10,8 @@ import { ShareMessageDialog } from "./share-message-dialog"
 import { AttachmentList } from "./attachment-list"
 import type { AttachmentInfo } from "@/lib/attachments"
 import { EmailHtmlFrame } from "./email-html-frame"
+import { VerificationCode } from "./verification-code"
+import { findVerificationCode } from "@/lib/verification-code"
 
 interface Message {
   id: string
@@ -86,6 +88,11 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
     fetchMessage()
   }, [emailId, messageId, messageType, toast, t, tList])
 
+  const verificationCode = useMemo(
+    () => (message ? findVerificationCode(message.subject, message.content, message.html) : null),
+    [message]
+  )
+
   if (loading) {
     return (
       <div className="flex h-full min-h-[10rem] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -150,6 +157,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
             {new Date(message.sent_at || message.received_at || 0).toLocaleString()}
           </span>
         </div>
+        {verificationCode && <VerificationCode code={verificationCode} />}
         <AttachmentList attachments={message.attachments} baseUrl={attachmentBaseUrl} />
       </div>
 

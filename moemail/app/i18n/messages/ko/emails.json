@@ -56,7 +56,12 @@
     "subject": "제목",
     "date": "날짜",
     "loading": "로딩 중...",
-    "loadingMore": "더 불러오는 중..."
+    "loadingMore": "더 불러오는 중...",
+    "clearAll": "모두 삭제",
+    "clearConfirm": "이 목록의 메일을 모두 삭제할까요?",
+    "clearDescription": "메일 {count}개와 첨부 파일을 삭제합니다. 되돌릴 수 없습니다.",
+    "clearSuccess": "모두 삭제했습니다",
+    "deleteMessageDescription": "메일 “{subject}”을(를) 삭제할까요? 되돌릴 수 없습니다."
   },
   "send": {
     "title": "이메일 보내기",
@@ -87,7 +92,9 @@
     "textFormat": "일반 텍스트 형식",
     "attachments": "첨부 파일",
     "attachmentNotSaved": "저장 안 됨",
-    "attachmentNotSavedHint": "이 첨부 파일은 저장되지 않았습니다: 크기나 개수 제한을 넘었거나 저장 용량이 가득 찼습니다"
+    "attachmentNotSavedHint": "이 첨부 파일은 저장되지 않았습니다: 크기나 개수 제한을 넘었거나 저장 용량이 가득 찼습니다",
+    "verificationCode": "인증 코드",
+    "copyCode": "코드 복사"
   },
   "share": {
     "title": "메일함 공유",

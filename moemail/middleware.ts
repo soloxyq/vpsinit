@@ -12,6 +12,7 @@ const API_PERMISSIONS: [string, Permission | null][] = [
   ['/api/emails', PERMISSIONS.MANAGE_EMAIL],
   ['/api/webhook', PERMISSIONS.MANAGE_WEBHOOK],
   ['/api/roles/init-emperor', null],
+  ['/api/account', null],
   ['/api/roles', PERMISSIONS.PROMOTE_USER],
   ['/api/users', PERMISSIONS.PROMOTE_USER],
   ['/api/config', PERMISSIONS.MANAGE_CONFIG],

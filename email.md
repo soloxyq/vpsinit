@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | Pages 项目 | `moemail` | 网页端和接口。Next.js 应用，用 next-on-pages 构建后跑在 Pages Functions 上；绑定 D1（`DB`）和两个 KV（`SITE_CONFIG`、`ATTACHMENTS`），运行时密钥只有 `AUTH_SECRET` 一个 |
 | D1 数据库 | `moemail-db` | 账号和角色、邮箱、邮件、分享链接、API Key、Webhook |
-| KV 命名空间 | `moemail-kv` | 站点配置，也就是“网站配置”和“Resend 发件服务配置”两个面板里的设置。目前只写了可用域名 `EMAIL_DOMAINS` 和注册开关 `ALLOW_REGISTRATION` |
+| KV 命名空间 | `moemail-kv` | 站点配置，也就是“网站配置”和“Resend 发件服务配置”两个面板里的设置。目前写了“网站配置”的各项：默认角色、可用域名、管理员联系方式、最大邮箱数、注册开关，以及 Turnstile 的开关和两个 Key |
 | KV 命名空间 | `moemail-attachments` | 收到的附件，每个附件一个键 `att/<邮件 ID>/<序号>`；文件名、大小等记在 D1 的 `message.attachments` 列里。绑定名 `ATTACHMENTS`，网页端和两个 Worker 都绑了 |
 | Worker | `email-receiver-worker` | 收信。绑定 D1 和 `ATTACHMENTS`；变量 `FORWARD_TO` 是未注册地址的转发目标，写在工作目录的 `wrangler.email.json` 里，这个文件不进仓库 |
 | Worker | `cleanup-worker` | 定时清理，cron 是 `0 * * * *`。绑定 D1 和 `ATTACHMENTS` |
@@ -46,7 +46,7 @@
 1. 打开 <https://mail.7879710.xyz/zh-CN/login> ，用用户名和密码登录。
 2. 在首页点“进入邮箱”，再点左边“我的邮箱”这一栏里、邮箱数量右边的“创建邮箱”。
 3. 填邮箱名，也就是地址里 `@` 前面那段；点旁边的刷新图标可以随机生成一个。“有效期”选 1 小时、1 天、3 天或永久。对话框下方会显示完整的地址。
-4. 点“创建”。新邮箱出现在“我的邮箱”的列表里，点它就能看到收到的邮件。邮箱打开着的时候，新邮件大约每 10 秒自动刷出来。
+4. 点“创建”。新邮箱出现在“我的邮箱”的列表里，点它就能看到收到的邮件。邮箱打开着的时候，新邮件大约每 10 秒自动刷出来；浏览器标签页切到后台时暂停刷新，切回来马上刷新一次。
 
 几条要知道的规则：
 
@@ -55,6 +55,8 @@
 - 附件存在 KV 里，列在邮件头下方，点一下就下载；正文里内嵌的图片直接显示在正文中。用的是 Workers 免费套餐自带的额度：KV 总共 1 GB，每天 1000 次写入、1000 次删除，整个 Cloudflare 账号共用。所以每天最多存 600 个附件，全部附件合计最多 800 MB，单个附件最大约 25 MB，每封信最多存 20 个（名额不够时先存附件栏里的文件，再存正文里的内嵌图片）。没存下的附件显示“未保存”，邮件本身照收。
 - 删除邮件、邮箱或账号时，附件一起删除。临时邮箱的附件比邮箱晚一小时到期，由 KV 自动删除；清理 Worker 每小时检查一部分，16 小时轮完一遍，删掉漏删的。
 - 通过分享链接能看到的邮件，附件也能下载。
+- 打开邮件时，如果认出了验证码，邮件头下面会显示“验证码 123456”，点一下就复制。只认“验证码”“code”这类字样附近的 4 到 8 位数字或字母数字组合，跳过年份、日期和金额；认不出就不显示。
+- 邮件列表右上角的“清空邮件”删除这个列表里的全部邮件和附件，不能恢复。
 - 没有 IMAP、POP3、SMTP，只能在网页里看，或者用 API Key 通过接口读。
 - 地址不区分大小写。
 - 有效期到了的邮箱，会在之后整点的清理中连同里面的邮件一起被删除。
@@ -104,7 +106,9 @@
 
 ### 忘了密码
 
-程序没有重置密码的功能。站长可以直接改数据库里的密码。在工作目录里执行，先导出部署凭据（见[更新和部署](#更新和部署)的第 4 步，下面用到的 `getenv` 也在那里定义）：
+记得旧密码的话，在个人中心的“修改密码”里改。改完以后，所有设备上已经登录的会话都会失效，要用新密码重新登录。
+
+程序没有重置密码的功能，忘了密码时站长可以直接改数据库里的密码，改完同样会让已登录的会话失效。在工作目录里执行，先导出部署凭据（见[更新和部署](#更新和部署)的第 4 步，下面用到的 `getenv` 也在那里定义）：
 
 ```bash
 IFS= read -rs -p '新密码（至少 8 位）: ' NEWPW; echo
@@ -121,13 +125,17 @@ unset NEWPW
 
 | 面板 | 用途 |
 | --- | --- |
-| 网站配置 | 新用户默认角色、邮箱域名、管理员联系方式、每个用户最大邮箱数、允许注册新账号、Cloudflare Turnstile（登录和注册时的人机验证，没有启用）。改完要点“保存配置” |
+| 网站配置 | 新用户默认角色、邮箱域名、管理员联系方式、每个用户最大邮箱数、允许注册新账号、Cloudflare Turnstile（登录和注册时的人机验证，已启用）。改完要点“保存配置” |
 | Resend 发件服务配置 | 发信功能，没有启用 |
 | 角色管理 | 调整其他账号的角色，删除用户 |
 | Webhook 配置 | 收到新邮件时把内容发到一个 URL |
 | API Key 管理 | 创建、停用和删除 API Key |
 
+所有用用户名和密码登录的账号，在账号信息下面都有“修改密码”。
+
 “网站配置”和“Resend 发件服务配置”存在 KV 里，保存后可能要过几十秒才生效；角色、Webhook 和 API Key 存在 D1 里，改了马上生效。
+
+开了 Turnstile 以后，如果登录框一直过不了验证、登录不进去（比如 Turnstile 本身出了故障），在 Cloudflare 控制台的 KV 命名空间 `moemail-kv` 里把 `TURNSTILE_ENABLED` 改成 `false`，过几十秒就能不经验证登录，进去以后再在“网站配置”里处理。
 
 ### API Key
 
@@ -387,6 +395,11 @@ fi
 | 未注册地址转发 | 收信 Worker 找不到邮箱（包括过期还没清理的）时，把整封信原样转发到 `FORWARD_TO`，不解析；信存不进数据库时也转发；转发失败时报错，不吞掉 | `moemail/workers/email-receiver.ts` |
 | 邮件正文的显示方式 | 正文 HTML 放进 `blob:` 地址的独立页面里，再装进 iframe（`sandbox="allow-same-origin allow-popups"`，脚本不运行）。不能改回用 `document.write` 写进空白 iframe：那样 iframe 的地址就是外层页面的地址，在邮箱分享页上是 `/shared/<token>`，邮件里的外链图片或链接加上 `referrerpolicy="unsafe-url"`，就能通过 Referer 头拿到分享 token。深浅色切换直接改已经显示的页面，不重新加载 | `moemail/app/components/emails/email-html-frame.tsx` |
 | 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，不把下载地址写进邮件 HTML（分享页的地址里带 token）。删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的 | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
+| 轮询和列表接口 | 浏览器标签页在后台时暂停轮询，切回前台马上刷新；邮件列表接口只从 D1 取列表要显示的列，不再返回正文（README 里的接口说明本来就不含正文，命令行工具和 MCP 读正文走单封邮件接口） | `moemail/app/hooks/use-polling.ts`、`moemail/app/api/emails/[id]/route.ts` |
+| 验证码一键复制 | 阅读页头部识别验证码，点一下复制。只认关键词附近的，跳过年份、日期、金额；只有 HTML 正文时用 DOMParser 取文字，不用正则剥标签（邮件 HTML 由发件人决定，正则遇到特制的内容会很慢） | `moemail/app/lib/verification-code.ts` |
+| 修改密码 | 个人中心改密码，要输当前密码，API Key 不能调。会话里记着密码哈希的前 8 个字符，和数据库对不上（改过密码，或账号被删）就让会话失效。接口前缀 `/api/account` 登记在中间件的权限表里 | `moemail/app/api/account/password/route.ts`、`moemail/app/lib/auth.ts`、`moemail/middleware.ts` |
+| 清空邮件 | 邮件列表头部的“清空邮件”，附件一起删 | `moemail/app/api/emails/[id]/messages/route.ts` |
+| 允许双指缩放 | viewport 不再禁止缩放；输入框在手机上用 16px 字号，iOS 聚焦时不会自动放大页面 | `moemail/app/[locale]/layout.tsx`、`moemail/app/components/ui/input.tsx` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
 | 登录失败的提示和 404 页面 | 密码错误时显示“用户名或密码错误”；不存在的页面有正常的 404 页 | `moemail/app/lib/auth.ts`、`moemail/app/not-found.tsx` |
 | 依赖版本 | 见[依赖版本](#依赖版本) | `moemail/package.json` |

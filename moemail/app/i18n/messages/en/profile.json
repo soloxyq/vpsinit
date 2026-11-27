@@ -148,5 +148,17 @@
     "cancel": "Cancel",
     "deleteSuccess": "User deleted successfully",
     "deleteFailed": "Failed to delete user"
+  },
+  "password": {
+    "title": "Change Password",
+    "current": "Current password",
+    "new": "New password",
+    "confirm": "Confirm new password",
+    "submit": "Change password",
+    "tooShort": "The new password must be at least 8 characters",
+    "mismatch": "The new passwords don’t match",
+    "success": "Password changed. Please sign in again with the new password",
+    "failed": "Couldn’t change the password",
+    "wrongCurrent": "The current password is incorrect"
   }
 }

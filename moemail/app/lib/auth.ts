@@ -219,6 +219,18 @@ export const {
         token.username = user.username
         token.image = user.image || generateAvatarUrl(token.name as string)
       }
+      // 会话里记着密码哈希的前 8 个字符，和数据库对不上就让会话失效（返回 null 会清掉会话）：
+      // 改密码之后，其它设备上已经登录的会话也跟着退出；账号被删后，它的会话也马上失效
+      if (typeof token.id === "string") {
+        const row = await createDb().query.users.findFirst({
+          where: eq(users.id, token.id),
+          columns: { password: true },
+        })
+        const fingerprint = row ? (row.password ?? "").slice(0, 8) : null
+        if (fingerprint === null) return null
+        if (token.pv === undefined) token.pv = fingerprint
+        else if (token.pv !== fingerprint) return null
+      }
       return token
     },
     async session({ session, token }) {

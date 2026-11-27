@@ -14,6 +14,7 @@ import { useRolePermission } from "@/hooks/use-role-permission"
 import { PERMISSIONS } from "@/lib/permissions"
 import { WebsiteConfigPanel } from "./website-config-panel"
 import { ApiKeyPanel } from "./api-key-panel"
+import { PasswordPanel } from "./password-panel"
 
 interface ProfileCardProps {
   user: User
@@ -134,6 +135,9 @@ export function ProfileCard({ user }: ProfileCardProps) {
           </div>
         </div>
       </div>
+
+      {/* 第三方登录建的账号没有用户名和密码 */}
+      {user.username && <PasswordPanel />}
 
       {canManageWebhook && (
         <div className="bg-card rounded-xl border border-border/80 shadow-sm p-4 sm:p-6">

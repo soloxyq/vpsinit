@@ -84,7 +84,10 @@
     "to": "받는 사람",
     "time": "시간",
     "htmlFormat": "HTML 형식",
-    "textFormat": "일반 텍스트 형식"
+    "textFormat": "일반 텍스트 형식",
+    "attachments": "첨부 파일",
+    "attachmentNotSaved": "저장 안 됨",
+    "attachmentNotSavedHint": "이 첨부 파일은 저장되지 않았습니다: 크기나 개수 제한을 넘었거나 저장 용량이 가득 찼습니다"
   },
   "share": {
     "title": "메일함 공유",

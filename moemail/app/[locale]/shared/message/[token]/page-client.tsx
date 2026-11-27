@@ -5,6 +5,7 @@ import { BrandHeader } from "@/components/ui/brand-header"
 import { FloatingLanguageSwitcher } from "@/components/layout/floating-language-switcher"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
 import { useMounted } from "@/hooks/use-mounted"
+import type { AttachmentInfo } from "@/lib/attachments"
 
 interface MessageDetail {
   id: string
@@ -18,13 +19,15 @@ interface MessageDetail {
   expiresAt?: Date
   emailAddress?: string
   emailExpiresAt?: Date
+  attachments?: AttachmentInfo[]
 }
 
 interface SharedMessagePageClientProps {
   message: MessageDetail
+  token: string
 }
 
-export function SharedMessagePageClient({ message }: SharedMessagePageClientProps) {
+export function SharedMessagePageClient({ message, token }: SharedMessagePageClientProps) {
   const t = useTranslations("emails")
   const tShared = useTranslations("emails.shared")
   const mounted = useMounted()
@@ -47,6 +50,7 @@ export function SharedMessagePageClient({ message }: SharedMessagePageClientProp
         <div className="mt-6 mx-auto max-w-4xl">
           <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden h-[calc(100dvh-260px)] min-h-[420px] lg:h-[calc(100dvh-280px)] lg:min-h-[480px]">
             <SharedMessageDetail
+              attachmentBaseUrl={`/api/shared/message/${token}/attachments`}
               message={{
                 ...message,
                 received_at: message.received_at ? new Date(message.received_at).getTime() : undefined,

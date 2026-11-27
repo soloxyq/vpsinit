@@ -8,6 +8,9 @@ import { Segmented, SegmentedItem } from "@/components/ui/segmented"
 import { useTheme } from "next-themes"
 import { useToast } from "@/components/ui/use-toast"
 import { ShareMessageDialog } from "./share-message-dialog"
+import { AttachmentList } from "./attachment-list"
+import type { AttachmentInfo } from "@/lib/attachments"
+import { loadInlineImages } from "./inline-images"
 
 interface Message {
   id: string
@@ -18,6 +21,7 @@ interface Message {
   html?: string
   received_at?: number
   sent_at?: number
+  attachments?: AttachmentInfo[]
 }
 
 interface MessageViewProps {
@@ -40,6 +44,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === "dark"
   const { toast } = useToast()
+  const attachmentBaseUrl = `/api/emails/${emailId}/${messageId}/attachments`
 
   useEffect(() => {
     const fetchMessage = async () => {
@@ -255,10 +260,14 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
           img.onload = handleLayout
         })
 
+        // 内嵌图片换成 blob: 地址后会触发上面的 onload，重新适配布局
+        const releaseInlineImages = loadInlineImages(doc, message.attachments, attachmentBaseUrl)
+
         return () => {
           window.removeEventListener('resize', handleLayout)
           resizeObserver.disconnect()
           containerObserver?.disconnect()
+          releaseInlineImages()
         }
       }
     }
@@ -333,6 +342,7 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
             {new Date(message.sent_at || message.received_at || 0).toLocaleString()}
           </span>
         </div>
+        <AttachmentList attachments={message.attachments} baseUrl={attachmentBaseUrl} />
       </div>
 
       {message.html && message.content && (

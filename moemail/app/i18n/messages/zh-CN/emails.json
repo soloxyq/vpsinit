@@ -84,7 +84,10 @@
     "to": "收件人",
     "time": "时间",
     "htmlFormat": "HTML 格式",
-    "textFormat": "纯文本格式"
+    "textFormat": "纯文本格式",
+    "attachments": "附件",
+    "attachmentNotSaved": "未保存",
+    "attachmentNotSavedHint": "这个附件没有保存：超过了大小或数量上限，或者存储额度已满"
   },
   "share": {
     "title": "分享邮箱",

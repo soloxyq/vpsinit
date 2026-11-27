@@ -4,6 +4,8 @@ import { messages, emails } from "@/lib/schema"
 import { and, eq } from "drizzle-orm"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
+import { getRequestContext } from "@cloudflare/next-on-pages"
+import { attachmentKeysOf, deleteAttachmentKeys, publicAttachments } from "@/lib/attachments"
 export const runtime = "edge"
 
 export async function DELETE(
@@ -47,6 +49,10 @@ export async function DELETE(
 
     await db.delete(messages)
         .where(eq(messages.id, messageId))
+
+    // 附件在 KV 里，邮件删了要一起删，否则会一直占着免费额度。返回响应之后接着删
+    const { env, ctx } = getRequestContext()
+    ctx.waitUntil(deleteAttachmentKeys(env.ATTACHMENTS, attachmentKeysOf([message])))
 
     return NextResponse.json({ success: true })
   } catch (error) {
@@ -104,7 +110,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         html: message.html,
         received_at: message.receivedAt.getTime(),
         sent_at: message.receivedAt.getTime(),
-        type: message.type as 'received' | 'sent'
+        type: message.type as 'received' | 'sent',
+        attachments: publicAttachments(message.attachments)
       }
     })
   } catch (error) {

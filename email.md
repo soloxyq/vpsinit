@@ -20,22 +20,24 @@
 
 1. 发信方把邮件投给 `7879710.xyz` 的 MX，也就是 Cloudflare Email Routing。
 2. Email Routing 的 catch-all 规则把这个域名下所有地址的来信都交给 `email-receiver-worker`。
-3. 这个 Worker 解析邮件，按收件地址找到对应的邮箱，把发件人、主题、纯文本正文和 HTML 正文写进 D1 数据库。找不到对应邮箱的信直接丢弃。
+3. 这个 Worker 按收件地址找对应的邮箱。找到了就解析邮件，把发件人、主题、纯文本正文和 HTML 正文写进 D1 数据库，附件存进 KV 命名空间 `moemail-attachments`。找不到的，也就是没在 MoeMail 里建过的地址，整封信原样转发到一个私人邮箱，附件跟着信走，MoeMail 里不留。
 4. 网页端从 D1 读邮件。
-5. `cleanup-worker` 每小时整点删除过期的邮箱和里面的邮件，每次最多 100 个。
+5. `cleanup-worker` 每小时整点删除过期的邮箱和里面的邮件，每次最多 100 个；顺带检查一部分附件（16 小时轮完一遍），删掉对应邮件已经不存在的。
 
 | Cloudflare 资源 | 名称 | 作用 |
 | --- | --- | --- |
-| Pages 项目 | `moemail` | 网页端和接口。Next.js 应用，用 next-on-pages 构建后跑在 Pages Functions 上；绑定 D1（`DB`）和 KV（`SITE_CONFIG`），运行时密钥只有 `AUTH_SECRET` 一个 |
+| Pages 项目 | `moemail` | 网页端和接口。Next.js 应用，用 next-on-pages 构建后跑在 Pages Functions 上；绑定 D1（`DB`）和两个 KV（`SITE_CONFIG`、`ATTACHMENTS`），运行时密钥只有 `AUTH_SECRET` 一个 |
 | D1 数据库 | `moemail-db` | 账号和角色、邮箱、邮件、分享链接、API Key、Webhook |
 | KV 命名空间 | `moemail-kv` | 站点配置，也就是“网站配置”和“Resend 发件服务配置”两个面板里的设置。目前只写了可用域名 `EMAIL_DOMAINS` 和注册开关 `ALLOW_REGISTRATION` |
-| Worker | `email-receiver-worker` | 收信 |
-| Worker | `cleanup-worker` | 定时清理，cron 是 `0 * * * *` |
+| KV 命名空间 | `moemail-attachments` | 收到的附件，每个附件一个键 `att/<邮件 ID>/<序号>`；文件名、大小等记在 D1 的 `message.attachments` 列里。绑定名 `ATTACHMENTS`，网页端和两个 Worker 都绑了 |
+| Worker | `email-receiver-worker` | 收信。绑定 D1 和 `ATTACHMENTS`；变量 `FORWARD_TO` 是未注册地址的转发目标，写在工作目录的 `wrangler.email.json` 里，这个文件不进仓库 |
+| Worker | `cleanup-worker` | 定时清理，cron 是 `0 * * * *`。绑定 D1 和 `ATTACHMENTS` |
 | Email Routing | catch-all 规则 `MoeMail catch-all` | 把所有来信交给 `email-receiver-worker`，是这个域名上唯一的路由规则 |
+| Email Routing | 目标地址（Destination addresses） | 账号级的已验证邮箱。Worker 只能转发到这里验证过的地址，`FORWARD_TO` 必须是其中之一 |
 | DNS | `mail` 的 CNAME，指向 Pages 项目的 `pages.dev` 子域名，开代理 | 网页端的域名 |
 | DNS | 根域名的 3 条 MX 和 SPF，以及 `cf2024-1._domainkey` 的 DKIM | 收信用，由 Email Routing 生成 |
 
-这个域名上原有的转发规则已经全部删除。原来靠它们转发到外部邮箱的地址，现在也只进 MoeMail；要继续收这些地址的信，得在 MoeMail 里建同名的“永久”邮箱。
+这个域名上原有的转发规则已经全部删除。从 2026-11-27 起，没在 MoeMail 里建过的地址由收信 Worker 转发到私人邮箱；要让某个地址的信进 MoeMail，在 MoeMail 里建同名的“永久”邮箱。
 
 ## 日常使用
 
@@ -48,18 +50,20 @@
 
 几条要知道的规则：
 
-- 只有建好的邮箱地址能收到信。发到其它地址的信会被直接丢弃：Worker 找不到邮箱时既不保存也不退信，发信方那边看不出信没送到（这一点是按代码判断的，没有实测）。
+- 发到建好的邮箱地址的信存进 MoeMail；发到其它地址的信原样转发到私人邮箱，附件跟着信走，MoeMail 里不保存。过期了、但还没被清理掉的邮箱，来信也按这样处理。信存不进 MoeMail 时（比如数据库出错）同样转发过去。转发失败（比如私人邮箱在 Email Routing 里的验证被取消了）时 Worker 会报错，Email Routing 的活动日志里能看到；这种情况下发信方是收到退信还是过后重试，没有实测。
 - 要拿一个地址去注册网站，先把它建成“永久”邮箱。对话框默认选中的是“1 天”，建好以后不能改有效期；地址过期被清理之后，那个网站发来的找回密码邮件就收不到了，这个地址还可能被别的有建邮箱权限的账号建走。
-- 只保存邮件正文（纯文本和 HTML），不保存附件。
+- 附件存在 KV 里，列在邮件头下方，点一下就下载；正文里内嵌的图片直接显示在正文中。用的是 Workers 免费套餐自带的额度：KV 总共 1 GB，每天 1000 次写入、1000 次删除，整个 Cloudflare 账号共用。所以每天最多存 600 个附件，全部附件合计最多 800 MB，单个附件最大约 25 MB，每封信最多存 20 个（名额不够时先存附件栏里的文件，再存正文里的内嵌图片）。没存下的附件显示“未保存”，邮件本身照收。
+- 删除邮件、邮箱或账号时，附件一起删除。临时邮箱的附件比邮箱晚一小时到期，由 KV 自动删除；清理 Worker 每小时检查一部分，16 小时轮完一遍，删掉漏删的。
+- 通过分享链接能看到的邮件，附件也能下载。
 - 没有 IMAP、POP3、SMTP，只能在网页里看，或者用 API Key 通过接口读。
 - 地址不区分大小写。
 - 有效期到了的邮箱，会在之后整点的清理中连同里面的邮件一起被删除。
-- 删除邮箱会同时删除里面的全部邮件，不能恢复。
+- 删除邮箱会同时删除里面的全部邮件和附件，不能恢复。
 - 每个账号最多 30 个邮箱，站长不受限制。上限可以在“网站配置”里改。
 
 ### 收不到信时
 
-1. 先确认收件地址的邮箱已经建好，而且没有过期。发到没建的地址的信已经被丢弃，建好邮箱后要让对方重发。
+1. 先确认收件地址的邮箱已经建好，而且没有过期。发到没建的地址的信转发到了私人邮箱，去那边找；建好邮箱以后，之后的信才进 MoeMail。
 2. 在 Cloudflare 控制台看这个域名的 Email Routing：状态正常，catch-all 规则是启用的，并且指向 `email-receiver-worker`。
 3. 看收信 Worker 的实时日志，然后让对方重发一封。这一步要在工作目录里做（见[代码放在哪](#代码放在哪)），先导出部署凭据（见[更新和部署](#更新和部署)的第 4 步），令牌要有 Workers Tail 的读权限：
 
@@ -67,9 +71,10 @@
    pnpm exec wrangler tail --config wrangler.email.json --format pretty
    ```
 
-   - 出现 `Email processed: 发件人 -> 收件地址`：信已经存进数据库。这里的发件人是信封上的发件人，可能和邮件里显示的不一样，按收件地址找更可靠。
-   - 出现 `Email not found: 收件地址`：没有这个邮箱，信已丢弃。
-   - 出现 `Failed to process email`：入库时出错，后面跟着错误信息。
+   - 出现 `Email processed: 发件人 -> 收件地址`：信已经存进数据库。这里的发件人是信封上的发件人，可能和邮件里显示的不一样，按收件地址找更可靠。带附件的信后面还有 `attachments stored 存下的个数/附件总数`。
+   - 出现 `Email forwarded: 发件人 -> 收件地址`：没有这个邮箱，信已转发到私人邮箱。那边没收到的话，先看垃圾箱，再到 Email Routing 的“目标地址”里确认它还是已验证状态。
+   - 出现 `Email not found: 收件地址`：没有这个邮箱，`wrangler.email.json` 里也没配 `FORWARD_TO`，信已丢弃。
+   - 出现 `Failed to store email`：入库时出错，后面跟着错误信息。紧接着出现 `Email forwarded after store failure` 的话，这封信已经转发到私人邮箱。
    - 什么都没出现：信没有到 Worker，回到第 2 步查 Email Routing。
 
 ### 账号和角色
@@ -190,8 +195,8 @@ scripts/test/live-verify.sh https://mail.7879710.xyz
 
 - `--branch main` 不能省。工作目录是上游仓库的克隆，当前分支叫 `master`，而 Pages 项目的生产分支是 `main`；省掉的话 wrangler 会按 `master` 部署成预览版，线上不会更新。
 - Cloudflare 的部署列表里显示的提交号是上游的 `5722ceb`，也就是工作目录的 git HEAD，不是本仓库的提交。线上对应本仓库的哪个提交，以部署记录为准。
-- 部署网页端不会更新两个 Worker。改了 `workers/` 下的文件、收信 Worker 引用的 `app/lib/schema.ts`、`app/lib/webhook.ts`、`app/config/webhook.ts`，或者升级了它打包进去的 `drizzle-orm`、`postal-mime`，要另外部署：收信 Worker 用 `pnpm exec wrangler deploy --config wrangler.email.json`，清理 Worker 用 `pnpm exec wrangler deploy --config wrangler.cleanup.json`。本地测试不覆盖这两个 Worker，部署收信 Worker 之后按[收不到信时](#收不到信时)的第 3 步开着日志收一封信确认。
-- 数据库结构有变化时（目前只可能来自合并上游），在部署网页端之前执行 `pnpm run db:migrate-remote`。它直接改线上的数据库，执行前先读一遍新增的迁移 SQL，并做一份备份：`pnpm exec wrangler d1 export moemail-db --remote --output <路径>`。备份文件放在工作目录和本仓库以外的地方，里面有全部邮件。这条备份命令还没有实际用过。
+- 部署网页端不会更新两个 Worker。改了 `workers/` 下的文件、两个 Worker 都引用的 `app/lib/attachments.ts`、收信 Worker 引用的 `app/lib/schema.ts`、`app/lib/webhook.ts`、`app/config/webhook.ts`，或者升级了它打包进去的 `drizzle-orm`、`postal-mime`，要另外部署：收信 Worker 用 `pnpm exec wrangler deploy --config wrangler.email.json`，清理 Worker 用 `pnpm exec wrangler deploy --config wrangler.cleanup.json`。本地测试里，附件与转发测试会直接调用收信 Worker 的代码，但不经过真的 Email Routing；部署收信 Worker 之后按[收不到信时](#收不到信时)的第 3 步开着日志收一封信确认。
+- 数据库结构有变化时（合并上游，或者像 2026-11-27 加附件那样本地改了 `app/lib/schema.ts`），在部署网页端和两个 Worker 之前执行 `pnpm run db:migrate-remote`。新代码要读写新加的列，先部署代码会出错；旧代码不碰新列，先迁移没有影响。它直接改线上的数据库，执行前先读一遍新增的迁移 SQL，并做一份备份：`pnpm exec wrangler d1 export moemail-db --remote --output <路径>`。备份文件放在工作目录和本仓库以外的地方，里面有全部邮件。这条备份命令还没有实际用过。
 
 ### 删除旧部署和回滚
 
@@ -239,8 +244,9 @@ curl -s -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 
 | 脚本 | 用途 | 说明 |
 | --- | --- | --- |
-| `scripts/test/run-local.sh` | 部署前的本地回归 | 要先 `pnpm run build:pages`。它用 `wrangler pages dev` 在 127.0.0.1 起一个实例（D1 和 KV 都是本地模拟的），依次跑下面两个脚本，结束后自动清理。默认端口 8792，换端口用 `PORT=8795 scripts/test/run-local.sh`。输出里的“已应用迁移数”和“本地模拟器故障重试 N 次”只是统计，不算失败 |
+| `scripts/test/run-local.sh` | 部署前的本地回归 | 要先 `pnpm run build:pages`。它用 `wrangler pages dev` 在 127.0.0.1 起一个实例（D1 和 KV 都是本地模拟的），依次跑下面三个脚本，结束后自动清理。默认端口 8792，换端口用 `PORT=8795 scripts/test/run-local.sh`；只跑其中几个用 `SUITES="sec live attachments"` 里的名字，比如 `SUITES=attachments`。输出里的“已应用迁移数”和“本地模拟器故障重试 N 次”只是统计，不算失败 |
 | `scripts/test/sec-suite.sh` | 安全和功能回归 | 只允许对本机实例运行，会注册测试账号、改站点配置。最后一行报告通过和失败的数量，失败数是 0 才算通过 |
+| `scripts/test/attachments-suite.sh` | 附件与转发 | 由 `run-local.sh` 调用。它用 `email-harness.ts` 直接调用收信 Worker 的代码投递测试信（D1 和 KV 是同一个本地实例的），检查附件的保存、下载权限和响应头、未注册地址的转发，以及删除邮件、邮箱、账号时附件一起删掉 |
 | `scripts/test/live-verify.sh <地址>` | 部署后的线上验证 | 只发匿名请求。它按仓库里最新的代码检查，并且假定注册已关闭、只有密码登录；线上不是最新版，或者这两项改了，对应的检查会报失败 |
 
 ### 合并上游的新版本
@@ -271,16 +277,21 @@ git clone https://github.com/beilunyang/moemail.git ~/moemail &&
 # 3. 装依赖
 pnpm install --frozen-lockfile
 
-# 4. 导出部署凭据（同“更新和部署”的第 4 步），然后从模板生成三个 wrangler 配置
+# 4. 导出部署凭据（同“更新和部署”的第 4 步），然后从模板生成三个 wrangler 配置。
+#    FORWARD_TO 填 Email Routing 目标地址里那个私人邮箱（未注册地址的来信转发到这里），它不写进仓库
+FORWARD_TO=""
 D1_ID=$(pnpm exec wrangler d1 list --json | jq -r '.[] | select(.name=="moemail-db") | .uuid')
 KV_ID=$(pnpm exec wrangler kv namespace list | jq -r '.[] | select(.title=="moemail-kv") | .id')
-if [ -n "$D1_ID" ] && [ -n "$KV_ID" ]; then
+ATT_ID=$(pnpm exec wrangler kv namespace list | jq -r '.[] | select(.title=="moemail-attachments") | .id')
+if [ -n "$D1_ID" ] && [ -n "$KV_ID" ] && [ -n "$ATT_ID" ] && [ -n "$FORWARD_TO" ]; then
   for f in wrangler wrangler.email wrangler.cleanup; do
     jq --arg id "$D1_ID" '.d1_databases[0].database_name = "moemail-db" | .d1_databases[0].database_id = $id' "$f.example.json" > "$f.json"
   done
-  jq --arg id "$KV_ID" '.kv_namespaces[0].id = $id' wrangler.json > wrangler.json.tmp && mv wrangler.json.tmp wrangler.json
+  jq --arg id "$KV_ID" --arg att "$ATT_ID" '.kv_namespaces[0].id = $id | .kv_namespaces += [{"binding": "ATTACHMENTS", "id": $att}]' wrangler.json > wrangler.json.tmp && mv wrangler.json.tmp wrangler.json
+  jq --arg att "$ATT_ID" --arg to "$FORWARD_TO" '.kv_namespaces = [{"binding": "ATTACHMENTS", "id": $att}] | .vars = {"FORWARD_TO": $to}' wrangler.email.json > wrangler.email.json.tmp && mv wrangler.email.json.tmp wrangler.email.json
+  jq --arg att "$ATT_ID" '.kv_namespaces = [{"binding": "ATTACHMENTS", "id": $att}]' wrangler.cleanup.json > wrangler.cleanup.json.tmp && mv wrangler.cleanup.json.tmp wrangler.cleanup.json
 else
-  echo "取不到 D1 或 KV 的 ID：先检查凭据。三个 wrangler 配置没有改"
+  echo "取不到 D1 或 KV 的 ID，或者没填 FORWARD_TO：先检查凭据和第一行。三个 wrangler 配置没有改"
 fi
 ```
 
@@ -326,8 +337,12 @@ fi
    - 在域名的“电子邮件”→“电子邮件路由”里启用，并让它添加 MX、SPF、DKIM 记录。域名上已经有别家邮件服务的 MX 的话，这一步之后根域名的信会改由 Cloudflare 接收，先想好再做。
    - 把 Catch-all 规则启用，动作选“发送到 Worker”，目标选 `email-receiver-worker`。
    - 域名上原有的、针对具体地址的规则优先于 catch-all。这些地址以后要进 MoeMail 的话，先在 MoeMail 里给它们各建一个“永久”邮箱，再删规则；也可以保留规则，让它们照旧转发。
-8. **建第一个邮箱，发测试信。** 照[建站长账号和第一个邮箱](#建站长账号和第一个邮箱)的后两步。
-9. **收尾。** 删掉这次用的令牌，以后部署另建一个只有日常更新权限的。
+8. **附件和转发。** 上游的部署脚本不管这两样，要自己补：
+   - 建存附件的 KV：`pnpm exec wrangler kv namespace create moemail-attachments`，按[换一台机器维护](#换一台机器维护)第 4 步那样把 `ATTACHMENTS` 绑定加进三个 wrangler 配置，把 `FORWARD_TO` 加进 `wrangler.email.json`。
+   - 在 Email Routing 的“目标地址”里添加那个私人邮箱，到它的收件箱里点验证链接。
+   - 执行 `pnpm run db:migrate-remote`，再重新部署网页端和两个 Worker（命令见[更新和部署](#更新和部署)）。
+9. **建第一个邮箱，发测试信。** 照[建站长账号和第一个邮箱](#建站长账号和第一个邮箱)的后两步。
+10. **收尾。** 删掉这次用的令牌，以后部署另建一个只有日常更新权限的。
 
 ### 建站长账号和第一个邮箱
 
@@ -357,7 +372,7 @@ fi
 
 ## 相对上游的改动
 
-本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构没有改过。合并上游时下面这些要保留：
+本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过一次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）。合并上游时下面这些要保留：
 
 | 改动 | 作用 | 主要位置 |
 | --- | --- | --- |
@@ -368,7 +383,9 @@ fi
 | API Key 的范围 | 只能用于 `/api/emails` 下的接口和 `GET /api/config`。中间件和处理函数各查一遍 | `moemail/middleware.ts`、`moemail/app/lib/guard.ts` |
 | 关闭图片代理接口 | `/_next/image` 的请求不进 Worker，页面也不生成这类地址。两处设置要一起保留 | `moemail/_routes.json`、`moemail/next.config.ts` |
 | 注册开关 | KV 里的 `ALLOW_REGISTRATION`；没配置的第三方登录不显示；注册接口只返回 id 和用户名 | `moemail/app/lib/auth.ts`、`moemail/app/api/auth/register/route.ts` |
-| 收信日志 | 只记发件人和收件地址，不记邮件内容 | `moemail/workers/email-receiver.ts` |
+| 收信日志 | 只记发件人、收件地址和附件个数，不记邮件内容和文件名 | `moemail/workers/email-receiver.ts` |
+| 未注册地址转发 | 收信 Worker 找不到邮箱（包括过期还没清理的）时，把整封信原样转发到 `FORWARD_TO`，不解析；信存不进数据库时也转发；转发失败时报错，不吞掉 | `moemail/workers/email-receiver.ts` |
+| 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，不把下载地址写进邮件 HTML（分享页的地址里带 token）。删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的 | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
 | 登录失败的提示和 404 页面 | 密码错误时显示“用户名或密码错误”；不存在的页面有正常的 404 页 | `moemail/app/lib/auth.ts`、`moemail/app/not-found.tsx` |
 | 依赖版本 | 见[依赖版本](#依赖版本) | `moemail/package.json` |
@@ -414,6 +431,7 @@ fi
 - 入库的 `moemail/.env` 是脱敏副本：名字以 `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`ACCOUNT_ID` 结尾的项，值被换成了 `xxxxxx`。以后新加密钥或账号标识类的配置项要按这个规则起名，否则同步脚本认不出来。
 - 同步脚本写完以后会在目标目录里搜一遍真实密钥，搜到就报错。它只同步，不提交。
 - Resend 的 API Key 在“Resend 发件服务配置”里填，Turnstile 的 Secret Key 在“网站配置”里填。它们存在 KV 里，不在 `.env` 里。
+- 转发目标 `FORWARD_TO` 是私人邮箱地址，不是密钥，但也不进仓库：它只写在工作目录的 `wrangler.email.json` 里。这个文件在两边都被 `.gitignore` 忽略；不要把这个地址挪进 `.env`，同步脚本只给 `TOKEN`、`SECRET` 这类名字脱敏，它会原样进入公开仓库。
 
 ## 部署记录
 

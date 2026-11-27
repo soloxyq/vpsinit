@@ -2,6 +2,7 @@ import { createDb } from "@/lib/db"
 import { messageShares, messages } from "@/lib/schema"
 import { eq } from "drizzle-orm"
 import { NextResponse } from "next/server"
+import { publicAttachments } from "@/lib/attachments"
 
 export const runtime = "edge"
 
@@ -55,7 +56,8 @@ export async function GET(
         content: message.content,
         html: message.html,
         received_at: message.receivedAt,
-        sent_at: message.sentAt
+        sent_at: message.sentAt,
+        attachments: publicAttachments(message.attachments)
       }
     })
   } catch (error) {

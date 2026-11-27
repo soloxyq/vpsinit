@@ -1,6 +1,7 @@
 import { createDb } from "@/lib/db"
 import { emailShares, messageShares, messages, emails } from "@/lib/schema"
 import { eq, desc, and, or, ne, isNull } from "drizzle-orm"
+import { publicAttachments, hasListedAttachments, type AttachmentInfo } from "@/lib/attachments"
 
 export interface SharedEmail {
   id: string
@@ -21,6 +22,8 @@ export interface SharedMessage {
   expiresAt?: Date
   emailAddress?: string
   emailExpiresAt?: Date
+  attachments?: AttachmentInfo[]
+  has_attachments?: boolean
 }
 
 export async function getSharedEmail(token: string): Promise<SharedEmail | null> {
@@ -130,7 +133,8 @@ export async function getSharedEmailMessages(token: string, limit = 20): Promise
         to_address: msg.toAddress ?? undefined,
         subject: msg.subject,
         received_at: msg.receivedAt,
-        sent_at: msg.sentAt
+        sent_at: msg.sentAt,
+        has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,
       total: totalCount
@@ -183,7 +187,8 @@ export async function getSharedMessage(token: string): Promise<SharedMessage | n
       sent_at: message.sentAt,
       expiresAt: share.expiresAt ?? undefined,
       emailAddress: email?.address,
-      emailExpiresAt: email?.expiresAt
+      emailExpiresAt: email?.expiresAt,
+      attachments: publicAttachments(message.attachments)
     }
   } catch (error) {
     console.error("Failed to fetch shared message:", error)

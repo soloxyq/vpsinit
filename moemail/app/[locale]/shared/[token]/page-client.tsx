@@ -9,6 +9,7 @@ import { SharedMessageList } from "@/components/emails/shared-message-list"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
 import { EMAIL_CONFIG } from "@/config"
 import { useMounted } from "@/hooks/use-mounted"
+import type { AttachmentInfo } from "@/lib/attachments"
 
 interface Email {
   id: string
@@ -24,11 +25,13 @@ interface Message {
   subject: string
   received_at?: Date
   sent_at?: Date
+  has_attachments?: boolean
 }
 
 interface MessageDetail extends Message {
   content?: string
   html?: string
+  attachments?: AttachmentInfo[]
 }
 
 interface SharedEmailPageClientProps {
@@ -242,6 +245,7 @@ export function SharedEmailPageClient({
 
           <div className="border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden">
             <SharedMessageDetail
+              attachmentBaseUrl={selectedMessage ? `/api/shared/${token}/messages/${selectedMessage.id}/attachments` : undefined}
               message={selectedMessage ? {
                 ...selectedMessage,
                 received_at: (() => {
@@ -340,6 +344,7 @@ export function SharedEmailPageClient({
                 </div>
                 <div className="flex-1 overflow-auto">
                   <SharedMessageDetail
+                    attachmentBaseUrl={`/api/shared/${token}/messages/${selectedMessage.id}/attachments`}
                     message={{
                       ...selectedMessage,
                       received_at: (() => {

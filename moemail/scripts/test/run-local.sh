@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # 在本机回环地址起一个独立的 wrangler pages dev 实例（本地模拟 D1/KV，不连 Cloudflare），
-# 运行安全/功能回归套件（sec-suite.sh）与匿名部署前检查（live-verify.sh），跑完自动停止并清理临时状态。
+# 运行安全/功能回归套件（sec-suite.sh）、匿名部署前检查（live-verify.sh）和附件与转发测试（attachments-suite.sh），
+# 跑完自动停止并清理临时状态。
 #
 # 前置：先执行 pnpm run build:pages 生成 .vercel/output。
 # 用法：
 #   scripts/test/run-local.sh            # 默认端口 8792
 #   PORT=8795 scripts/test/run-local.sh  # 指定端口
+#   SUITES=attachments scripts/test/run-local.sh  # 只跑其中几套（sec live attachments）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -13,6 +15,7 @@ STATIC="$ROOT/.vercel/output/static"
 CONFIG_JSON="$ROOT/.vercel/output/config.json"
 WRANGLER="$ROOT/node_modules/.bin/wrangler"
 PORT="${PORT:-8792}"
+SUITES=" ${SUITES:-sec live attachments} "
 BASE="http://localhost:$PORT"
 
 [ -d "$STATIC" ] || { echo "找不到构建产物 $STATIC，请先运行 pnpm run build:pages" >&2; exit 2; }
@@ -22,10 +25,12 @@ BASE="http://localhost:$PORT"
 D1_NAME="moemail-db"
 D1_ID="00000000-0000-4000-8000-000000000001"
 KV_ID="00000000000000000000000000000001"
+ATT_ID="00000000000000000000000000000002"
 if [ -f "$ROOT/wrangler.json" ] && command -v jq >/dev/null 2>&1; then
   D1_NAME="$(jq -r '.d1_databases[0].database_name // "moemail-db"' "$ROOT/wrangler.json")"
   D1_ID="$(jq -r '.d1_databases[0].database_id // "00000000-0000-4000-8000-000000000001"' "$ROOT/wrangler.json")"
   KV_ID="$(jq -r '.kv_namespaces[0].id // "00000000000000000000000000000001"' "$ROOT/wrangler.json")"
+  ATT_ID="$(jq -r '(.kv_namespaces[] | select(.binding == "ATTACHMENTS") | .id) // "00000000000000000000000000000002"' "$ROOT/wrangler.json")"
 fi
 
 TMP="$(mktemp -d)"
@@ -59,6 +64,7 @@ echo "== 启动本地测试实例 ($BASE) =="
   --compatibility-date 2024-03-20 --compatibility-flags nodejs_compat \
   --d1 "DB=$D1_ID" \
   --kv "SITE_CONFIG=$KV_ID" \
+  --kv "ATTACHMENTS=$ATT_ID" \
   --binding AUTH_SECRET=local-test-secret-not-the-real-one-0123456789abcdef \
   --binding AUTH_TRUST_HOST=true \
   --persist-to "$STATE" \
@@ -74,9 +80,19 @@ for _ in $(seq 1 90); do
 done
 [ -n "$READY" ] || { echo "等待本地实例就绪超时，日志如下：" >&2; tail -40 "$LOG" >&2; exit 1; }
 
-echo "== 运行安全与功能回归套件 =="
-CONFIG_JSON="$CONFIG_JSON" "$ROOT/scripts/test/sec-suite.sh" "$BASE" local
+if [[ "$SUITES" == *" sec "* ]]; then
+  echo "== 运行安全与功能回归套件 =="
+  CONFIG_JSON="$CONFIG_JSON" "$ROOT/scripts/test/sec-suite.sh" "$BASE" local
+fi
 
-echo
-echo "== 运行部署前匿名验证（本机注册默认开启，REGISTER_EXPECT=400） =="
-REGISTER_EXPECT=400 "$ROOT/scripts/test/live-verify.sh" "$BASE"
+if [[ "$SUITES" == *" live "* ]]; then
+  echo
+  echo "== 运行部署前匿名验证（本机注册默认开启，REGISTER_EXPECT=400） =="
+  REGISTER_EXPECT=400 "$ROOT/scripts/test/live-verify.sh" "$BASE"
+fi
+
+if [[ "$SUITES" == *" attachments "* ]]; then
+  echo
+  echo "== 运行附件与转发测试 =="
+  STATE="$STATE" "$ROOT/scripts/test/attachments-suite.sh" "$BASE"
+fi

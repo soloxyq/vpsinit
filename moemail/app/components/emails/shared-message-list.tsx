@@ -1,6 +1,6 @@
 "use client"
 
-import { Mail, RefreshCw } from "lucide-react"
+import { Mail, RefreshCw, Paperclip } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useThrottle } from "@/hooks/use-throttle"
 import { useMounted } from "@/hooks/use-mounted"
@@ -14,6 +14,7 @@ interface Message {
   subject: string
   received_at?: number
   sent_at?: number
+  has_attachments?: boolean
 }
 
 interface SharedMessageListProps {
@@ -114,6 +115,9 @@ export function SharedMessageList({
                         <p className="font-medium text-sm text-foreground truncate flex-1">
                           {message.subject}
                         </p>
+                        {message.has_attachments && (
+                          <Paperclip className="h-3 w-3 shrink-0 self-center text-muted-foreground" />
+                        )}
                         {mounted && (() => {
                           const date = new Date(message.received_at || message.sent_at || 0)
                           return (

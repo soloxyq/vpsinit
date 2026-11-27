@@ -84,7 +84,10 @@
     "to": "To",
     "time": "Time",
     "htmlFormat": "HTML Format",
-    "textFormat": "Plain Text Format"
+    "textFormat": "Plain Text Format",
+    "attachments": "Attachments",
+    "attachmentNotSaved": "Not saved",
+    "attachmentNotSavedHint": "This attachment was not saved: it was too large, there were too many attachments, or the storage quota was full"
   },
   "share": {
     "title": "Share Mailbox",

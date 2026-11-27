@@ -1,6 +1,7 @@
 import { integer, sqliteTable, text, primaryKey, uniqueIndex, index } from "drizzle-orm/sqlite-core"
 import type { AdapterAccountType } from "next-auth/adapters"
 import { relations, sql } from 'drizzle-orm';
+import type { StoredAttachment } from "./attachments"
 
 // https://authjs.dev/getting-started/adapters/drizzle
 export const users = sqliteTable("user", {
@@ -64,6 +65,8 @@ export const messages = sqliteTable("message", {
   content: text("content").notNull(),
   html: text("html"),
   type: text("type"),
+  // 附件信息（JSON 数组），内容在 KV 里，见 app/lib/attachments.ts
+  attachments: text("attachments", { mode: "json" }).$type<StoredAttachment[]>(),
   receivedAt: integer("received_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
-import { Mail, RefreshCw, Trash2, Share2 } from "lucide-react"
+import { Mail, RefreshCw, Trash2, Share2, Paperclip } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { EmptyState, ListSkeleton } from "@/components/ui/empty-state"
@@ -30,6 +30,7 @@ interface Message {
   sent_at?: number
   content?: string
   html?: string
+  has_attachments?: boolean
 }
 
 interface MessageListProps {
@@ -268,6 +269,9 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2">
                         <p className="font-medium text-sm text-foreground truncate flex-1">{message.subject}</p>
+                        {message.has_attachments && (
+                          <Paperclip className="h-3 w-3 shrink-0 self-center text-muted-foreground" />
+                        )}
                         <span
                           className="shrink-0 text-[11px] tabular-nums text-muted-foreground transition-opacity [@media(hover:hover)]:group-hover:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-0"
                           title={fullTime}

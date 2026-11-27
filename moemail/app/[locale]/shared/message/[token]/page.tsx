@@ -27,5 +27,5 @@ export default async function SharedMessagePage({ params }: PageProps) {
     )
   }
 
-  return <SharedMessagePageClient message={message} />
+  return <SharedMessagePageClient message={message} token={token} />
 }

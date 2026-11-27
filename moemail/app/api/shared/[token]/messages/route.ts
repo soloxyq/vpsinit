@@ -3,6 +3,7 @@ import { emailShares, messages } from "@/lib/schema"
 import { eq, and, lt, or, sql, ne, isNull } from "drizzle-orm"
 import { NextResponse } from "next/server"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
+import { hasListedAttachments } from "@/lib/attachments"
 
 export const runtime = "edge"
 
@@ -108,7 +109,8 @@ export async function GET(
         to_address: msg.toAddress,
         subject: msg.subject,
         received_at: msg.receivedAt,
-        sent_at: msg.sentAt
+        sent_at: msg.sentAt,
+        has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,
       total: totalCount

@@ -6,6 +6,8 @@ import { encodeCursor, decodeCursor } from "@/lib/cursor"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { checkBasicSendPermission } from "@/lib/send-permissions"
+import { getRequestContext } from "@cloudflare/next-on-pages"
+import { attachmentKeysOf, deleteAttachmentKeys, hasListedAttachments } from "@/lib/attachments"
 
 export const runtime = "edge"
 
@@ -33,11 +35,18 @@ export async function DELETE(
         { status: 403 }
       )
     }
-    await db.delete(messages)
-      .where(eq(messages.emailId, id))
+    // 同一个事务里删邮件和邮箱，并拿回实际删掉的邮件（期间新到的信也算在内）
+    const [deleted] = await db.batch([
+      db.delete(messages)
+        .where(eq(messages.emailId, id))
+        .returning({ id: messages.id, attachments: messages.attachments }),
+      db.delete(emails)
+        .where(eq(emails.id, id)),
+    ])
 
-    await db.delete(emails)
-      .where(eq(emails.id, id))
+    // KV 里的附件在返回响应之后接着删，否则会一直占着免费额度
+    const { env, ctx } = getRequestContext()
+    ctx.waitUntil(deleteAttachmentKeys(env.ATTACHMENTS, attachmentKeysOf(deleted)))
 
     return NextResponse.json({ success: true })
   } catch (error) {
@@ -152,7 +161,8 @@ export async function GET(
         content: msg.content,
         html: msg.html,
         sent_at: msg.sentAt?.getTime(),
-        received_at: msg.receivedAt?.getTime()
+        received_at: msg.receivedAt?.getTime(),
+        has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,
       total: totalCount

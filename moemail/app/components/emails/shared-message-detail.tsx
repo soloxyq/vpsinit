@@ -6,6 +6,9 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { Segmented, SegmentedItem } from "@/components/ui/segmented"
 import { useTheme } from "next-themes"
 import { useMounted } from "@/hooks/use-mounted"
+import { AttachmentList } from "./attachment-list"
+import type { AttachmentInfo } from "@/lib/attachments"
+import { loadInlineImages } from "./inline-images"
 
 interface MessageDetail {
   id: string
@@ -16,11 +19,14 @@ interface MessageDetail {
   html?: string
   received_at?: number
   sent_at?: number
+  attachments?: AttachmentInfo[]
 }
 
 interface SharedMessageDetailProps {
   message: MessageDetail | null
   loading?: boolean
+  // 附件下载地址前缀（凭分享链接访问的接口），后面接附件序号
+  attachmentBaseUrl?: string
   t: {
     messageContent: string
     selectMessage: string
@@ -39,6 +45,7 @@ type ViewMode = "html" | "text"
 export function SharedMessageDetail({
   message,
   loading = false,
+  attachmentBaseUrl,
   t,
 }: SharedMessageDetailProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("html")
@@ -216,10 +223,14 @@ export function SharedMessageDetail({
           img.onload = handleLayout
         })
 
+        // 内嵌图片换成 blob: 地址后会触发上面的 onload，重新适配布局
+        const releaseInlineImages = loadInlineImages(doc, message.attachments, attachmentBaseUrl)
+
         return () => {
           window.removeEventListener("resize", handleLayout)
           resizeObserver.disconnect()
           containerObserver?.disconnect()
+          releaseInlineImages()
         }
       }
     }
@@ -268,6 +279,7 @@ export function SharedMessageDetail({
               : "\u00a0"}
           </span>
         </div>
+        <AttachmentList attachments={message.attachments} baseUrl={attachmentBaseUrl} />
       </div>
 
       {message.html && message.content && (

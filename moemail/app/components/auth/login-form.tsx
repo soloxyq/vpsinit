@@ -19,7 +19,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-import { Github, Loader2, KeyRound, User2 } from "lucide-react"
+import { Github, Loader2, KeyRound, Mail, User2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Turnstile } from "@/components/auth/turnstile"
 
@@ -222,6 +222,9 @@ export function LoginForm({
   return (
     <Card className="w-full max-w-[420px] rounded-2xl border border-border/80 bg-card shadow-lg shadow-black/[0.03] dark:shadow-black/30">
       <CardHeader className="space-y-2 pb-5 pt-7">
+        <div className="mx-auto mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/20">
+          <Mail className="h-5 w-5" aria-hidden="true" />
+        </div>
         <CardTitle className="text-xl font-semibold tracking-tight text-center text-foreground">
           {t("title")}
         </CardTitle>
@@ -241,14 +244,19 @@ export function LoginForm({
             <TabsContent value="login" className="space-y-4 mt-0">
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                  <div className="relative group">
+                    <div
+                      className={cn(
+                        "absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none transition-colors group-focus-within:text-primary",
+                        errors.username && "text-destructive/70 group-focus-within:text-destructive"
+                      )}
+                    >
                       <User2 className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
                         "h-10 pl-9 pr-3",
-                        errors.username && "border-destructive focus-visible:ring-destructive"
+                        errors.username && "border-destructive/60 focus-visible:border-destructive/70 focus-visible:ring-destructive/25"
                       )}
                       placeholder={t("fields.username")}
                       value={username}
@@ -264,14 +272,19 @@ export function LoginForm({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                  <div className="relative group">
+                    <div
+                      className={cn(
+                        "absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none transition-colors group-focus-within:text-primary",
+                        errors.password && "text-destructive/70 group-focus-within:text-destructive"
+                      )}
+                    >
                       <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
                         "h-10 pl-9 pr-3",
-                        errors.password && "border-destructive focus-visible:ring-destructive"
+                        errors.password && "border-destructive/60 focus-visible:border-destructive/70 focus-visible:ring-destructive/25"
                       )}
                       type="password"
                       placeholder={t("fields.password")}
@@ -356,14 +369,19 @@ export function LoginForm({
             <TabsContent value="register" className="space-y-4 mt-0">
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                  <div className="relative group">
+                    <div
+                      className={cn(
+                        "absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none transition-colors group-focus-within:text-primary",
+                        errors.username && "text-destructive/70 group-focus-within:text-destructive"
+                      )}
+                    >
                       <User2 className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
                         "h-10 pl-9 pr-3",
-                        errors.username && "border-destructive focus-visible:ring-destructive"
+                        errors.username && "border-destructive/60 focus-visible:border-destructive/70 focus-visible:ring-destructive/25"
                       )}
                       placeholder={t("fields.username")}
                       value={username}
@@ -379,14 +397,19 @@ export function LoginForm({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                  <div className="relative group">
+                    <div
+                      className={cn(
+                        "absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none transition-colors group-focus-within:text-primary",
+                        errors.password && "text-destructive/70 group-focus-within:text-destructive"
+                      )}
+                    >
                       <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
                         "h-10 pl-9 pr-3",
-                        errors.password && "border-destructive focus-visible:ring-destructive"
+                        errors.password && "border-destructive/60 focus-visible:border-destructive/70 focus-visible:ring-destructive/25"
                       )}
                       type="password"
                       placeholder={t("fields.password")}
@@ -403,14 +426,19 @@ export function LoginForm({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <div className="relative">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 pointer-events-none">
+                  <div className="relative group">
+                    <div
+                      className={cn(
+                        "absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none transition-colors group-focus-within:text-primary",
+                        errors.confirmPassword && "text-destructive/70 group-focus-within:text-destructive"
+                      )}
+                    >
                       <KeyRound className="h-4 w-4" />
                     </div>
                     <Input
                       className={cn(
                         "h-10 pl-9 pr-3",
-                        errors.confirmPassword && "border-destructive focus-visible:ring-destructive"
+                        errors.confirmPassword && "border-destructive/60 focus-visible:border-destructive/70 focus-visible:ring-destructive/25"
                       )}
                       type="password"
                       placeholder={t("fields.confirmPassword")}

@@ -26,7 +26,7 @@ export function SignButton({ size = "default" }: SignButtonProps) {
 
   if (!session?.user) {
     return (
-      <Button onClick={() => router.push(`/${locale}/login`)} className={cn("gap-2", size === "lg" ? "px-8" : "")} size={size}>
+      <Button onClick={() => router.push(`/${locale}/login`)} variant={size === "lg" ? "default" : "outline"} className={cn("gap-2", size === "lg" ? "px-8" : "")} size={size}>
         <LogIn className={size === "lg" ? "w-5 h-5" : "w-4 h-4"} />
         {t("login")}
       </Button>
@@ -37,7 +37,7 @@ export function SignButton({ size = "default" }: SignButtonProps) {
     <div className="flex items-center gap-2 sm:gap-3">
       <Link
         href={`/${locale}/profile`}
-        className="flex items-center gap-2 rounded-full px-2 py-1 hover:bg-accent/80 transition-colors"
+        className="flex items-center gap-2 rounded-lg px-2 h-10 sm:h-9 hover:bg-accent/80 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
       >
         {session.user.image && (
           <Image

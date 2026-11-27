@@ -9,7 +9,7 @@ export function Header() {
       <div className="container mx-auto h-full px-4 lg:px-8 max-w-[1600px]">
         <div className="h-full flex items-center justify-between">
           <Logo />
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             <LanguageSwitcher />
             <ThemeToggle />
             <SignButton />

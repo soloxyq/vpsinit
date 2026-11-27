@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl"
 import { BrandHeader } from "@/components/ui/brand-header"
 import { FloatingLanguageSwitcher } from "@/components/layout/floating-language-switcher"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
+import { useMounted } from "@/hooks/use-mounted"
 
 interface MessageDetail {
   id: string
@@ -26,16 +27,19 @@ interface SharedMessagePageClientProps {
 export function SharedMessagePageClient({ message }: SharedMessagePageClientProps) {
   const t = useTranslations("emails")
   const tShared = useTranslations("emails.shared")
+  const mounted = useMounted()
 
   return (
     <div className="min-h-screen bg-page">
       <div className="container mx-auto p-4 pb-20 lg:pb-6 max-w-7xl">
         <BrandHeader
           title={message.emailAddress || message.to_address || message.subject}
-          subtitle={message.emailExpiresAt && new Date(message.emailExpiresAt).getFullYear() === 9999
+          subtitle={message.emailExpiresAt && new Date(message.emailExpiresAt).getUTCFullYear() === 9999
             ? tShared("permanent")
             : message.emailExpiresAt
-              ? `${tShared("expiresAt")}: ${new Date(message.emailExpiresAt).toLocaleString()}`
+              ? mounted
+                ? `${tShared("expiresAt")}: ${new Date(message.emailExpiresAt).toLocaleString()}`
+                : "\u00a0"
               : tShared("sharedMessage")}
           ctaText={tShared("createOwnEmail")}
         />

@@ -3,6 +3,7 @@
 import { Mail, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useThrottle } from "@/hooks/use-throttle"
+import { useMounted } from "@/hooks/use-mounted"
 import { Button } from "@/components/ui/button"
 import { EmptyState, ListSkeleton } from "@/components/ui/empty-state"
 
@@ -48,6 +49,8 @@ export function SharedMessageList({
   total = 0,
   t,
 }: SharedMessageListProps) {
+  const mounted = useMounted()
+  const currentYear = new Date().getFullYear()
   const handleScroll = useThrottle((e: React.UIEvent<HTMLDivElement>) => {
     if (loadingMore || !hasMore || !onLoadMore) return
 
@@ -111,14 +114,22 @@ export function SharedMessageList({
                         <p className="font-medium text-sm text-foreground truncate flex-1">
                           {message.subject}
                         </p>
-                        <span
-                          className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
-                          suppressHydrationWarning
-                        >
-                          {new Date(
-                            message.received_at || message.sent_at || 0
-                          ).toLocaleString()}
-                        </span>
+                        {mounted && (() => {
+                          const date = new Date(message.received_at || message.sent_at || 0)
+                          return (
+                            <span
+                              className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+                              title={date.toLocaleString()}
+                            >
+                              {date.toLocaleString(
+                                undefined,
+                                date.getFullYear() === currentYear
+                                  ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
+                                  : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
+                              )}
+                            </span>
+                          )
+                        })()}
                       </div>
                       <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
                         {message.from_address || message.to_address || ""}

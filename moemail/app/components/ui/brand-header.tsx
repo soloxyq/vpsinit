@@ -75,7 +75,6 @@ export function BrandHeader({
         </h1>
         <p
           className="text-sm text-muted-foreground max-w-md mx-auto tabular-nums"
-          suppressHydrationWarning
         >
           {displaySubtitle}
         </p>

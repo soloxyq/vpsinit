@@ -8,6 +8,7 @@ import { FloatingLanguageSwitcher } from "@/components/layout/floating-language-
 import { SharedMessageList } from "@/components/emails/shared-message-list"
 import { SharedMessageDetail } from "@/components/emails/shared-message-detail"
 import { EMAIL_CONFIG } from "@/config"
+import { useMounted } from "@/hooks/use-mounted"
 
 interface Email {
   id: string
@@ -47,6 +48,7 @@ export function SharedEmailPageClient({
 }: SharedEmailPageClientProps) {
   const t = useTranslations("emails")
   const tShared = useTranslations("emails.shared")
+  const mounted = useMounted()
 
   const [messages, setMessages] = useState<Message[]>(initialMessages)
   const [selectedMessage, setSelectedMessage] = useState<MessageDetail | null>(null)
@@ -182,9 +184,11 @@ export function SharedEmailPageClient({
             try {
               const expiresDate = new Date(email.expiresAt)
               if (isNaN(expiresDate.getTime())) return tShared("sharedMailbox")
-              return expiresDate.getFullYear() === 9999
-                ? tShared("permanent")
-                : `${tShared("expiresAt")}: ${expiresDate.toLocaleDateString()} ${expiresDate.toLocaleTimeString()}`
+              // 永久邮箱存的是 9999-01-01T00:00:00Z，按 UTC 年份判断，服务器和浏览器结果一致
+              if (expiresDate.getUTCFullYear() === 9999) return tShared("permanent")
+              // 具体时间按访客本地时区显示，只能在浏览器里格式化；挂载前先占住这一行
+              if (!mounted) return "\u00a0"
+              return `${tShared("expiresAt")}: ${expiresDate.toLocaleDateString()} ${expiresDate.toLocaleTimeString()}`
             } catch {
               return tShared("sharedMailbox")
             }

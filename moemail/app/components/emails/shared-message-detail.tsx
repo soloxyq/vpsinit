@@ -5,6 +5,7 @@ import { Loader2, Mail } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Segmented, SegmentedItem } from "@/components/ui/segmented"
 import { useTheme } from "next-themes"
+import { useMounted } from "@/hooks/use-mounted"
 
 interface MessageDetail {
   id: string
@@ -44,6 +45,7 @@ export function SharedMessageDetail({
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === "dark"
+  const mounted = useMounted()
 
   // 如果没有HTML内容，默认显示文本
   useEffect(() => {
@@ -260,10 +262,10 @@ export function SharedMessageDetail({
             </>
           )}
           <span className="text-muted-foreground">{t.time}:</span>
-          <span className="truncate tabular-nums text-foreground/85" suppressHydrationWarning>
-            {new Date(
-              message.sent_at || message.received_at || 0
-            ).toLocaleString()}
+          <span className="truncate tabular-nums text-foreground/85">
+            {mounted
+              ? new Date(message.sent_at || message.received_at || 0).toLocaleString()
+              : "\u00a0"}
           </span>
         </div>
       </div>

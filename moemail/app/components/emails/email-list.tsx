@@ -5,9 +5,10 @@ import { useSession } from "next-auth/react"
 import { useTranslations } from "next-intl"
 import { CreateDialog } from "./create-dialog"
 import { ShareDialog } from "./share-dialog"
-import { Mail, RefreshCw, Trash2 } from "lucide-react"
+import { Mail, RefreshCw, Share2, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { EmptyState, ListSkeleton } from "@/components/ui/empty-state"
 import { useThrottle } from "@/hooks/use-throttle"
 import { EMAIL_CONFIG } from "@/config"
 import { useToast } from "@/components/ui/use-toast"
@@ -170,69 +171,100 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
               size="icon"
               onClick={handleRefresh}
               disabled={refreshing}
-              className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", refreshing && "animate-spin")}
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
             </Button>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {role === ROLES.EMPEROR ? (
-                t("emailCountUnlimited", { count: total })
-              ) : (
-                t("emailCount", { count: total, max: config?.maxEmails || EMAIL_CONFIG.MAX_ACTIVE_EMAILS })
-              )}
-            </span>
+            {loading ? (
+              <span className="inline-block h-3 w-14 rounded bg-muted animate-pulse" aria-hidden="true" />
+            ) : (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {role === ROLES.EMPEROR ? (
+                  t("emailCountUnlimited", { count: total })
+                ) : (
+                  t("emailCount", { count: total, max: config?.maxEmails || EMAIL_CONFIG.MAX_ACTIVE_EMAILS })
+                )}
+              </span>
+            )}
           </div>
           <CreateDialog onEmailCreated={handleRefresh} />
         </div>
         
-        <div className="flex-1 overflow-auto p-2" onScroll={handleScroll}>
+        <div className="flex-1 overflow-auto" onScroll={handleScroll}>
           {loading ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">{t("loading")}</div>
+            <ListSkeleton rows={4} label={t("loading")} />
           ) : emails.length > 0 ? (
-            <div className="space-y-1">
-              {emails.map(email => (
-                <div
-                  key={email.id}
-                  className={cn(
-                    "flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-sm group transition-colors duration-150",
-                    selectedEmailId === email.id
-                      ? "bg-primary/[0.08] ring-1 ring-inset ring-primary/20"
-                      : "hover:bg-accent/70"
-                  )}
-                  onClick={() => onEmailSelect(email)}
-                >
-                  <Mail
+            <div className="p-2 space-y-1">
+              {emails.map(email => {
+                const isSelected = selectedEmailId === email.id
+                return (
+                  <div
+                    key={email.id}
                     className={cn(
-                      "h-4 w-4 shrink-0 transition-colors",
-                      selectedEmailId === email.id ? "text-primary" : "text-muted-foreground/70"
+                      "relative flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-sm group transition-colors duration-150",
+                      isSelected
+                        ? "bg-primary/[0.08] ring-1 ring-inset ring-primary/20"
+                        : "hover:bg-accent/70"
                     )}
-                  />
-                  <div className="truncate flex-1 min-w-0">
-                    <div className="font-mono text-[13px] font-medium truncate text-foreground">{email.address}</div>
-                    <div className="text-[11px] text-muted-foreground tabular-nums mt-0.5">
-                      {new Date(email.expiresAt).getFullYear() === 9999 ? (
-                        t("permanent")
-                      ) : (
-                        `${t("expiresAt")}: ${new Date(email.expiresAt).toLocaleString()}`
+                    onClick={() => onEmailSelect(email)}
+                  >
+                    <Mail
+                      className={cn(
+                        "h-4 w-4 shrink-0 transition-colors",
+                        isSelected ? "text-primary" : "text-muted-foreground/70"
                       )}
+                    />
+                    <div className="truncate flex-1 min-w-0">
+                      <div className="font-mono text-[13px] font-medium truncate text-foreground">{email.address}</div>
+                      <div className="text-[11px] text-muted-foreground tabular-nums mt-0.5 truncate">
+                        {new Date(email.expiresAt).getFullYear() === 9999 ? (
+                          t("permanent")
+                        ) : (
+                          `${t("expiresAt")}: ${new Date(email.expiresAt).toLocaleString()}`
+                        )}
+                      </div>
+                    </div>
+                    <div
+                      className="flex shrink-0 transition-opacity opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:hover)]:absolute [@media(hover:hover)]:right-2 [@media(hover:hover)]:top-1/2 [@media(hover:hover)]:-translate-y-1/2 [@media(hover:hover)]:rounded-md [@media(hover:hover)]:bg-card"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div
+                        className={cn(
+                          "flex items-center gap-0.5 [@media(hover:hover)]:rounded-md [@media(hover:hover)]:pl-1",
+                          isSelected
+                            ? "[@media(hover:hover)]:bg-primary/[0.08]"
+                            : "[@media(hover:hover)]:group-hover:bg-accent/70"
+                        )}
+                      >
+                        <ShareDialog
+                          emailId={email.id}
+                          emailAddress={email.address}
+                          trigger={
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                            >
+                              <Share2 className="h-3.5 w-3.5" />
+                            </Button>
+                          }
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEmailToDelete(email)
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                  <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                    <ShareDialog emailId={email.id} emailAddress={email.address} />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setEmailToDelete(email)
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
               {loadingMore && (
                 <div className="text-center text-xs text-muted-foreground py-2">
                   {t("loadingMore")}
@@ -240,9 +272,7 @@ export function EmailList({ onEmailSelect, selectedEmailId }: EmailListProps) {
               )}
             </div>
           ) : (
-            <div className="py-8 text-center text-sm text-muted-foreground">
-              {t("noEmails")}
-            </div>
+            <EmptyState icon={Mail} title={t("noEmails")} />
           )}
         </div>
       </div>

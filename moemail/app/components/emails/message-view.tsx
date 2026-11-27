@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2, Share2 } from "lucide-react"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Label } from "@/components/ui/label"
+import { Button } from "@/components/ui/button"
+import { Segmented, SegmentedItem } from "@/components/ui/segmented"
 import { useTheme } from "next-themes"
 import { useToast } from "@/components/ui/use-toast"
 import { ShareMessageDialog } from "./share-message-dialog"
@@ -109,7 +109,12 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
                   background: ${isDark ? '#16191f' : '#ffffff'};
                 }
                 body {
-                  padding: 20px 24px;
+                  padding: 20px;
+                }
+                @media (max-width: 480px) {
+                  body {
+                    padding: 16px;
+                  }
                 }
                 img {
                   max-width: 100%;
@@ -117,6 +122,22 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
                 }
                 a {
                   color: ${isDark ? '#818cf8' : '#4f46e5'};
+                }
+                html.paper {
+                  background: #16191f;
+                  height: 100%;
+                }
+                .paper body {
+                  background: #ffffff;
+                  color: #151923;
+                  margin: 12px;
+                  border-radius: 8px;
+                  min-height: calc(100% - 24px);
+                  box-sizing: border-box;
+                  overflow-x: auto;
+                }
+                .paper a {
+                  color: #4f46e5;
                 }
                 /* 滚动条样式 */
                 ::-webkit-scrollbar {
@@ -152,6 +173,32 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
         `)
         doc.close()
 
+        // 深色模式下，若邮件正文自带颜色或样式表则切到白纸模式，避免深字落深底或白板嵌黑框
+        if (isDark && doc.body) {
+          const hasInlineColor = (el: Element) =>
+            /(^|;)\s*(color|background(-color|-image)?)\s*:/i.test(
+              el.getAttribute("style") ?? ""
+            )
+
+          const hasOwnColors =
+            doc.body.hasAttribute("bgcolor") ||
+            doc.body.hasAttribute("background") ||
+            doc.body.hasAttribute("text") ||
+            hasInlineColor(doc.body) ||
+            Boolean(
+              doc.body.querySelector("[bgcolor],[background],font[color],[text],style")
+            ) ||
+            Array.from(doc.body.querySelectorAll("[style]")).some(hasInlineColor)
+
+          if (hasOwnColors) {
+            doc.documentElement.classList.add("paper")
+            const colorSchemeMeta = doc.createElement("meta")
+            colorSchemeMeta.name = "color-scheme"
+            colorSchemeMeta.content = "light"
+            doc.head.appendChild(colorSchemeMeta)
+          }
+        }
+
         // 更新高度以填充容器
         const updateHeight = () => {
           const container = iframe.parentElement
@@ -160,21 +207,58 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
           }
         }
 
-        updateHeight()
-        window.addEventListener('resize', updateHeight)
+        // 固定宽度邮件缩放到适合当前阅读栏宽度（下限 0.6）
+        const fitWidth = () => {
+          if (!iframeRef.current || !doc.body || !doc.documentElement) return
+          doc.body.style.removeProperty("zoom")
+          const docCw = doc.documentElement.clientWidth
+          const bodyCw = doc.body.clientWidth
+          if (docCw <= 0 || bodyCw <= 0) return
+          const docSw = doc.documentElement.scrollWidth
+          const bodySw = doc.body.scrollWidth
+          const padRight =
+            parseFloat(doc.defaultView?.getComputedStyle(doc.body).paddingRight || "0") || 0
+          const ratios: number[] = []
+          if (bodySw > bodyCw + 1) {
+            ratios.push(bodyCw / (bodySw + padRight))
+          }
+          if (docSw > docCw + 1) {
+            ratios.push(docCw / docSw)
+          }
+          if (ratios.length > 0) {
+            doc.body.style.setProperty("zoom", String(Math.max(0.6, Math.min(...ratios))))
+          }
+        }
+
+        const handleLayout = () => {
+          updateHeight()
+          fitWidth()
+        }
+
+        handleLayout()
+        window.addEventListener('resize', handleLayout)
 
         // 监听内容变化
         const resizeObserver = new ResizeObserver(updateHeight)
         resizeObserver.observe(doc.body)
 
+        // 监听容器宽度变化以重新适配缩放
+        const containerObserver = iframe.parentElement
+          ? new ResizeObserver(handleLayout)
+          : null
+        if (containerObserver && iframe.parentElement) {
+          containerObserver.observe(iframe.parentElement)
+        }
+
         // 监听图片加载
         doc.querySelectorAll('img').forEach((img: HTMLImageElement) => {
-          img.onload = updateHeight
+          img.onload = handleLayout
         })
 
         return () => {
-          window.removeEventListener('resize', updateHeight)
+          window.removeEventListener('resize', handleLayout)
           resizeObserver.disconnect()
+          containerObserver?.disconnect()
         }
       }
     }
@@ -182,25 +266,26 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
 
   // 监听主题变化和内容变化
   useEffect(() => {
-    updateIframeContent()
+    return updateIframeContent()
   }, [message?.html, viewMode, isDark])
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-32">
-        <Loader2 className="w-5 h-5 animate-spin text-primary/70" />
-        <span className="ml-2 text-sm text-muted-foreground">{t("loading")}</span>
+      <div className="flex h-full min-h-[10rem] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin text-primary" />
+        <span>{t("loading")}</span>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-32 text-center">
-        <p className="text-sm text-destructive mb-2">{error}</p>
+      <div className="flex h-full min-h-[10rem] flex-col items-center justify-center gap-2 p-6 text-center">
+        <p className="text-sm text-destructive">{error}</p>
         <button
+          type="button"
           onClick={() => window.location.reload()}
-          className="text-xs text-primary hover:underline"
+          className="rounded-md px-2 py-1 text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           {t("retry")}
         </button>
@@ -220,58 +305,45 @@ export function MessageView({ emailId, messageId, messageType = 'received' }: Me
             messageId={message.id}
             messageSubject={message.subject}
             trigger={
-              <button className="p-1.5 hover:bg-accent rounded-md transition-colors text-muted-foreground hover:text-foreground">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              >
                 <Share2 className="h-4 w-4" />
-              </button>
+              </Button>
             }
           />
         </div>
-        <div className="text-xs text-muted-foreground space-y-1">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs">
           {message.from_address && (
-            <p className="truncate">
-              <span className="text-muted-foreground/80">{t("from")}: </span>
-              <span className="font-mono text-foreground/85">{message.from_address}</span>
-            </p>
+            <>
+              <span className="text-muted-foreground">{t("from")}:</span>
+              <span className="truncate font-mono text-foreground/85">{message.from_address}</span>
+            </>
           )}
           {message.to_address && (
-            <p className="truncate">
-              <span className="text-muted-foreground/80">{t("to")}: </span>
-              <span className="font-mono text-foreground/85">{message.to_address}</span>
-            </p>
+            <>
+              <span className="text-muted-foreground">{t("to")}:</span>
+              <span className="truncate font-mono text-foreground/85">{message.to_address}</span>
+            </>
           )}
-          <p className="tabular-nums">
-            <span className="text-muted-foreground/80">{t("time")}: </span>
+          <span className="text-muted-foreground">{t("time")}:</span>
+          <span className="truncate tabular-nums text-foreground/85">
             {new Date(message.sent_at || message.received_at || 0).toLocaleString()}
-          </p>
+          </span>
         </div>
       </div>
 
       {message.html && message.content && (
-        <div className="border-b border-border/70 px-4 py-2 bg-muted/10">
-          <RadioGroup
+        <div className="border-b border-border/70 px-5 py-2 bg-muted/10 flex justify-end">
+          <Segmented
             value={viewMode}
             onValueChange={(value) => setViewMode(value as ViewMode)}
-            className="flex items-center gap-4"
           >
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="html" id="html" />
-              <Label
-                htmlFor="html"
-                className="text-xs cursor-pointer"
-              >
-                {t("htmlFormat")}
-              </Label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="text" id="text" />
-              <Label
-                htmlFor="text"
-                className="text-xs cursor-pointer"
-              >
-                {t("textFormat")}
-              </Label>
-            </div>
-          </RadioGroup>
+            <SegmentedItem value="html">{t("htmlFormat")}</SegmentedItem>
+            <SegmentedItem value="text">{t("textFormat")}</SegmentedItem>
+          </Segmented>
         </div>
       )}
 

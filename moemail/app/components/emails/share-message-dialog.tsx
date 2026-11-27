@@ -191,7 +191,7 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
 
           <div className="space-y-4">
             {/* Message info */}
-            <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+            <div className="p-3 bg-muted/50 border border-border/60 rounded-lg">
               <p className="text-sm font-medium truncate">{messageSubject}</p>
             </div>
 
@@ -222,13 +222,14 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
               <Label>{t("activeLinks")}</Label>
               <div className="h-[270px] overflow-y-auto">
                 {loading ? (
-                  <div className="text-sm text-gray-500 text-center py-8 flex flex-col items-center gap-2">
+                  <div className="h-full flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
                     <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
                     <span>{t("loading")}</span>
                   </div>
                 ) : shares.length === 0 ? (
-                  <div className="text-sm text-gray-500 text-center py-4">
-                    {t("noLinks")}
+                  <div className="h-full flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Link2 className="h-5 w-5 opacity-50" />
+                    <span>{t("noLinks")}</span>
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -265,10 +266,10 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
                               }
                             }}
                             className={cn(
-                              "flex-1 text-xs p-1 rounded font-mono transition-colors break-all",
+                              "flex-1 min-w-0 truncate sm:whitespace-normal sm:break-all text-xs px-2 py-1 rounded font-mono transition-colors",
                               isExpired
                                 ? "bg-destructive/10 text-destructive/70 cursor-not-allowed pointer-events-none"
-                                : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:text-primary dark:hover:text-primary cursor-pointer"
+                                : "bg-muted/70 text-foreground/80 hover:text-primary cursor-pointer"
                             )}
                           >
                             {getShareUrl(share.token)}
@@ -290,9 +291,10 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>
                         </div>
-                        <div className="flex gap-y-4 gap-x-2 sm:gap-x-4 text-xs">
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
                           <span className={cn(
-                            isExpired ? "text-destructive/70" : "text-gray-500"
+                            "whitespace-nowrap tabular-nums",
+                            isExpired ? "text-destructive/70" : "text-muted-foreground"
                           )}>
                             {t("createdAt")}: {new Date(
                               typeof share.createdAt === 'number' 
@@ -301,7 +303,8 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
                             ).toLocaleString()}
                           </span>
                           <span className={cn(
-                            isExpired ? "text-destructive/70" : "text-gray-500"
+                            "whitespace-nowrap tabular-nums",
+                            isExpired ? "text-destructive/70" : "text-muted-foreground"
                           )}>
                             {t("expiresAt")}: {
                               share.expiresAt
@@ -314,7 +317,7 @@ export function ShareMessageDialog({ emailId, messageId, messageSubject, trigger
                             }
                           </span>
                           {isExpired && (
-                            <span className="text-destructive font-medium flex items-center gap-1">
+                            <span className="text-destructive font-medium flex items-center gap-1 whitespace-nowrap">
                               <span className="w-2 h-2 bg-destructive rounded-full"></span>
                               {t("expired")}
                             </span>

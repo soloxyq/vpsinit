@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Copy, Plus, RefreshCw } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import { nanoid } from "nanoid"
@@ -106,17 +106,17 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
         <DialogHeader>
           <DialogTitle>{t("title")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-4">
+        <div className="space-y-4 py-2">
           <div className="flex gap-2">
             <Input
               value={emailName}
               onChange={(e) => setEmailName(e.target.value)}
               placeholder={t("namePlaceholder")}
-              className="flex-1"
+              className="flex-1 min-w-0"
             />
             {(config?.emailDomainsArray?.length ?? 0) > 1 && (
               <Select value={currentDomain} onValueChange={setCurrentDomain}>
-                <SelectTrigger className="w-[180px]">
+                <SelectTrigger className="w-[140px] sm:w-[180px] shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -129,6 +129,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
             <Button
               variant="outline"
               size="icon"
+              className="shrink-0"
               onClick={generateRandomName}
               type="button"
             >
@@ -136,19 +137,19 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
             </Button>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
             <Label className="shrink-0 text-muted-foreground">{t("expiryTime")}</Label>
             <RadioGroup
               value={expiryTime}
               onValueChange={setExpiryTime}
-              className="flex gap-6"
+              className="flex flex-wrap gap-x-5 gap-y-2"
             >
               {EXPIRY_OPTIONS.map((option, index) => {
                 const labels = [t("oneHour"), t("oneDay"), t("threeDays"), t("permanent")]
                 return (
                   <div key={option.value} className="flex items-center gap-2">
                     <RadioGroupItem value={option.value.toString()} id={option.value.toString()} />
-                    <Label htmlFor={option.value.toString()} className="cursor-pointer text-sm">
+                    <Label htmlFor={option.value.toString()} className="cursor-pointer text-sm whitespace-nowrap">
                       {labels[index]}
                     </Label>
                   </div>
@@ -160,28 +161,29 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className="shrink-0">{t("domain")}:</span>
             {emailName ? (
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <span className="truncate font-mono text-foreground">{`${emailName}@${currentDomain}`}</span>
-                <div
-                  className="shrink-0 cursor-pointer hover:text-primary transition-colors"
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center size-7 shrink-0 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                   onClick={copyEmailAddress}
                 >
-                  <Copy className="size-4" />
-                </div>
+                  <Copy className="size-3.5" />
+                </button>
               </div>
             ) : (
               <span className="text-muted-foreground/60">...</span>
             )}
           </div>
         </div>
-        <div className="flex justify-end gap-2">
+        <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={loading}>
             {tCommon("cancel")}
           </Button>
           <Button onClick={createEmail} disabled={loading}>
             {loading ? t("creating") : t("create")}
           </Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

@@ -9,7 +9,8 @@ import { SendDialog } from "./send-dialog"
 import { cn } from "@/lib/utils"
 import { useCopy } from "@/hooks/use-copy"
 import { useSendPermission } from "@/hooks/use-send-permission"
-import { Copy } from "lucide-react"
+import { Copy, Inbox, MailOpen } from "lucide-react"
+import { EmptyState } from "@/components/ui/empty-state"
 
 interface Email {
   id: string
@@ -26,8 +27,10 @@ export function ThreeColumnLayout() {
   const { canSend: canSendEmails } = useSendPermission()
 
   const columnClass = "border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden flex flex-col"
-  const headerClass = "px-3.5 py-2.5 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0 min-h-[44px]"
+  const headerClass = "h-11 px-3.5 py-0 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0"
   const titleClass = "text-[13px] font-semibold text-foreground w-full overflow-hidden"
+  const copyButtonClass = "inline-flex items-center justify-center size-8 lg:size-6 shrink-0 rounded-md text-muted-foreground hover:text-primary hover:bg-accent active:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+  const backButtonClass = "inline-flex items-center h-9 -ml-2 px-2 shrink-0 rounded-md text-sm text-primary hover:bg-primary/10 active:bg-primary/15 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
 
   // 移动端视图逻辑
   const getMobileView = () => {
@@ -79,7 +82,7 @@ export function ThreeColumnLayout() {
                     <span className="truncate min-w-0 font-mono text-[13px]">{selectedEmail.address}</span>
                     <button
                       type="button"
-                      className="shrink-0 p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                      className={copyButtonClass}
                       onClick={copyEmailAddress}
                     >
                       <Copy className="size-3.5" />
@@ -93,12 +96,10 @@ export function ThreeColumnLayout() {
                     />
                   )}
                 </div>
-              ) : (
-                t("selectEmail")
-              )}
+              ) : null}
             </h2>
           </div>
-          {selectedEmail && (
+          {selectedEmail ? (
             <div className="flex-1 overflow-auto">
               <MessageListContainer
                 email={selectedEmail}
@@ -107,16 +108,20 @@ export function ThreeColumnLayout() {
                 refreshTrigger={refreshTrigger}
               />
             </div>
+          ) : (
+            <div className="flex-1 min-h-0">
+              <EmptyState icon={Inbox} title={t("selectEmail")} />
+            </div>
           )}
         </div>
 
         <div className={cn("col-span-5", columnClass)}>
           <div className={headerClass}>
             <h2 className={titleClass}>
-              {selectedMessageId ? t("messageContent") : t("selectMessage")}
+              {t("messageContent")}
             </h2>
           </div>
-          {selectedEmail && selectedMessageId && (
+          {selectedEmail && selectedMessageId ? (
             <div className="flex-1 overflow-auto">
               <MessageView
                 emailId={selectedEmail.id}
@@ -124,6 +129,10 @@ export function ThreeColumnLayout() {
                 messageType={selectedMessageType}
                 onClose={() => setSelectedMessageId(null)}
               />
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0">
+              <EmptyState icon={MailOpen} title={t("selectMessage")} />
             </div>
           )}
         </div>
@@ -152,10 +161,11 @@ export function ThreeColumnLayout() {
             <div className="h-full flex flex-col">
               <div className={cn(headerClass, "gap-2")}>
                 <button
+                  type="button"
                   onClick={() => {
                     setSelectedEmail(null)
                   }}
-                  className="text-sm text-primary shrink-0"
+                  className={backButtonClass}
                 >
                   {t("backToEmailList")}
                 </button>
@@ -164,7 +174,7 @@ export function ThreeColumnLayout() {
                     <span className="truncate min-w-0 flex-1 text-right font-mono text-[13px]">{selectedEmail.address}</span>
                     <button
                       type="button"
-                      className="shrink-0 p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors"
+                      className={copyButtonClass}
                       onClick={copyEmailAddress}
                     >
                       <Copy className="size-3.5" />
@@ -192,14 +202,15 @@ export function ThreeColumnLayout() {
 
           {mobileView === "message" && selectedEmail && selectedMessageId && (
             <div className="h-full flex flex-col">
-              <div className={headerClass}>
+              <div className={cn(headerClass, "gap-2")}>
                 <button
+                  type="button"
                   onClick={() => setSelectedMessageId(null)}
-                  className="text-sm text-primary"
+                  className={backButtonClass}
                 >
                   {t("backToMessageList")}
                 </button>
-                <span className="text-sm font-medium">{t("messageContent")}</span>
+                <span className="text-sm font-medium truncate min-w-0">{t("messageContent")}</span>
               </div>
               <div className="flex-1 overflow-auto">
                 <MessageView

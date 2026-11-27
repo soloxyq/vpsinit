@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Send } from "lucide-react"
 import { useToast } from "@/components/ui/use-toast"
 import {
@@ -91,9 +91,9 @@ export function SendDialog({ emailId, fromAddress, onSendSuccess }: SendDialogPr
               <Button 
                 variant="ghost" 
                 size="sm"
-                className="h-8 gap-2 hover:bg-primary/10 hover:text-primary transition-colors"
+                className="h-7 gap-1.5 px-2.5 shrink-0 hover:bg-primary/10 hover:text-primary transition-colors"
               >
-                <Send className="h-4 w-4" />
+                <Send className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">{t("title")}</span>
               </Button>
             </TooltipTrigger>
@@ -107,9 +107,9 @@ export function SendDialog({ emailId, fromAddress, onSendSuccess }: SendDialogPr
         <DialogHeader>
           <DialogTitle>{t("title")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-4">
-          <div className="text-sm text-muted-foreground">
-            {t("from")}: {fromAddress}
+        <div className="space-y-4 py-2">
+          <div className="text-sm text-muted-foreground truncate">
+            {t("from")}: <span className="font-mono text-foreground/85">{fromAddress}</span>
           </div>
           <Input
             value={to}
@@ -128,14 +128,14 @@ export function SendDialog({ emailId, fromAddress, onSendSuccess }: SendDialogPr
             rows={6}
           />
         </div>
-        <div className="flex justify-end gap-2">
+        <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={loading}>
             {tCommon("cancel")}
           </Button>
           <Button onClick={handleSend} disabled={loading}>
             {loading ? t("sending") : t("send")}
           </Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

@@ -36,7 +36,9 @@ fi
 TMP="$(mktemp -d)"
 STATE="$TMP/state"
 LOG="$TMP/pages-dev.log"
+RESEND_PORT=$((PORT + 100))
 PID=""
+MOCK_PID=""
 
 cleanup() {
   if [ -n "$PID" ]; then
@@ -45,12 +47,62 @@ cleanup() {
     pkill -P "$PID" 2>/dev/null || true
     wait "$PID" 2>/dev/null || true
   fi
+  if [ -n "$MOCK_PID" ]; then
+    kill "$MOCK_PID" 2>/dev/null || true
+    wait "$MOCK_PID" 2>/dev/null || true
+  fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
 export WRANGLER_SEND_METRICS=false
 unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID || true
+
+# 本机模拟 Resend 发信服务：测发信并发额度预占、4xx 明确拒收退回、5xx/连接中断保留预占
+node -e '
+  const http = require("node:http")
+  let calls = 0
+  const srv = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/stats") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ calls }))
+      return
+    }
+    if (req.method === "POST" && req.url === "/reset") {
+      calls = 0
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      calls++
+      let to = ""
+      try { to = (JSON.parse(body).to || [])[0] || "" } catch {}
+      if (to === "reject422@example.com") {
+        res.writeHead(422, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ message: "Domain not verified" }))
+        return
+      }
+      if (to === "error504@example.com") {
+        res.writeHead(504, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ message: "Upstream gateway timeout" }))
+        return
+      }
+      if (to === "reset@example.com") {
+        req.socket.destroy()
+        return
+      }
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ id: "re_mock_" + calls }))
+      }, 250)
+    })
+  })
+  srv.listen(Number(process.argv[1]), "127.0.0.1")
+' "$RESEND_PORT" &
+MOCK_PID=$!
 
 mkdir -p "$STATE"
 echo "== 应用本地 D1 迁移 =="
@@ -67,6 +119,7 @@ echo "== 启动本地测试实例 ($BASE) =="
   --kv "ATTACHMENTS=$ATT_ID" \
   --binding AUTH_SECRET=local-test-secret-not-the-real-one-0123456789abcdef \
   --binding AUTH_TRUST_HOST=true \
+  --binding "RESEND_API_URL=http://127.0.0.1:$RESEND_PORT/emails" \
   --persist-to "$STATE" \
   --show-interactive-dev-session=false) >"$LOG" 2>&1 &
 PID=$!
@@ -94,5 +147,5 @@ fi
 if [[ "$SUITES" == *" attachments "* ]]; then
   echo
   echo "== 运行附件与转发测试 =="
-  STATE="$STATE" "$ROOT/scripts/test/attachments-suite.sh" "$BASE"
+  STATE="$STATE" RESEND_MOCK="http://127.0.0.1:$RESEND_PORT" "$ROOT/scripts/test/attachments-suite.sh" "$BASE"
 fi

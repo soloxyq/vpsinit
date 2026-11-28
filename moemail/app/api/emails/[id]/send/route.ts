@@ -2,14 +2,23 @@ import { NextResponse } from "next/server"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { createDb } from "@/lib/db"
-import { emails, messages, dailyUsage } from "@/lib/schema"
-import { eq, sql } from "drizzle-orm"
+import { emails, messages } from "@/lib/schema"
+import { eq } from "drizzle-orm"
 import { getRequestContext } from "@cloudflare/next-on-pages"
-import { checkSendPermission } from "@/lib/send-permissions"
+import {
+  getSendPermissionAndLimit,
+  refundDailySendQuota,
+  reserveDailySendQuota,
+} from "@/lib/send-permissions"
 import { PublicError } from "@/lib/errors"
-import { utcDay } from "@/lib/attachments"
 
 export const runtime = "edge"
+
+const RESEND_DEFAULT_URL = "https://api.resend.com/emails"
+const RESEND_TIMEOUT_MS = 15_000
+
+// Resend 返回 HTTP 4xx 明确拒收（未入队），可退回预占额度；5xx 或网络超时结果未知，保留预占
+class ResendRejectedError extends PublicError {}
 
 interface SendEmailRequest {
   to: string
@@ -22,9 +31,9 @@ async function sendWithResend(
   subject: string,
   content: string,
   fromEmail: string,
-  config: { apiKey: string }
+  config: { apiKey: string; apiUrl?: string }
 ) {
-  const response = await fetch('https://api.resend.com/emails', {
+  const response = await fetch(config.apiUrl || RESEND_DEFAULT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -36,13 +45,18 @@ async function sendWithResend(
       subject: subject,
       html: content,
     }),
+    signal: AbortSignal.timeout(RESEND_TIMEOUT_MS),
   })
 
   if (!response.ok) {
-    const errorData = await response.json() as { message?: string }
-    console.error('Resend API error:', errorData)
+    const errorData = (await response.json().catch(() => ({}))) as { message?: string }
+    console.error('Resend API error:', response.status, errorData)
     // Resend 给的失败原因（域名没验证、收件人受限等）是写给调用方看的，发信的人要靠它排查，原样返回
-    throw new PublicError(errorData.message || "Resend发送失败，请稍后重试")
+    const message = errorData.message || "Resend发送失败，请稍后重试"
+    if (response.status >= 400 && response.status < 500) {
+      throw new ResendRejectedError(message)
+    }
+    throw new PublicError(message)
   }
 
   return { success: true }
@@ -60,15 +74,13 @@ export async function POST(
     const { id } = await params
     const db = createDb()
 
-    const permissionResult = await checkSendPermission(userId)
-    if (!permissionResult.canSend) {
+    const permission = await getSendPermissionAndLimit(userId)
+    if (!permission.canSend) {
       return NextResponse.json(
-        { error: permissionResult.error },
+        { error: permission.error },
         { status: 403 }
       )
     }
-    
-    const remainingEmails = permissionResult.remainingEmails
 
     const rawBody: unknown = await request.json().catch(() => null)
     if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
@@ -128,34 +140,46 @@ export async function POST(
       )
     }
 
-    await sendWithResend(to.trim(), subject, content, email.address, { apiKey })
+    // 所有本地校验通过后，先在 D1 用单条条件写语句预占当天 1 封额度，预占成功才调 Resend
+    const reservation = await reserveDailySendQuota(env.DB, userId, permission.dailyLimit)
+    if (!reservation.reserved) {
+      return NextResponse.json(
+        { error: `您今天已达到发件限制 (${permission.dailyLimit} 封)，请明天再试` },
+        { status: 403 }
+      )
+    }
+
+    try {
+      await sendWithResend(to.trim(), subject, content, email.address, {
+        apiKey,
+        apiUrl: env.RESEND_API_URL,
+      })
+    } catch (sendError) {
+      if (sendError instanceof ResendRejectedError) {
+        await refundDailySendQuota(env.DB, userId, reservation.day).catch((refundErr) => {
+          console.error("Failed to refund daily send quota:", refundErr)
+        })
+      }
+      throw sendError
+    }
 
     const now = new Date()
-    await db.batch([
-      db.insert(messages).values({
-        emailId: email.id,
-        fromAddress: email.address,
-        toAddress: to.trim(),
-        subject,
-        content: '',
-        type: "sent",
-        html: content,
-        // 自己发出的邮件不算未读
-        readAt: now,
-      }),
-      db
-        .insert(dailyUsage)
-        .values({ day: utcDay(now.getTime()), scope: `sent:${userId}`, count: 1 })
-        .onConflictDoUpdate({
-          target: [dailyUsage.day, dailyUsage.scope],
-          set: { count: sql`${dailyUsage.count} + 1` },
-        }),
-    ])
+    await db.insert(messages).values({
+      emailId: email.id,
+      fromAddress: email.address,
+      toAddress: to.trim(),
+      subject,
+      content: '',
+      type: "sent",
+      html: content,
+      // 自己发出的邮件不算未读
+      readAt: now,
+    })
 
     return NextResponse.json({ 
       success: true,
       message: "邮件发送成功",
-      remainingEmails: remainingEmails !== undefined ? Math.max(0, remainingEmails - 1) : undefined
+      remainingEmails: reservation.remainingEmails
     })
   } catch (error) {
     console.error('Failed to send email:', error)

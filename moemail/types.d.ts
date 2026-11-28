@@ -9,6 +9,8 @@ declare global {
     ATTACHMENTS?: KVNamespace;
     // 收信 Worker：没在 MoeMail 里建过的地址，来信原样转发到这里（须是 Email Routing 里验证过的地址）
     FORWARD_TO?: string;
+    // 仅本机回归测试绑定：指向本机模拟 Resend 服务；线上不设，固定走 https://api.resend.com/emails
+    RESEND_API_URL?: string;
   }
 
   interface Window {

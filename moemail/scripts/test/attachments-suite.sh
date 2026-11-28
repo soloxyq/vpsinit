@@ -455,6 +455,50 @@ req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":
 req owner DELETE "/api/emails/$NBOX1" -H "Origin: $B" >/dev/null
 B_AFTER_DELETE=$(harness budget | jq -r .remainingWrites)
 check "删除邮箱与邮件后当日已消耗的附件 KV 写入额度不回退" "$B_AFTER_DELETE" "$B_AFTER_DELIVER"
+
+if [ -n "${RESEND_MOCK:-}" ]; then
+  echo "-- 发信每日额度：原子预占、并发控制、4xx 退回与未知结果保留"
+  curl -s -X POST "$RESEND_MOCK/reset" >/dev/null
+  req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":true,"apiKey":"re_local_test","roleLimits":{"knight":2}}'; expect "设置骑士每日发件上限 2 封" 200
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{}'; expect "发信缺参数返回 400" 400
+  req other GET /api/emails/send-permission
+  check "参数校验失败不消耗发信额度" "$(jq -r .remainingEmails "$T/body")" 2
+
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{"to":"reject422@example.com","subject":"rej","content":"body"}'; expect "Resend 422 明确拒收" 500
+  check "Resend 4xx 拒收文案原样返回" "$(jq -r .error "$T/body")" "Domain not verified"
+  req other GET /api/emails/send-permission
+  check "Resend 4xx 明确拒收后退回预占额度（仍剩 2 封）" "$(jq -r .remainingEmails "$T/body")" 2
+
+  curl -s -X POST "$RESEND_MOCK/reset" >/dev/null
+  for idx in 1 2 3 4 5 6; do
+    curl -s -m 30 -o "$T/send_body_$idx" -w '%{http_code}\n' -b "$T/other.jar" \
+      -H "$XFP" -H "$J" -H "Origin: $B" -X POST "$B/api/emails/$OTHERBOX/send" \
+      -d "{\"to\":\"ok@example.com\",\"subject\":\"burst-$idx\",\"content\":\"hello\"}" >"$T/send_code_$idx" &
+  done
+  wait
+  CODES_SORTED=$(cat "$T"/send_code_[1-6] | sort | tr '\n' ',' | sed 's/,$//')
+  check "额度剩 2 封时 6 路并发：严格只有 2 封成功、4 封 403" "$CODES_SORTED" "200,200,403,403,403,403"
+  MOCK_CALLS=$(curl -s "$RESEND_MOCK/stats" | jq -r .calls)
+  check "超额的 4 路并发在 D1 预占阶段即拦截，未调用 Resend" "$MOCK_CALLS" 2
+  REMS_SORTED=$(jq -r 'select(.success == true) | .remainingEmails' "$T"/send_body_[1-6] | sort -n | tr '\n' ',' | sed 's/,$//')
+  check "成功的两封分别返回剩余额度 0 和 1" "$REMS_SORTED" "0,1"
+
+  req other DELETE "/api/emails/$OTHERBOX/messages?type=sent" -H "Origin: $B"; expect "清空骑士已发邮件" 200
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{"to":"ok@example.com","subject":"after-clear","content":"x"}'; expect "清空已发邮件后额度不恢复（仍 403）" 403
+
+  req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":true,"apiKey":"re_local_test","roleLimits":{"knight":4}}'; expect "把骑士每日发件上限调到 4 封（剩余 2 封）" 200
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{"to":"error504@example.com","subject":"gw-timeout","content":"x"}'; expect "Resend 504 网关超时" 500
+  req other GET /api/emails/send-permission
+  check "504 受理结果未知时保留预占不退回（剩 1 封）" "$(jq -r .remainingEmails "$T/body")" 1
+
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{"to":"reset@example.com","subject":"net-reset","content":"x"}'; expect "网络中断受理结果未知" 500
+  check "网络异常不泄露内部报错原文" "$(jq -r .error "$T/body")" "发送邮件失败"
+  req other GET /api/emails/send-permission
+  check "网络中断结果未知时保留预占不退回（剩 0 封）" "$(jq -r .remainingEmails "$T/body")" 0
+
+  req other POST "/api/emails/$OTHERBOX/send" -H "$J" -H "Origin: $B" -d '{"to":"ok@example.com","subject":"over","content":"x"}'; expect "预占耗尽后再次发信被拒" 403
+  req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":false,"apiKey":"","roleLimits":{}}'; expect "测完发信额度关回发件服务" 200
+fi
 req owner DELETE "/api/emails/$NBOX2" -H "Origin: $B" >/dev/null
 req owner DELETE "/api/emails/$NBOX3" -H "Origin: $B" >/dev/null
 

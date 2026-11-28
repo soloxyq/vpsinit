@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/d1'
 import { messages, emails, webhooks } from '../app/lib/schema'
 import { and, eq, gt, sql } from 'drizzle-orm'
 import PostalMime from 'postal-mime'
-import { WEBHOOK_CONFIG } from '../app/config/webhook'
+import { WEBHOOK_CONFIG, isHttpsUrl } from '../app/config/webhook'
 import { EmailMessage } from '../app/lib/webhook'
 import {
   attachmentBudget,
@@ -89,7 +89,7 @@ const handleEmail = async (message: ForwardableEmailMessage, env: Env) => {
       where: eq(webhooks.userId, targetEmail.userId!)
     })
 
-    if (webhook?.enabled) {
+    if (webhook?.enabled && isHttpsUrl(webhook.url)) {
       await fetch(webhook.url, {
         method: 'POST',
         headers: {
@@ -105,7 +105,8 @@ const handleEmail = async (message: ForwardableEmailMessage, env: Env) => {
           html: savedMessage.html,
           receivedAt: savedMessage.receivedAt.toISOString(),
           toAddress: targetEmail.address
-        } as EmailMessage)
+        } as EmailMessage),
+        signal: AbortSignal.timeout(WEBHOOK_CONFIG.TIMEOUT),
       })
     }
   } catch (error) {

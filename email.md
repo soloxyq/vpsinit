@@ -151,7 +151,7 @@ unset NEWPW
 ### 发信、Webhook 和分享链接
 
 - 发信：在“Resend 发件服务配置”里填 Resend 的 API Key 并启用之后才能用，目前没有启用。
-- Webhook：每个账号一个地址，收到新邮件时把发件人、主题和正文 POST 过去。通知不带签名，失败了也不重试。
+- Webhook：每个账号一个地址，只允许 `https://`，收到新邮件时把发件人、主题和正文 POST 过去（10 秒超时）。通知不带签名，失败了也不重试。
 - 分享链接：邮箱或单封邮件可以生成不用登录就能看的链接，可以设有效期，也可以随时删除。
 
 ## 代码放在哪
@@ -404,6 +404,7 @@ fi
 | 未读状态 | `message` 表加 `read_at` 列（迁移 0020），空值是未读。读取单封邮件的接口记下已读时间；`GET /api/emails/unread` 返回各邮箱的未读数，网页端每 30 秒问一次。每个邮箱最多数到 10 封（`UNREAD_COUNT_CAP`，角标显示成“9+”），一次查询读的行数因此不超过“邮箱数 × 12”，和邮件总数、未读总数都无关（靠索引 `message_email_id_read_at_idx`）；不设上限的话，永久邮箱里攒下的未读邮件会让这个查询越来越贵。`PATCH /api/emails/{id}/messages` 把一个邮箱的邮件标成已读，带 `before` 时只标到那个时间为止，网页端用它避开还没显示出来的新邮件。分享链接的接口不写也不返回已读状态 | `moemail/app/api/emails/unread/route.ts`、`moemail/app/hooks/use-unread-counts.ts`、`moemail/app/components/emails/message-list.tsx` |
 | 只挂载一套布局 | 邮箱页原来同时挂载桌面和手机两套布局，用 CSS 藏起一套：藏起来的那套也在轮询邮件列表，打开邮件时也会再请求一遍正文。现在按屏幕宽度只挂载用得上的那一套。窗口宽度跨过 1024px 这个断点以后两套都挂着（另一套里开着的对话框、填了一半的内容不能丢），刷新页面恢复成一套 | `moemail/app/components/emails/three-column-layout.tsx`、`moemail/app/hooks/use-media-query.ts` |
 | 接口报错不带内部信息 | 注册和发信接口原来把异常的 message 原样返回：校验失败时是 zod 的整段 JSON，数据库出错时是驱动的报错。现在只有写给用户看的提示原样返回（`PublicError`，包括 Resend 给的失败原因），其它一律回一句固定的文字，原文记日志。用户名已存在改回 409 | `moemail/app/lib/errors.ts`、`moemail/app/api/auth/register/route.ts`、`moemail/app/api/emails/[id]/send/route.ts` |
+| Webhook 限制 | 保存、测试和收信 Worker 发送前都只允许 `https://` 地址，防止邮件正文和验证码经明文 HTTP 发出；收信 Worker 发出 Webhook 请求时加 10 秒超时（`AbortSignal.timeout`） | `moemail/app/config/webhook.ts`、`moemail/app/api/webhook/`、`moemail/workers/email-receiver.ts` |
 | 创建邮箱默认“永久” | 创建对话框默认选中“永久”，原来是 1 天。接口不变，`expiryTime` 仍然必填 | `moemail/app/components/emails/create-dialog.tsx` |
 | 邮件列表轮询不数总数 | 邮件列表接口原来每次都 `count(*)` 一遍整个邮箱，网页端每 10 秒轮询一次，读的行数跟着邮件数涨：2000 封邮件的邮箱，收件列表每次约 2000 行，发件列表还要把邮箱全读一遍来排序，每次约 4100 行。现在 `GET /api/emails/{id}` 和分享链接的列表接口接受 `total=false`，不数总数，响应里也就没有 `total`。网页端轮询和往下翻页时都这样传，总数在本地加减；换邮箱、手动刷新、发信后的刷新才让接口数，和第一页放在同一个 batch 里。翻页条件多写一个 `time <= T`，索引能直接从游标的位置往下读（第 51 页从约 1100 行降到约 45 行）。发件列表靠新索引 `message_email_id_type_sent_at_idx`（迁移 0021）按 `sent_at` 排序，一页从约 2100 行降到约 45 行。在别的设备上删掉的邮件，开着的列表要换个邮箱或手动刷新后才从列表和总数里去掉 | `moemail/app/api/emails/[id]/route.ts`、`moemail/app/api/shared/[token]/messages/route.ts`、`moemail/app/components/emails/message-list.tsx`、`moemail/app/[locale]/shared/[token]/page-client.tsx` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
@@ -439,7 +440,7 @@ fi
 | next | 15.1.12 | 15.1.x 的最后一个补丁版本，修了上游 15.1.1 里包括远程代码执行在内的多个已公开漏洞，不能退回去。往上升也不行：按提交 `5c32548` 的记录，15.5.29 配 next-on-pages 1.13.6 能构建，但页面全部报 500，要先迁移到 OpenNext |
 | next-auth、@auth/drizzle-adapter | 5.0.0-beta.32、1.11.3 | 修了上游 beta.25 里已公开的漏洞，见提交 `1e40f3c` 的说明，不能退回去。两个包要一起升，保证锁文件里只有一份 `@auth/core` |
 | vercel | 39.1.1 | 上游固定的版本，next-on-pages 构建时用它 |
-| drizzle-orm | `^0.36.4`，锁文件里是 0.36.4 | 上游原有的范围。不要升到 0.44 及以上：从那一版起数据库的报错信息里带 SQL 和参数，而注册和发信两个接口会把异常信息原样返回给调用方，升级前要先改这两处 |
+| drizzle-orm | `^0.36.4`，锁文件里是 0.36.4 | 上游原有的范围，目前没有需要修复的公告，保持不动。0.44 起数据库报错里带 SQL 和参数；注册与发信接口已在 `4d7c1ae` 收口为固定错误文案，不再向客户端返回内部异常，以后需要升级时不再受此限制 |
 
 `moemail/package-lock.json` 是上游留下的，没有随本地的升级更新，以 `moemail/pnpm-lock.yaml` 为准。
 

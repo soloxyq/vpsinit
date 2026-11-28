@@ -1,5 +1,5 @@
 import { callWebhook } from "@/lib/webhook"
-import { WEBHOOK_CONFIG } from "@/config"
+import { WEBHOOK_CONFIG, isHttpsUrl } from "@/config/webhook"
 import { z } from "zod"
 import { EmailMessage } from "@/lib/webhook"
 import { requireUser } from "@/lib/guard"
@@ -8,7 +8,7 @@ import { PERMISSIONS } from "@/lib/permissions"
 export const runtime = "edge"
 
 const testSchema = z.object({
-  url: z.string().url()
+  url: z.string().url().refine(isHttpsUrl, "Webhook URL must use https://")
 })
 
 export async function POST(request: Request) {

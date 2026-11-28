@@ -2,13 +2,14 @@ import { requireUser } from "@/lib/guard"
 import { createDb } from "@/lib/db"
 import { webhooks } from "@/lib/schema"
 import { PERMISSIONS } from "@/lib/permissions"
+import { isHttpsUrl } from "@/config/webhook"
 import { eq } from "drizzle-orm"
 import { z } from "zod"
 
 export const runtime = "edge"
 
 const webhookSchema = z.object({
-  url: z.string().url(),
+  url: z.string().url().refine(isHttpsUrl, "Webhook URL must use https://"),
   enabled: z.boolean()
 })
 

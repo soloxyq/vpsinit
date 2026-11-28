@@ -7,4 +7,13 @@ export const WEBHOOK_CONFIG = {
   }
 } as const
 
-export type WebhookConfig = typeof WEBHOOK_CONFIG 
+export type WebhookConfig = typeof WEBHOOK_CONFIG
+
+// Webhook 地址只允许 https://，防止邮件正文和验证码经明文 HTTP 发出
+export function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}

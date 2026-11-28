@@ -201,6 +201,8 @@ req civ GET /api/config; expect FUNC "平民读公开配置" "200"; absent FUNC 
 req owner GET /api/config/email-service; expect FUNC "owner 读发件服务配置" "200"
 req owner GET /api/api-keys; expect FUNC "owner 列 API Key" "200"
 req owner GET /api/webhook; expect FUNC "owner 读 webhook" "200"
+req owner POST /api/webhook -H "$J" -H "Origin: $B" -d '{"url":"http://example.com/hook","enabled":true}'; expect SEC "保存 http:// webhook 被拒" "400"
+req owner POST /api/webhook/test -H "$J" -H "Origin: $B" -d '{"url":"http://example.com/hook"}'; expect SEC "测试 http:// webhook 被拒" "400"
 req owner GET '/api/roles/users?page=1'; expect FUNC "owner 列用户" "200"; present FUNC "用户列表含 civ1" "civ1"
 req owner POST /api/config -H "$J" -H "Origin: $B" -d '{"defaultRole":"civilian","emailDomains":"moemail.app","adminContact":"","maxEmails":"30"}'; expect FUNC "owner 保存配置" "200"
 req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"tmpbox","expiryTime":3600000,"domain":"moemail.app"}'; expect FUNC "owner 建临时邮箱" "200"; TMPBOX=$(jq -r '.id // empty' "$T/body")

@@ -6,6 +6,7 @@ import { EmailList } from "./email-list"
 import { MessageListContainer } from "./message-list-container"
 import { MessageView } from "./message-view"
 import { SendDialog } from "./send-dialog"
+import { EditNoteDialog } from "./edit-note-dialog"
 import { cn } from "@/lib/utils"
 import { useCopy } from "@/hooks/use-copy"
 import { useSendPermission } from "@/hooks/use-send-permission"
@@ -17,6 +18,7 @@ import { EmptyState } from "@/components/ui/empty-state"
 interface Email {
   id: string
   address: string
+  note?: string | null
 }
 
 export function ThreeColumnLayout() {
@@ -25,6 +27,7 @@ export function ThreeColumnLayout() {
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [selectedMessageType, setSelectedMessageType] = useState<'received' | 'sent'>('received')
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const [noteUpdate, setNoteUpdate] = useState<{ id: string; note: string | null; seq: number } | null>(null)
   const { copyToClipboard } = useCopy()
   const { canSend: canSendEmails } = useSendPermission()
   // 桌面和手机两套布局平时只挂载当前屏幕用的那一套（断点和下面的 lg: 一致）。两套都挂着的话，
@@ -73,6 +76,11 @@ export function ThreeColumnLayout() {
     setRefreshTrigger(prev => prev + 1)
   }
 
+  const handleNoteUpdated = (emailId: string, note: string | null) => {
+    setSelectedEmail(prev => (prev && prev.id === emailId ? { ...prev, note } : prev))
+    setNoteUpdate(prev => ({ id: emailId, note, seq: (prev?.seq ?? 0) + 1 }))
+  }
+
   return (
     <div className="pb-5 pt-20 h-full flex flex-col">
       {/* 桌面端三栏布局 */}
@@ -90,6 +98,7 @@ export function ThreeColumnLayout() {
               }}
               selectedEmailId={selectedEmail?.id}
               unreadCounts={unreadCounts}
+              updatedNote={noteUpdate}
             />
           </div>
         </div>
@@ -99,7 +108,7 @@ export function ThreeColumnLayout() {
             <h2 className={titleClass}>
               {selectedEmail ? (
                 <div className="w-full flex justify-between items-center gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="flex items-center gap-1 min-w-0">
                     <span className="truncate min-w-0 font-mono text-[13px]">{selectedEmail.address}</span>
                     <button
                       type="button"
@@ -108,6 +117,13 @@ export function ThreeColumnLayout() {
                     >
                       <Copy className="size-3.5" />
                     </button>
+                    <EditNoteDialog
+                      emailId={selectedEmail.id}
+                      emailAddress={selectedEmail.address}
+                      initialNote={selectedEmail.note}
+                      triggerClassName={copyButtonClass}
+                      onNoteUpdated={handleNoteUpdated}
+                    />
                   </div>
                   {selectedEmail && canSendEmails && (
                     <SendDialog 
@@ -179,6 +195,7 @@ export function ThreeColumnLayout() {
                   }}
                   selectedEmailId={selectedEmail?.id}
                   unreadCounts={unreadCounts}
+                  updatedNote={noteUpdate}
                 />
               </div>
             </>
@@ -197,7 +214,7 @@ export function ThreeColumnLayout() {
                   {t("backToEmailList")}
                 </button>
                 <div className="flex-1 flex justify-between items-center gap-2 min-w-0">
-                  <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="flex items-center gap-1 min-w-0">
                     <span className="truncate min-w-0 flex-1 text-right font-mono text-[13px]">{selectedEmail.address}</span>
                     <button
                       type="button"
@@ -206,6 +223,13 @@ export function ThreeColumnLayout() {
                     >
                       <Copy className="size-3.5" />
                     </button>
+                    <EditNoteDialog
+                      emailId={selectedEmail.id}
+                      emailAddress={selectedEmail.address}
+                      initialNote={selectedEmail.note}
+                      triggerClassName={copyButtonClass}
+                      onNoteUpdated={handleNoteUpdated}
+                    />
                   </div>
                   {canSendEmails && (
                     <SendDialog 

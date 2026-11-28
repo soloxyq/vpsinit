@@ -5,6 +5,7 @@ import { emails } from "@/lib/schema"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
+import { likeContains, likePattern, parseSearchQuery } from "@/lib/search"
 
 export const runtime = "edge"
 
@@ -17,13 +18,18 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url)
   const cursor = searchParams.get('cursor')
+  const query = parseSearchQuery(searchParams.get('q'))
   
   const db = createDb()
 
   try {
+    const pattern = query ? likePattern(query) : null
     const baseConditions = and(
       eq(emails.userId, userId),
-      gt(emails.expiresAt, new Date())
+      gt(emails.expiresAt, new Date()),
+      pattern
+        ? or(likeContains(emails.address, pattern), likeContains(emails.note, pattern))
+        : undefined
     )
 
     const totalResult = await db.select({ count: sql<number>`count(*)` })

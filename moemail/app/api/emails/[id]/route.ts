@@ -8,8 +8,66 @@ import { PERMISSIONS } from "@/lib/permissions"
 import { checkBasicSendPermission } from "@/lib/send-permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { attachmentKeysOf, deleteAttachmentKeys, hasListedAttachments } from "@/lib/attachments"
+import { EMAIL_CONFIG } from "@/config/email"
+import { likeContains, likePattern, normalizeNote, parseSearchQuery } from "@/lib/search"
 
 export const runtime = "edge"
+
+// 修改邮箱备注：请求体为 {"note": "字符串或 null"}，空串清空备注
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
+  if (guard.error) return guard.error
+  const { userId } = guard
+
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || !("note" in body)) {
+    return NextResponse.json(
+      { error: 'Body must include "note" (string or null)' },
+      { status: 400 }
+    )
+  }
+  const parsedNote = normalizeNote(body.note)
+  if (!parsedNote.ok) {
+    return NextResponse.json(
+      { error: `备注不能超过 ${EMAIL_CONFIG.MAX_NOTE_LENGTH} 个字符` },
+      { status: 400 }
+    )
+  }
+
+  try {
+    const db = createDb()
+    const { id } = await params
+    const email = await db.query.emails.findFirst({
+      where: and(
+        eq(emails.id, id),
+        eq(emails.userId, userId)
+      )
+    })
+
+    if (!email) {
+      return NextResponse.json(
+        { error: "邮箱不存在或无权限修改" },
+        { status: 403 }
+      )
+    }
+
+    await db
+      .update(emails)
+      .set({ note: parsedNote.value })
+      .where(and(eq(emails.id, id), eq(emails.userId, userId)))
+
+    return NextResponse.json({ id: email.id, note: parsedNote.value })
+  } catch (error) {
+    console.error("Failed to update email note:", error)
+    return NextResponse.json(
+      { error: "修改备注失败" },
+      { status: 500 }
+    )
+  }
+}
 
 export async function DELETE(
   request: Request,
@@ -67,6 +125,7 @@ export async function GET(
   const { searchParams } = new URL(request.url)
   const cursorStr = searchParams.get('cursor')
   const messageType = searchParams.get('type')
+  const query = parseSearchQuery(searchParams.get('q'))
 
   try {
     const db = createDb()
@@ -99,6 +158,7 @@ export async function GET(
       )
     }
 
+    const pattern = query ? likePattern(query) : null
     const baseConditions = and(
       eq(messages.emailId, id),
       messageType === 'sent' 
@@ -106,7 +166,14 @@ export async function GET(
         : or(
             ne(messages.type, "sent"),
             isNull(messages.type)
+          ),
+      pattern
+        ? or(
+            likeContains(messages.subject, pattern),
+            likeContains(messageType === 'sent' ? messages.toAddress : messages.fromAddress, pattern),
+            likeContains(messages.content, pattern)
           )
+        : undefined
     )
 
     const conditions = [baseConditions]

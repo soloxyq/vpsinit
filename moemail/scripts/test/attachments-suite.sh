@@ -286,6 +286,101 @@ req - GET "/api/shared/$PT/messages?total=false"; expect "分享链接带 total=
 check "分享链接 total=false 时不带总数" "$(jq -r 'if has("messages") then has("total") else "ERR" end' "$T/body")" false
 req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":false,"apiKey":"","roleLimits":{}}'; expect "关回发件服务" 200
 
+echo "-- 邮箱备注与搜索（含 LIKE 通配符转义）"
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"notebox1","expiryTime":0,"domain":"moemail.app","note":"GitHub 100%_test\\slash"}'
+expect "创建带备注永久邮箱" 200
+NBOX1=$(jq -r '.id // empty' "$T/body"); NADDR1=$(jq -r '.email // empty' "$T/body")
+check "创建返回备注原文" "$(jq -r '.note' "$T/body")" 'GitHub 100%_test\slash'
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"notebox2","expiryTime":3600000,"domain":"moemail.app","note":"账单通知"}'
+expect "创建带备注临时邮箱" 200
+NBOX2=$(jq -r '.id // empty' "$T/body")
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"notebox3","expiryTime":0,"domain":"moemail.app"}'
+expect "创建无备注邮箱" 200
+NBOX3=$(jq -r '.id // empty' "$T/body")
+
+req owner GET '/api/emails?q=GitHub'
+check "按备注搜邮箱只命中 notebox1" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX1"
+req owner GET '/api/emails?q=100%25_test'
+check "按含 % 和 _ 的备注搜索只命中 notebox1" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX1"
+req owner GET '/api/emails?q=%25'
+check "搜单个 % 不当通配符（只命中 notebox1）" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX1"
+req owner GET '/api/emails?q=_'
+check "搜单个 _ 不当通配符（只命中 notebox1）" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX1"
+req owner GET '/api/emails?q=%5C'
+check "搜反斜杠只命中 notebox1" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX1"
+req owner GET '/api/emails?q=notebox2'
+check "按地址搜邮箱只命中 notebox2" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX2"
+req owner GET '/api/emails?q=NoSuchBoxKeyword999'
+check "搜不存在的邮箱关键词返回空" "$(jq -r '.emails | length' "$T/body")" 0
+
+req owner PATCH "/api/emails/$NBOX3" -H "$J" -H "Origin: $B" -d '{"note":"  云服务账单  "}'
+expect "PATCH 修改邮箱备注" 200
+check "PATCH 自动去除首尾空白" "$(jq -r '.note' "$T/body")" "云服务账单"
+req owner GET "/api/emails?q=$(jq -rn --arg q '云服务' '$q | @uri')"
+check "改完备注后可按新备注搜到" "$(jq -r '[.emails[].id] | join(",")' "$T/body")" "$NBOX3"
+req owner PATCH "/api/emails/$NBOX3" -H "$J" -H "Origin: $B" -d '{"note":"   "}'
+expect "PATCH 空白串清空备注" 200
+check "清空后返回 null" "$(jq -r '.note == null' "$T/body")" true
+req owner GET "/api/emails?q=$(jq -rn --arg q '云服务' '$q | @uri')"
+check "清空备注后不再命中" "$(jq -r '.emails | length' "$T/body")" 0
+
+cat > "$T/search1.eml" <<'EOF'
+From: alice@alpha.example
+To: notebox1@moemail.app
+Subject: =?UTF-8?B?55m75b2V6YCa55+lIDUwJV9vZmY=?=
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="s1"
+
+--s1
+Content-Type: text/plain; charset="utf-8"
+
+plain body line one
+--s1
+Content-Type: text/html; charset="utf-8"
+
+<p>html_only_secret_marker_1</p>
+--s1--
+EOF
+cat > "$T/search2.eml" <<'EOF'
+From: billing@beta.example
+To: notebox1@moemail.app
+Subject: =?UTF-8?B?5pyI5bqm6LSm5Y2V?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+Invoice ID: INV-99881
+EOF
+cat > "$T/search3.eml" <<'EOF'
+From: noreply@gamma.example
+To: notebox1@moemail.app
+Subject: HTML Only Mail
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<p>only_in_html_999</p>
+EOF
+deliver alice@alpha.example "$NADDR1" "$T/search1.eml" >/dev/null
+deliver billing@beta.example "$NADDR1" "$T/search2.eml" >/dev/null
+deliver noreply@gamma.example "$NADDR1" "$T/search3.eml" >/dev/null
+
+req owner GET "/api/emails/$NBOX1?q=50%25_off&total=false"
+expect "按主题含 %_ 搜邮件" 200
+check "搜 50%_off 只命中第 1 封且不带 total" "$(jq -r '[(.messages | length), has("total")] | join(" ")' "$T/body")" "1 false"
+req owner GET "/api/emails/$NBOX1?q=%25&total=false"
+check "邮件搜索 % 不当通配符（只命中 1 封）" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?q=billing@beta&total=false"
+check "按发件人搜邮件只命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?q=INV-99881&total=false"
+check "按纯文本正文搜邮件只命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?q=html_only_secret_marker_1&total=false"
+check "邮件搜索不扫 HTML 列（有纯文本时）" "$(jq -r '.messages | length' "$T/body")" 0
+req owner GET "/api/emails/$NBOX1?q=only_in_html_999&total=false"
+check "邮件搜索不扫 HTML 列（纯 HTML 邮件）" "$(jq -r '.messages | length' "$T/body")" 0
+
+req owner DELETE "/api/emails/$NBOX1" -H "Origin: $B" >/dev/null
+req owner DELETE "/api/emails/$NBOX2" -H "Origin: $B" >/dev/null
+req owner DELETE "/api/emails/$NBOX3" -H "Origin: $B" >/dev/null
+
 echo "-- 清理 Worker 的孤儿扫描"
 ORPHAN="att/00000000-0000-4000-8000-0000000000aa/0"; EXPIRING="att/00000000-0000-4000-8000-0000000000bb/0"
 harness put-orphan "$ORPHAN" >/dev/null; harness put-orphan "$EXPIRING" expiring >/dev/null

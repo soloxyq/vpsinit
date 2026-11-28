@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
-import { Mail, RefreshCw, Trash2, Share2, Paperclip } from "lucide-react"
+import { Mail, RefreshCw, Search, Trash2, Share2, Paperclip, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { EmptyState, ListSkeleton } from "@/components/ui/empty-state"
 import { useThrottle } from "@/hooks/use-throttle"
 import { usePolling } from "@/hooks/use-polling"
@@ -82,14 +83,25 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   const totalKnownRef = useRef(false)
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
-  // 清空、删除或换邮箱之后加一：之前发出、还没返回的列表请求作废，免得把删掉的邮件或上一个邮箱的邮件放回列表
+  // 箱内搜索：按回车或点搜索按钮触发，不在每次击键时扫库；搜索期间暂停轮询并隐藏全箱操作按钮
+  const [searchInput, setSearchInput] = useState("")
+  const [activeQuery, setActiveQuery] = useState("")
+  const activeQueryRef = useRef("")
+  const isSearching = activeQuery.length > 0
+  // 清空、删除、切换搜索或换邮箱之后加一：之前发出、还没返回的列表请求作废
   const listVersionRef = useRef(0)
   // 当前邮箱的列表是否已经加载过一次：之后轮询再多出来的才是新到的邮件
   const loadedRef = useRef(false)
   const { toast } = useToast()
 
-  const fetchMessages = async (cursor?: string, countTotal = !cursor && !totalKnownRef.current) => {
+  const fetchMessages = async (
+    cursor?: string,
+    countTotal?: boolean,
+    query = activeQueryRef.current
+  ) => {
     const version = listVersionRef.current
+    // 搜索结果一律不数总数（total=false），避免和邮箱总数的本地加减逻辑混在一起
+    const shouldCount = query ? false : (countTotal ?? (!cursor && !totalKnownRef.current))
     try {
       const url = new URL(`/api/emails/${email.id}`, window.location.origin)
       if (messageType === 'sent') {
@@ -98,12 +110,27 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
       if (cursor) {
         url.searchParams.set('cursor', cursor)
       }
-      if (!countTotal) {
+      if (query) {
+        url.searchParams.set('q', query)
+      }
+      if (!shouldCount) {
         url.searchParams.set('total', 'false')
       }
       const response = await fetch(url)
+      if (!response.ok) return
       const data = await response.json() as MessageResponse
       if (version !== listVersionRef.current) return
+
+      if (query) {
+        if (!cursor) {
+          updateMessages(data.messages)
+        } else {
+          updateMessages(prev => [...prev, ...data.messages])
+        }
+        setNextCursor(data.nextCursor)
+        return
+      }
+
       const counted = typeof data.total === "number"
       if (counted) {
         setTotal(data.total!)
@@ -152,16 +179,52 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     } catch (error) {
       console.error("Failed to fetch messages:", error)
     } finally {
-      // 作废的请求不结束“加载中”：换邮箱以后，新邮箱自己的请求回来才算加载完
+      // 作废的请求不结束“加载中”：换邮箱或切搜索以后，最新请求回来才算加载完
       if (version === listVersionRef.current) setLoading(false)
       setRefreshing(false)
       setLoadingMore(false)
     }
   }
 
+  const clearSearch = () => {
+    setSearchInput("")
+    if (!activeQueryRef.current) return
+    setActiveQuery("")
+    activeQueryRef.current = ""
+    listVersionRef.current++
+    loadedRef.current = false
+    totalKnownRef.current = false
+    updateMessages([])
+    setTotal(0)
+    setNextCursor(null)
+    setLoading(true)
+    fetchMessages(undefined, true, "")
+  }
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = searchInput.trim()
+    if (!trimmed) {
+      clearSearch()
+      return
+    }
+    setActiveQuery(trimmed)
+    activeQueryRef.current = trimmed
+    listVersionRef.current++
+    loadedRef.current = false
+    updateMessages([])
+    setNextCursor(null)
+    setLoading(true)
+    fetchMessages(undefined, false, trimmed)
+  }
+
   const handleRefresh = async () => {
     setRefreshing(true)
-    await fetchMessages(undefined, true)
+    if (activeQueryRef.current) {
+      await fetchMessages(undefined, false, activeQueryRef.current)
+    } else {
+      await fetchMessages(undefined, true, "")
+    }
   }
 
   const handleScroll = useThrottle((e: React.UIEvent<HTMLDivElement>) => {
@@ -173,7 +236,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
 
     if (remainingScroll <= threshold && nextCursor) {
       setLoadingMore(true)
-      fetchMessages(nextCursor)
+      fetchMessages(nextCursor, false, activeQueryRef.current)
     }
   }, 200)
 
@@ -195,7 +258,11 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
 
       listVersionRef.current++
       updateMessages(prev => prev.filter(e => e.id !== message.id))
-      setTotal(prev => prev - 1)
+      if (activeQueryRef.current) {
+        totalKnownRef.current = false
+      } else {
+        setTotal(prev => Math.max(0, prev - 1))
+      }
       if (message.read_at === null) onUnreadChange?.()
 
       toast({
@@ -224,24 +291,31 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     listVersionRef.current++
     loadedRef.current = false
     totalKnownRef.current = false
+    setSearchInput("")
+    setActiveQuery("")
+    activeQueryRef.current = ""
     // 上一个邮箱的列表不留着：新邮箱的请求要是失败了，留着的列表会顶着新邮箱的地址显示出来
     updateMessages([])
     setTotal(0)
     setLoading(true)
     setNextCursor(null)
-    fetchMessages()
+    fetchMessages(undefined, true, "")
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.id])
 
-  // 定时刷新列表；标签页在后台时暂停
+  // 定时刷新列表；标签页在后台或搜索状态下暂停
   usePolling(() => {
     if (!refreshing && !loadingMore) fetchMessages()
-  }, EMAIL_CONFIG.POLL_INTERVAL, !!email.id)
+  }, EMAIL_CONFIG.POLL_INTERVAL, !!email.id && !isSearching)
 
   useEffect(() => {
     if (refreshTrigger && refreshTrigger > 0) {
+      if (activeQueryRef.current) {
+        clearSearch()
+        return
+      }
       setRefreshing(true)
-      fetchMessages(undefined, true)
+      fetchMessages(undefined, true, "")
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTrigger])
@@ -317,14 +391,14 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         >
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
         </Button>
-        {loading ? (
+        {loading && !isSearching ? (
           <span className="inline-block h-3 w-14 rounded bg-muted animate-pulse" aria-hidden="true" />
-        ) : total > 0 ? (
+        ) : !isSearching && total > 0 ? (
           <span className="text-xs text-muted-foreground tabular-nums">
             {`${total} ${t("messageCount")}`}
           </span>
         ) : null}
-        {!loading && total > 0 && (
+        {!loading && !isSearching && total > 0 && (
           <div className="ml-auto flex items-center">
             {hasUnread && (
               <Button
@@ -347,6 +421,47 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
           </div>
         )}
       </div>
+
+      <form onSubmit={handleSearchSubmit} className="px-2.5 py-2 border-b border-border/70">
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex-1 min-w-0">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchInput}
+              onChange={(e) => {
+                const next = e.target.value
+                setSearchInput(next)
+                if (next === "" && activeQueryRef.current) {
+                  clearSearch()
+                }
+              }}
+              placeholder={messageType === "sent" ? t("searchSentPlaceholder") : t("searchPlaceholder")}
+              maxLength={EMAIL_CONFIG.MAX_SEARCH_LENGTH}
+              className="h-9 sm:h-8 pl-8 pr-7 sm:text-xs"
+              aria-label={messageType === "sent" ? t("searchSentPlaceholder") : t("searchPlaceholder")}
+            />
+            {(searchInput || isSearching) && (
+              <button
+                type="button"
+                onClick={clearSearch}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                aria-label={t("clearSearch")}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <Button
+            type="submit"
+            variant="outline"
+            size="sm"
+            className="h-9 sm:h-8 px-2.5 text-xs shrink-0"
+            disabled={!searchInput.trim() && !isSearching}
+          >
+            {t("search")}
+          </Button>
+        </div>
+      </form>
 
       <div className="flex-1 overflow-auto" onScroll={handleScroll}>
         {loading ? (
@@ -465,7 +580,10 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
             )}
           </div>
         ) : (
-          <EmptyState icon={Mail} title={t("noMessages")} />
+          <EmptyState
+            icon={isSearching ? Search : Mail}
+            title={isSearching ? t("noSearchResults") : t("noMessages")}
+          />
         )}
       </div>
     </div>

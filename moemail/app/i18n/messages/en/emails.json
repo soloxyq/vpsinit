@@ -29,12 +29,21 @@
     "deleteFailed": "Failed to delete email",
     "error": "Error",
     "success": "Success",
-    "unreadCount": "{count} unread"
+    "unreadCount": "{count} unread",
+    "searchPlaceholder": "Search emails or notes",
+    "noSearchResults": "No matching emails",
+    "clearSearch": "Clear search",
+    "editNote": "Edit note",
+    "notePlaceholder": "e.g. GitHub, cloud billing (leave empty to clear)",
+    "noteSaveSuccess": "Note updated",
+    "noteSaveFailed": "Failed to update note"
   },
   "create": {
     "title": "Create Email",
     "name": "Email Prefix",
     "namePlaceholder": "Leave empty for random generation",
+    "note": "Note",
+    "notePlaceholder": "Purpose note (optional)",
     "domain": "Domain",
     "domainPlaceholder": "Select a domain",
     "expiryTime": "Validity Period",
@@ -65,7 +74,12 @@
     "deleteMessageDescription": "Delete the message “{subject}”? This can’t be undone.",
     "markAllRead": "Mark all read",
     "markAllReadFailed": "Couldn’t mark the messages as read. Please try again later",
-    "unread": "Unread"
+    "unread": "Unread",
+    "searchPlaceholder": "Search subject, sender, or body (Enter)",
+    "searchSentPlaceholder": "Search subject, recipient, or body (Enter)",
+    "search": "Search",
+    "clearSearch": "Clear search",
+    "noSearchResults": "No matching messages"
   },
   "send": {
     "title": "Send Email",

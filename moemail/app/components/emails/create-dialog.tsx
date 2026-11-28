@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { EXPIRY_OPTIONS } from "@/types/email"
 import { useCopy } from "@/hooks/use-copy"
 import { useConfig } from "@/hooks/use-config"
+import { EMAIL_CONFIG } from "@/config"
 
 interface CreateDialogProps {
   onEmailCreated: () => void
@@ -30,6 +31,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [emailName, setEmailName] = useState("")
+  const [note, setNote] = useState("")
   const [currentDomain, setCurrentDomain] = useState("")
   const [expiryTime, setExpiryTime] = useState(DEFAULT_EXPIRY)
   const { toast } = useToast()
@@ -59,7 +61,8 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
         body: JSON.stringify({
           name: emailName,
           domain: currentDomain,
-          expiryTime: parseInt(expiryTime)
+          expiryTime: parseInt(expiryTime),
+          note: note.trim() || undefined,
         })
       })
 
@@ -80,6 +83,7 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
       onEmailCreated()
       setOpen(false)
       setEmailName("")
+      setNote("")
     } catch {
       toast({
         title: tList("error"),
@@ -138,6 +142,17 @@ export function CreateDialog({ onEmailCreated }: CreateDialogProps) {
             >
               <RefreshCw className="w-4 h-4" />
             </Button>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="create-email-note" className="text-muted-foreground">{t("note")}</Label>
+            <Input
+              id="create-email-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={t("notePlaceholder")}
+              maxLength={EMAIL_CONFIG.MAX_NOTE_LENGTH}
+            />
           </div>
 
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">

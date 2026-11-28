@@ -29,12 +29,21 @@
     "deleteFailed": "删除邮箱失败",
     "error": "错误",
     "success": "成功",
-    "unreadCount": "{count} 封未读"
+    "unreadCount": "{count} 封未读",
+    "searchPlaceholder": "搜索邮箱或备注",
+    "noSearchResults": "没有找到匹配的邮箱",
+    "clearSearch": "清除搜索",
+    "editNote": "编辑备注",
+    "notePlaceholder": "例如：GitHub、云服务账单（留空则清除）",
+    "noteSaveSuccess": "备注已更新",
+    "noteSaveFailed": "更新备注失败"
   },
   "create": {
     "title": "创建邮箱",
     "name": "邮箱前缀",
     "namePlaceholder": "留空则随机生成",
+    "note": "备注",
+    "notePlaceholder": "用途备注（选填）",
     "domain": "域名",
     "domainPlaceholder": "选择域名",
     "expiryTime": "有效期",
@@ -65,7 +74,12 @@
     "deleteMessageDescription": "确定要删除邮件「{subject}」吗？删除后无法恢复。",
     "markAllRead": "全部已读",
     "markAllReadFailed": "标记已读失败，请稍后再试",
-    "unread": "未读"
+    "unread": "未读",
+    "searchPlaceholder": "搜索主题、发件人或正文，回车搜索",
+    "searchSentPlaceholder": "搜索主题、收件人或正文，回车搜索",
+    "search": "搜索",
+    "clearSearch": "清除搜索",
+    "noSearchResults": "没有找到匹配的邮件"
   },
   "send": {
     "title": "发送邮件",

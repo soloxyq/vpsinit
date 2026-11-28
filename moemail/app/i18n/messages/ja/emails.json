@@ -29,12 +29,21 @@
     "deleteFailed": "メールボックスの削除に失敗しました",
     "error": "エラー",
     "success": "成功",
-    "unreadCount": "未読 {count} 件"
+    "unreadCount": "未読 {count} 件",
+    "searchPlaceholder": "メールやメモを検索",
+    "noSearchResults": "一致するメールボックスがありません",
+    "clearSearch": "検索をクリア",
+    "editNote": "メモを編集",
+    "notePlaceholder": "例：GitHub、請求書（空欄で削除）",
+    "noteSaveSuccess": "メモを更新しました",
+    "noteSaveFailed": "メモの更新に失敗しました"
   },
   "create": {
     "title": "メールボックスを作成",
     "name": "メールボックスのプレフィックス",
     "namePlaceholder": "空白の場合はランダムに生成",
+    "note": "メモ",
+    "notePlaceholder": "用途メモ（任意）",
     "domain": "ドメイン",
     "domainPlaceholder": "ドメインを選択",
     "expiryTime": "有効期間",
@@ -65,7 +74,12 @@
     "deleteMessageDescription": "メール「{subject}」を削除しますか？元に戻せません。",
     "markAllRead": "すべて既読",
     "markAllReadFailed": "既読にできませんでした。しばらくしてからもう一度お試しください",
-    "unread": "未読"
+    "unread": "未読",
+    "searchPlaceholder": "件名・差出人・本文を検索（Enter）",
+    "searchSentPlaceholder": "件名・宛先・本文を検索（Enter）",
+    "search": "検索",
+    "clearSearch": "検索をクリア",
+    "noSearchResults": "一致するメールがありません"
   },
   "send": {
     "title": "メールを送信",

@@ -29,12 +29,21 @@
     "deleteFailed": "이메일 삭제에 실패했습니다",
     "error": "오류",
     "success": "성공",
-    "unreadCount": "읽지 않은 메일 {count}통"
+    "unreadCount": "읽지 않은 메일 {count}통",
+    "searchPlaceholder": "이메일 또는 메모 검색",
+    "noSearchResults": "일치하는 이메일이 없습니다",
+    "clearSearch": "검색 지우기",
+    "editNote": "메모 편집",
+    "notePlaceholder": "예: GitHub, 결제 알림 (비우면 삭제)",
+    "noteSaveSuccess": "메모가 업데이트되었습니다",
+    "noteSaveFailed": "메모 업데이트에 실패했습니다"
   },
   "create": {
     "title": "이메일 생성",
     "name": "이메일 접두사",
     "namePlaceholder": "비워두면 무작위로 생성됩니다",
+    "note": "메모",
+    "notePlaceholder": "용도 메모 (선택 사항)",
     "domain": "도메인",
     "domainPlaceholder": "도메인 선택",
     "expiryTime": "유효 기간",
@@ -65,7 +74,12 @@
     "deleteMessageDescription": "메일 “{subject}”을(를) 삭제할까요? 되돌릴 수 없습니다.",
     "markAllRead": "모두 읽음",
     "markAllReadFailed": "읽음으로 표시하지 못했습니다. 잠시 후 다시 시도하세요",
-    "unread": "읽지 않음"
+    "unread": "읽지 않음",
+    "searchPlaceholder": "제목, 보낸 사람 또는 본문 검색 (Enter)",
+    "searchSentPlaceholder": "제목, 받는 사람 또는 본문 검색 (Enter)",
+    "search": "검색",
+    "clearSearch": "검색 지우기",
+    "noSearchResults": "일치하는 메일이 없습니다"
   },
   "send": {
     "title": "이메일 보내기",

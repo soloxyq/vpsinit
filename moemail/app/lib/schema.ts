@@ -44,6 +44,8 @@ export const emails = sqliteTable("email", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   address: text("address").notNull().unique(),
   userId: text("userId").references(() => users.id, { onDelete: "cascade" }),
+  // 邮箱用途备注（选填）
+  note: text("note"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),

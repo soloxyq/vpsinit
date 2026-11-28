@@ -45,7 +45,7 @@
 
 1. 打开 <https://mail.7879710.xyz/zh-CN/login> ，用用户名和密码登录。
 2. 在首页点“进入邮箱”，再点左边“我的邮箱”这一栏里、邮箱数量右边的“创建邮箱”。
-3. 填邮箱名，也就是地址里 `@` 前面那段；点旁边的刷新图标可以随机生成一个。“有效期”选 1 小时、1 天、3 天或永久，默认选中“永久”。对话框下方会显示完整的地址。
+3. 填邮箱名，也就是地址里 `@` 前面那段；点旁边的刷新图标可以随机生成一个。可选填一句“备注”（比如“GitHub”“云服务账单”，最多 100 字）。“有效期”选 1 小时、1 天、3 天或永久，默认选中“永久”。对话框下方会显示完整的地址。
 4. 点“创建”。新邮箱出现在“我的邮箱”的列表里，点它就能看到收到的邮件。邮箱打开着的时候，新邮件大约每 10 秒自动刷出来；浏览器标签页切到后台时暂停刷新，切回来马上刷新一次。
 
 几条要知道的规则：
@@ -58,6 +58,7 @@
 - 打开邮件时，如果认出了验证码，邮件头下面会显示“验证码 123456”，点一下就复制。只认“验证码”“code”这类字样附近的 4 到 8 位数字或字母数字组合，跳过年份、日期和金额；认不出就不显示。
 - 邮件列表右上角的“清空邮件”删除这个列表里的全部邮件和附件，不能恢复。
 - 有未读邮件的邮箱，在“我的邮箱”里显示未读数，超过 9 封显示“9+”；邮件列表里，未读的邮件加粗、左边带一个圆点。打开邮件就算读过，用 API Key 读取也算，通过分享链接看不算。邮件列表右上角的“全部已读”把这个邮箱的邮件都标成已读，包括往下翻才加载出来的旧邮件；点的那一刻还没显示出来的新邮件不算在内，仍然是未读。未读数大约每 30 秒刷新一次，来了新邮件、读了邮件之后会马上刷新。这个功能上线以前收到的邮件都算已读。
+- 邮箱可以写备注（创建时填写，或打开邮箱后点中栏地址旁的铅笔图标修改/清空）。左栏邮箱第二行优先显示备注：永久邮箱只显示备注，临时邮箱在备注后面接到期时间。左栏搜索框按邮箱地址或备注过滤（防抖 300 毫秒）；中栏搜索框在当前邮箱内按主题、发件人/收件人或纯文本正文搜索（不搜 HTML，按回车或点“搜索”触发），搜索期间暂停 10 秒轮询并隐藏“全部已读”和“清空邮件”。
 - 没有 IMAP、POP3、SMTP，只能在网页里看，或者用 API Key 通过接口读。
 - 地址不区分大小写。
 - 有效期到了的邮箱，会在之后整点的清理中连同里面的邮件一起被删除。
@@ -381,7 +382,7 @@ fi
 
 ## 相对上游的改动
 
-本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过三次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）；再加了索引 `message_email_id_type_sent_at_idx`（迁移 `drizzle/0021_jittery_oracle.sql`，只建索引）。合并上游时下面这些要保留：
+本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过四次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）；再加了索引 `message_email_id_type_sent_at_idx`（迁移 `drizzle/0021_jittery_oracle.sql`，只建索引）；再给 `email` 表加了 `note` 列（迁移 `drizzle/0022_eager_mandroid.sql`，只加可空列）。合并上游时下面这些要保留：
 
 | 改动 | 作用 | 主要位置 |
 | --- | --- | --- |
@@ -407,6 +408,7 @@ fi
 | Webhook 限制 | 保存、测试和收信 Worker 发送前都只允许 `https://` 地址，防止邮件正文和验证码经明文 HTTP 发出；收信 Worker 发出 Webhook 请求时加 10 秒超时（`AbortSignal.timeout`） | `moemail/app/config/webhook.ts`、`moemail/app/api/webhook/`、`moemail/workers/email-receiver.ts` |
 | 创建邮箱默认“永久” | 创建对话框默认选中“永久”，原来是 1 天。接口不变，`expiryTime` 仍然必填 | `moemail/app/components/emails/create-dialog.tsx` |
 | 邮件列表轮询不数总数 | 邮件列表接口原来每次都 `count(*)` 一遍整个邮箱，网页端每 10 秒轮询一次，读的行数跟着邮件数涨：2000 封邮件的邮箱，收件列表每次约 2000 行，发件列表还要把邮箱全读一遍来排序，每次约 4100 行。现在 `GET /api/emails/{id}` 和分享链接的列表接口接受 `total=false`，不数总数，响应里也就没有 `total`。网页端轮询和往下翻页时都这样传，总数在本地加减；换邮箱、手动刷新、发信后的刷新才让接口数，和第一页放在同一个 batch 里。翻页条件多写一个 `time <= T`，索引能直接从游标的位置往下读（第 51 页从约 1100 行降到约 45 行）。发件列表靠新索引 `message_email_id_type_sent_at_idx`（迁移 0021）按 `sent_at` 排序，一页从约 2100 行降到约 45 行。在别的设备上删掉的邮件，开着的列表要换个邮箱或手动刷新后才从列表和总数里去掉 | `moemail/app/api/emails/[id]/route.ts`、`moemail/app/api/shared/[token]/messages/route.ts`、`moemail/app/components/emails/message-list.tsx`、`moemail/app/[locale]/shared/[token]/page-client.tsx` |
+| 邮箱备注与搜索 | `email` 表加 `note` 列（迁移 0022），创建邮箱接口可选传 `note`，新增 `PATCH /api/emails/{id}` 修改或清空备注。`GET /api/emails?q=` 按地址与备注搜索，`GET /api/emails/{id}?q=` 在当前邮箱内按主题、发件人/收件人和纯文本正文搜索（不搜 HTML，`LIKE` 转义 `%`/`_`/`\` 并显式带 `ESCAPE '\'`）。网页端左栏 300ms 防抖搜邮箱、中栏按回车/按钮触发箱内搜；箱内搜索态固定传 `total=false`、暂停 10 秒轮询并隐藏“全部已读”和“清空邮件” | `moemail/app/lib/search.ts`、`moemail/app/api/emails/`、`moemail/app/components/emails/` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
 | 登录失败的提示和 404 页面 | 密码错误时显示“用户名或密码错误”；不存在的页面有正常的 404 页 | `moemail/app/lib/auth.ts`、`moemail/app/not-found.tsx` |
 | 依赖版本 | 见[依赖版本](#依赖版本) | `moemail/package.json` |

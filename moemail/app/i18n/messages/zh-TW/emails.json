@@ -29,12 +29,21 @@
     "deleteFailed": "刪除郵箱失敗",
     "error": "錯誤",
     "success": "成功",
-    "unreadCount": "{count} 封未讀"
+    "unreadCount": "{count} 封未讀",
+    "searchPlaceholder": "搜尋郵箱或備註",
+    "noSearchResults": "沒有找到相符的郵箱",
+    "clearSearch": "清除搜尋",
+    "editNote": "編輯備註",
+    "notePlaceholder": "例如：GitHub、雲端帳單（留空則清除）",
+    "noteSaveSuccess": "備註已更新",
+    "noteSaveFailed": "更新備註失敗"
   },
   "create": {
     "title": "建立郵箱",
     "name": "郵箱前綴",
     "namePlaceholder": "留空則隨機生成",
+    "note": "備註",
+    "notePlaceholder": "用途備註（選填）",
     "domain": "網域",
     "domainPlaceholder": "選擇網域",
     "expiryTime": "有效期",
@@ -65,7 +74,12 @@
     "deleteMessageDescription": "確定要刪除郵件「{subject}」嗎？刪除後無法復原。",
     "markAllRead": "全部已讀",
     "markAllReadFailed": "標記已讀失敗，請稍後再試",
-    "unread": "未讀"
+    "unread": "未讀",
+    "searchPlaceholder": "搜尋主旨、寄件者或內文，按 Enter 搜尋",
+    "searchSentPlaceholder": "搜尋主旨、收件者或內文，按 Enter 搜尋",
+    "search": "搜尋",
+    "clearSearch": "清除搜尋",
+    "noSearchResults": "沒有找到相符的郵件"
   },
   "send": {
     "title": "發送郵件",

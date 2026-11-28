@@ -9,6 +9,7 @@ import { getRequestContext } from "@cloudflare/next-on-pages"
 import { requireUser } from "@/lib/guard"
 import { getUserRole } from "@/lib/auth"
 import { ROLES, PERMISSIONS } from "@/lib/permissions"
+import { normalizeNote } from "@/lib/search"
 
 export const runtime = "edge"
 
@@ -43,11 +44,20 @@ export async function POST(request: Request) {
       }
     }
 
-    const { name, expiryTime, domain } = await request.json<{ 
+    const { name, expiryTime, domain, note } = await request.json<{ 
       name: string
       expiryTime: number
       domain: string
+      note?: unknown
     }>()
+
+    const parsedNote = normalizeNote(note)
+    if (!parsedNote.ok) {
+      return NextResponse.json(
+        { error: `备注不能超过 ${EMAIL_CONFIG.MAX_NOTE_LENGTH} 个字符` },
+        { status: 400 }
+      )
+    }
 
     if (!EXPIRY_OPTIONS.some(option => option.value === expiryTime)) {
       return NextResponse.json(
@@ -85,6 +95,7 @@ export async function POST(request: Request) {
     
     const emailData: typeof emails.$inferInsert = {
       address,
+      note: parsedNote.value,
       createdAt: now,
       expiresAt: expires,
       userId: userId
@@ -92,11 +103,12 @@ export async function POST(request: Request) {
     
     const result = await db.insert(emails)
       .values(emailData)
-      .returning({ id: emails.id, address: emails.address })
+      .returning({ id: emails.id, address: emails.address, note: emails.note })
     
     return NextResponse.json({ 
       id: result[0].id,
-      email: result[0].address 
+      email: result[0].address,
+      note: result[0].note,
     })
   } catch (error) {
     console.error('Failed to generate email:', error)

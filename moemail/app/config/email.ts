@@ -3,6 +3,8 @@ export const EMAIL_CONFIG = {
   POLL_INTERVAL: 10_000, // Polling interval in milliseconds
   UNREAD_POLL_INTERVAL: 30_000, // 各邮箱未读数的刷新间隔
   UNREAD_COUNT_CAP: 10, // 每个邮箱的未读数最多数到这么多，角标上显示成“9+”
+  MAX_NOTE_LENGTH: 100, // 邮箱备注最大字符数（按码点计）
+  MAX_SEARCH_LENGTH: 100, // 搜索关键词最大字符数（按码点计）
   DEFAULT_DAILY_SEND_LIMITS: {
     emperor: 0,   // 皇帝无限制
     duke: 5,      // 公爵每日5封
@@ -11,4 +13,4 @@ export const EMAIL_CONFIG = {
   },
 } as const
 
-export type EmailConfig = typeof EMAIL_CONFIG 
+export type EmailConfig = typeof EMAIL_CONFIG

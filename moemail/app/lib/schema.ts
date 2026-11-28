@@ -80,6 +80,8 @@ export const messages = sqliteTable("message", {
   emailIdReceivedAtTypeIdx: index("message_email_id_received_at_type_idx").on(table.emailId, table.receivedAt, table.type),
   // 数各邮箱的未读邮件（read_at IS NULL）时只扫未读的那几条，不用把邮箱里的邮件全读一遍
   emailIdReadAtIdx: index("message_email_id_read_at_idx").on(table.emailId, table.readAt),
+  // 发件列表按 sent_at 排序、按 type 筛选：没有这个索引时，每取一页都要把邮箱里的邮件全读一遍再排序
+  emailIdTypeSentAtIdx: index("message_email_id_type_sent_at_idx").on(table.emailId, table.type, table.sentAt),
 }))
 
 export const webhooks = sqliteTable('webhook', {

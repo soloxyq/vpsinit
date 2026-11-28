@@ -518,6 +518,7 @@ GET /api/emails/{emailId}?cursor=xxx
 参数说明：
 - `emailId`: 邮箱的唯一标识符，必填
 - `cursor`: 分页游标，可选
+- `total`: 可选，传 `false` 时不数邮件总数，响应里也就没有 `total`。数总数要把邮箱里的邮件读一遍，网页端轮询和往下翻页时都这样传
 
 返回响应：
 ```json
@@ -539,7 +540,7 @@ GET /api/emails/{emailId}?cursor=xxx
 - `messages`: 邮件列表数组
 - `read_at`: 已读时间（时间戳），`null` 表示未读
 - `nextCursor`: 下一页游标，用于分页请求
-- `total`: 邮件总数量
+- `total`: 邮件总数量（传了 `total=false` 时没有）
 
 #### 删除邮箱
 ```http

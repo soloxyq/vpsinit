@@ -255,7 +255,7 @@ curl -s -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 | --- | --- | --- |
 | `scripts/test/run-local.sh` | 部署前的本地回归 | 要先 `pnpm run build:pages`。它用 `wrangler pages dev` 在 127.0.0.1 起一个实例（D1 和 KV 都是本地模拟的），依次跑下面三个脚本，结束后自动清理。默认端口 8792，换端口用 `PORT=8795 scripts/test/run-local.sh`；只跑其中几个用 `SUITES="sec live attachments"` 里的名字，比如 `SUITES=attachments`。输出里的“已应用迁移数”和“本地模拟器故障重试 N 次”只是统计，不算失败 |
 | `scripts/test/sec-suite.sh` | 安全和功能回归 | 只允许对本机实例运行，会注册测试账号、改站点配置。最后一行报告通过和失败的数量，失败数是 0 才算通过 |
-| `scripts/test/attachments-suite.sh` | 附件与转发 | 由 `run-local.sh` 调用。它用 `email-harness.ts` 直接调用收信 Worker 的代码投递测试信（D1 和 KV 是同一个本地实例的），检查附件的保存、下载权限和响应头、未注册地址的转发，以及删除邮件、邮箱、账号时附件一起删掉 |
+| `scripts/test/attachments-suite.sh` | 附件与转发 | 由 `run-local.sh` 调用。它用 `email-harness.ts` 直接调用收信 Worker 的代码投递测试信（D1 和 KV 是同一个本地实例的），检查附件的保存、下载权限和响应头、未注册地址的转发，删除邮件、邮箱、账号时附件一起删掉，还有未读状态、邮件列表的总数和翻页（同一毫秒的邮件跨页时不重不漏） |
 | `scripts/test/live-verify.sh <地址>` | 部署后的线上验证 | 只发匿名请求。它按仓库里最新的代码检查，并且假定注册已关闭、只有密码登录；线上不是最新版，或者这两项改了，对应的检查会报失败 |
 
 ### 合并上游的新版本
@@ -381,7 +381,7 @@ fi
 
 ## 相对上游的改动
 
-本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过两次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）。合并上游时下面这些要保留：
+本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过三次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）；再加了索引 `message_email_id_type_sent_at_idx`（迁移 `drizzle/0021_jittery_oracle.sql`，只建索引）。合并上游时下面这些要保留：
 
 | 改动 | 作用 | 主要位置 |
 | --- | --- | --- |
@@ -405,6 +405,7 @@ fi
 | 只挂载一套布局 | 邮箱页原来同时挂载桌面和手机两套布局，用 CSS 藏起一套：藏起来的那套也在轮询邮件列表，打开邮件时也会再请求一遍正文。现在按屏幕宽度只挂载用得上的那一套。窗口宽度跨过 1024px 这个断点以后两套都挂着（另一套里开着的对话框、填了一半的内容不能丢），刷新页面恢复成一套 | `moemail/app/components/emails/three-column-layout.tsx`、`moemail/app/hooks/use-media-query.ts` |
 | 接口报错不带内部信息 | 注册和发信接口原来把异常的 message 原样返回：校验失败时是 zod 的整段 JSON，数据库出错时是驱动的报错。现在只有写给用户看的提示原样返回（`PublicError`，包括 Resend 给的失败原因），其它一律回一句固定的文字，原文记日志。用户名已存在改回 409 | `moemail/app/lib/errors.ts`、`moemail/app/api/auth/register/route.ts`、`moemail/app/api/emails/[id]/send/route.ts` |
 | 创建邮箱默认“永久” | 创建对话框默认选中“永久”，原来是 1 天。接口不变，`expiryTime` 仍然必填 | `moemail/app/components/emails/create-dialog.tsx` |
+| 邮件列表轮询不数总数 | 邮件列表接口原来每次都 `count(*)` 一遍整个邮箱，网页端每 10 秒轮询一次，读的行数跟着邮件数涨：2000 封邮件的邮箱，收件列表每次约 2000 行，发件列表还要把邮箱全读一遍来排序，每次约 4100 行。现在 `GET /api/emails/{id}` 和分享链接的列表接口接受 `total=false`，不数总数，响应里也就没有 `total`。网页端轮询和往下翻页时都这样传，总数在本地加减；换邮箱、手动刷新、发信后的刷新才让接口数，和第一页放在同一个 batch 里。翻页条件多写一个 `time <= T`，索引能直接从游标的位置往下读（第 51 页从约 1100 行降到约 45 行）。发件列表靠新索引 `message_email_id_type_sent_at_idx`（迁移 0021）按 `sent_at` 排序，一页从约 2100 行降到约 45 行。在别的设备上删掉的邮件，开着的列表要换个邮箱或手动刷新后才从列表和总数里去掉 | `moemail/app/api/emails/[id]/route.ts`、`moemail/app/api/shared/[token]/messages/route.ts`、`moemail/app/components/emails/message-list.tsx`、`moemail/app/[locale]/shared/[token]/page-client.tsx` |
 | 不让搜索引擎收录 | 页面元数据里是 noindex；`.env` 里设了 `NEXT_PUBLIC_BASE_URL`，页面里的站点地址在构建时取它 | `moemail/app/[locale]/layout.tsx`、`moemail/.env` |
 | 登录失败的提示和 404 页面 | 密码错误时显示“用户名或密码错误”；不存在的页面有正常的 404 页 | `moemail/app/lib/auth.ts`、`moemail/app/not-found.tsx` |
 | 依赖版本 | 见[依赖版本](#依赖版本) | `moemail/package.json` |

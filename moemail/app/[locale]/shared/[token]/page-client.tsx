@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { BrandHeader } from "@/components/ui/brand-header"
 import { Button } from "@/components/ui/button"
@@ -60,15 +60,20 @@ export function SharedEmailPageClient({
   const [nextCursor, setNextCursor] = useState<string | null>(initialNextCursor)
   const [loadingMore, setLoadingMore] = useState(false)
   const [total, setTotal] = useState(initialTotal)
+  // 和 MessageList 一样：总数只在需要时让接口数，轮询和翻页时传 total=false，数字在本地加减；
+  // 要数也只让取第一页的请求数（理由见 MessageList）。首屏的数是服务端渲染时和第一页一起数的
+  const totalKnownRef = useRef(true)
   const [refreshing, setRefreshing] = useState(false)
+  // 列表的最新内容，和 state 同步更新：两个请求前后脚返回时，后一个要和前一个合并后的列表比，
+  // 否则同一封新邮件会被算两次
   const messagesRef = useRef<Message[]>(initialMessages)
+  const updateMessages = (next: Message[] | ((prev: Message[]) => Message[])) => {
+    const value = typeof next === "function" ? next(messagesRef.current) : next
+    messagesRef.current = value
+    setMessages(value)
+  }
 
-  // 当 messages 改变时更新 ref
-  useEffect(() => {
-    messagesRef.current = messages
-  }, [messages])
-
-  const fetchMessages = async (cursor?: string) => {
+  const fetchMessages = async (cursor?: string, countTotal = !cursor && !totalKnownRef.current) => {
     try {
       if (cursor) {
         setLoadingMore(true)
@@ -78,13 +83,22 @@ export function SharedEmailPageClient({
       if (cursor) {
         url.searchParams.set('cursor', cursor)
       }
+      if (!countTotal) {
+        url.searchParams.set('total', 'false')
+      }
 
       const messagesResponse = await fetch(url)
       if (messagesResponse.ok) {
         const messagesData = await messagesResponse.json() as {
           messages: Message[]
           nextCursor: string | null
-          total: number
+          // 请求带了 total=false 时没有
+          total?: number
+        }
+        const counted = typeof messagesData.total === "number"
+        if (counted) {
+          setTotal(messagesData.total!)
+          totalKnownRef.current = true
         }
 
         if (!cursor) {
@@ -98,22 +112,24 @@ export function SharedEmailPageClient({
           )
 
           if (lastDuplicateIndex === -1) {
-            // 没有重复，直接使用新消息
-            setMessages(newMessages)
+            // 没有重复，直接使用新消息。总数：这一页就是全部的话就是它的长度，否则下次轮询让接口数
+            updateMessages(newMessages)
             setNextCursor(messagesData.nextCursor)
-            setTotal(messagesData.total)
+            if (!counted) {
+              if (messagesData.nextCursor === null) setTotal(newMessages.length)
+              else totalKnownRef.current = false
+            }
             return
           }
           // 有重复，只添加新的消息
           const uniqueNewMessages = newMessages.slice(0, lastDuplicateIndex)
-          setMessages([...uniqueNewMessages, ...oldMessages])
-          setTotal(messagesData.total)
+          updateMessages([...uniqueNewMessages, ...oldMessages])
+          if (!counted) setTotal(prev => prev + uniqueNewMessages.length)
           return
         }
         // 加载更多：追加到列表末尾
-        setMessages(prev => [...prev, ...(messagesData.messages || [])])
+        updateMessages(prev => [...prev, ...(messagesData.messages || [])])
         setNextCursor(messagesData.nextCursor)
-        setTotal(messagesData.total)
       }
     } catch (err) {
       console.error("Failed to fetch messages:", err)
@@ -125,7 +141,7 @@ export function SharedEmailPageClient({
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await fetchMessages()
+    await fetchMessages(undefined, true)
   }
 
   // 定时刷新列表；标签页在后台时暂停

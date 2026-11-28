@@ -98,21 +98,20 @@ export async function getSharedEmailMessages(token: string, limit = 20): Promise
       )
     )
 
-    // 获取消息总数（只统计接收的邮件）
+    // 第一页（多取一条用来判断还有没有下一页）和总数（只数收到的邮件）放进同一个 batch：
+    // 分享页之后的轮询不再数总数，只在这个数上加减，所以两者得对得上
     const { sql } = await import("drizzle-orm")
-    const totalResult = await db.select({ count: sql<number>`count(*)` })
-      .from(messages)
-      .where(baseConditions)
+    const [messageList, totalResult] = await db.batch([
+      db.query.messages.findMany({
+        // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
+        columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
+        where: baseConditions,
+        orderBy: [desc(messages.receivedAt), desc(messages.id)],
+        limit: limit + 1
+      }),
+      db.select({ count: sql<number>`count(*)` }).from(messages).where(baseConditions),
+    ])
     const totalCount = Number(totalResult[0].count)
-
-    // 获取邮箱的消息列表（多获取一条用于判断是否有更多）
-    const messageList = await db.query.messages.findMany({
-      // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
-      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
-      where: baseConditions,
-      orderBy: [desc(messages.receivedAt), desc(messages.id)],
-      limit: limit + 1
-    })
 
     const hasMore = messageList.length > limit
     const results = hasMore ? messageList.slice(0, limit) : messageList

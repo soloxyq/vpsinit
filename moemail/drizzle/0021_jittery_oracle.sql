@@ -1,0 +1,1 @@
+CREATE INDEX `message_email_id_type_sent_at_idx` ON `message` (`emailId`,`type`,`sent_at`);

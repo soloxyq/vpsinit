@@ -52,7 +52,8 @@ interface MessageListProps {
 interface MessageResponse {
   messages: Message[]
   nextCursor: string | null
-  total: number
+  // 请求带了 total=false 时没有
+  total?: number
 }
 
 export function MessageList({ email, messageType, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount = 0, onUnreadChange }: MessageListProps) {
@@ -73,6 +74,12 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     setMessages(value)
   }
   const [total, setTotal] = useState(0)
+  // total 是不是接口数出来的准数。数总数要把邮箱里的邮件读一遍，读的行数和邮件数一样多，
+  // 所以轮询和往下翻页都不让接口数（total=false），数字在本地跟着加减：新到几封加几，删一封减一。
+  // 换邮箱后的第一次加载、手动刷新、发信后的刷新，以及本地算不出来之后的下一次轮询才让接口数。
+  // 只有取第一页的请求数：接口把数和第一页放在同一个 batch 里，合并之后列表和数字对得上。
+  // 翻页请求数出来的数会包含列表顶端之后才到的新邮件，下次轮询再把它们加一遍就多了
+  const totalKnownRef = useRef(false)
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   // 清空、删除或换邮箱之后加一：之前发出、还没返回的列表请求作废，免得把删掉的邮件或上一个邮箱的邮件放回列表
@@ -81,7 +88,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   const loadedRef = useRef(false)
   const { toast } = useToast()
 
-  const fetchMessages = async (cursor?: string) => {
+  const fetchMessages = async (cursor?: string, countTotal = !cursor && !totalKnownRef.current) => {
     const version = listVersionRef.current
     try {
       const url = new URL(`/api/emails/${email.id}`, window.location.origin)
@@ -91,10 +98,18 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
       if (cursor) {
         url.searchParams.set('cursor', cursor)
       }
+      if (!countTotal) {
+        url.searchParams.set('total', 'false')
+      }
       const response = await fetch(url)
       const data = await response.json() as MessageResponse
       if (version !== listVersionRef.current) return
-      
+      const counted = typeof data.total === "number"
+      if (counted) {
+        setTotal(data.total!)
+        totalKnownRef.current = true
+      }
+
       if (!cursor) {
         const newMessages = data.messages
         const oldMessages = messagesRef.current
@@ -110,7 +125,12 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         if (lastDuplicateIndex === -1) {
           updateMessages(newMessages)
           setNextCursor(data.nextCursor)
-          setTotal(data.total)
+          // 和本地的列表一封都对不上（一下子来了一页以上的新邮件，或者列表里的邮件在别处都删了）：
+          // 这一页就是全部的话，总数就是它的长度；否则本地算不出来，下次轮询让接口数
+          if (!counted) {
+            if (data.nextCursor === null) setTotal(newMessages.length)
+            else totalKnownRef.current = false
+          }
           return
         }
         const uniqueNewMessages = newMessages.slice(0, lastDuplicateIndex)
@@ -124,12 +144,11 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
             return m.read_at === null && serverReadAt ? { ...m, read_at: serverReadAt } : m
           }),
         ])
-        setTotal(data.total)
+        if (!counted) setTotal(prev => prev + added)
         return
       }
       updateMessages(prev => [...prev, ...data.messages])
       setNextCursor(data.nextCursor)
-      setTotal(data.total)
     } catch (error) {
       console.error("Failed to fetch messages:", error)
     } finally {
@@ -142,7 +161,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await fetchMessages()
+    await fetchMessages(undefined, true)
   }
 
   const handleScroll = useThrottle((e: React.UIEvent<HTMLDivElement>) => {
@@ -204,6 +223,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     }
     listVersionRef.current++
     loadedRef.current = false
+    totalKnownRef.current = false
     // 上一个邮箱的列表不留着：新邮箱的请求要是失败了，留着的列表会顶着新邮箱的地址显示出来
     updateMessages([])
     setTotal(0)
@@ -221,7 +241,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   useEffect(() => {
     if (refreshTrigger && refreshTrigger > 0) {
       setRefreshing(true)
-      fetchMessages()
+      fetchMessages(undefined, true)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTrigger])

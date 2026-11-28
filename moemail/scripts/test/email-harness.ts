@@ -6,6 +6,7 @@
 //   ... keys                # 列出 KV 里的附件键和到期时间
 //   ... put-orphan <key> [expiring]  # 写一个没有对应邮件的附件（expiring：带到期时间）
 //   ... expire <邮箱 ID>     # 把邮箱的到期时间改到过去
+//   ... retime <邮箱 ID> <毫秒>  # 测翻页用：一半改成发出的，时间按 id 每 7 封一组重复（见下面）
 //   ... sweep               # 立即扫描孤儿附件（不等一小时的保护期）
 // 结果打印成一行 "RESULT <json>"。
 import { readFileSync } from "node:fs"
@@ -63,6 +64,21 @@ async function main() {
       console.log(`RESULT ${JSON.stringify({ ok: true })}`)
     } else if (mode === "expire") {
       await env.DB.prepare("UPDATE email SET expires_at = 1 WHERE id = ?").bind(args[0]).run()
+      console.log(`RESULT ${JSON.stringify({ ok: true })}`)
+    } else if (mode === "retime") {
+      // 测翻页用：每隔一封改成发出的，收到的里面再有一部分的 type 改成 NULL（上游的老数据就是这样）。
+      // 两个列表里的邮件各按 id 从小到大每 7 封一组，同组同一毫秒，id 越大的组时间越早。
+      // 这样第一页（20 封）的末尾落在第三组中间，第二页里既有和它同一毫秒、id 更小的，
+      // 也有时间更早、id 更大的：翻页条件的两半都得写对，测试才能过
+      const [emailId, base] = args
+      await env.DB.prepare(
+        `UPDATE message SET
+           received_at = ?1 - (SELECT count(*) FROM message m2
+             WHERE m2.emailId = ?2 AND m2.rowid % 2 = message.rowid % 2 AND m2.id < message.id) / 7,
+           type = CASE WHEN rowid % 2 = 0 THEN 'sent' WHEN rowid % 3 = 0 THEN NULL ELSE type END
+         WHERE emailId = ?2`
+      ).bind(Number(base), emailId).run()
+      await env.DB.prepare("UPDATE message SET sent_at = received_at WHERE emailId = ?").bind(emailId).run()
       console.log(`RESULT ${JSON.stringify({ ok: true })}`)
     } else if (mode === "sweep") {
       const deleted = await sweepOrphanAttachments(env.DB, kv, { minAgeMs: 0 })

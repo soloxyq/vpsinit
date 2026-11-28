@@ -485,6 +485,7 @@ GET /api/emails?cursor=xxx
 ```http
 GET /api/emails/{emailId}?cursor=xxx
 ```
+Add `total=false` to skip counting the mailbox's messages; the response then has no `total`. Counting reads every message in the mailbox, so the web UI skips it when polling and when loading more pages.
 
 #### Delete Email
 ```http

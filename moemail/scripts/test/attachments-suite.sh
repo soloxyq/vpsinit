@@ -248,6 +248,44 @@ deliver sender@example.com "$UADDR" "$T/plain.eml" 11 >/dev/null
 req owner GET "/api/emails/$UBOX"; check "一次投 11 封都到了" "$(jq -r '[.messages[] | select(.read_at == null)] | length' "$T/body")" 11
 check "未读数每个邮箱最多数到 10" "$(unread_of owner "$UBOX")" 10
 
+echo "-- 邮件列表：总数和翻页"
+# walk <jar> <路径> <时间字段> [别的参数]：带 total=false 从第一页翻到最后一页（网页端翻页也是这样），
+# 输出“页数 邮件数 不重复的邮件数 是否按（时间, id）倒序”
+walk() {
+  local jar="$1" path="$2" field="$3" extra="${4:+&$4}" cursor="" all="[]" n=0
+  while [ "$n" -lt 10 ]; do
+    req "$jar" GET "$path?total=false$extra${cursor:+&cursor=$(jq -rn --arg c "$cursor" '$c | @uri')}"
+    [ "$CODE" = 200 ] || { echo "HTTP $CODE"; return; }
+    all=$(jq -c --argjson a "$all" --arg f "$field" '$a + [.messages[] | {id, t: .[$f]}]' "$T/body")
+    cursor=$(jq -r '.nextCursor // empty' "$T/body"); n=$((n+1))
+    [ -n "$cursor" ] || break
+  done
+  jq -rn --argjson a "$all" --arg n "$n" '"\($n) \($a | length) \($a | map(.id) | unique | length) \($a == ($a | sort_by(.t, .id) | reverse))"'
+}
+req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"attpage","expiryTime":0,"domain":"moemail.app"}'
+PBOX=$(jq -r '.id // empty' "$T/body"); PADDR=$(jq -r '.email // empty' "$T/body")
+deliver sender@example.com "$PADDR" "$T/plain.eml" 45 >/dev/null
+# 收到的和发出的各二十多封，每个列表按 id 每 7 封一组、同组同一毫秒（见 email-harness.ts 的 retime）：
+# 两个列表都要翻两页，第二页里既有和第一页最后一封同一毫秒的，也有时间更早、id 更大的
+check "邮件时间改成成组重复" "$(harness retime "$PBOX" 1767225600000 | jq -r .ok)" true
+req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":true,"apiKey":"re_local_test","roleLimits":{}}'; expect "临时打开发件服务（查看发件列表要它）" 200
+req owner GET "/api/emails/$PBOX"; RTOTAL=$(jq -r '.total' "$T/body")
+req owner GET "/api/emails/$PBOX?type=sent"; STOTAL=$(jq -r '.total' "$T/body")
+check "收到的和发出的总数加起来是 45" "$((RTOTAL + STOTAL))" 45
+check "两个列表都不止一页" "$([ "$RTOTAL" -gt 20 ] && [ "$STOTAL" -gt 20 ] && echo yes)" yes
+check "收件列表翻到底：不重不漏、顺序对" "$(walk owner "/api/emails/$PBOX" received_at)" "2 $RTOTAL $RTOTAL true"
+check "发件列表翻到底：不重不漏、顺序对" "$(walk owner "/api/emails/$PBOX" sent_at type=sent)" "2 $STOTAL $STOTAL true"
+req owner GET "/api/emails/$PBOX?total=false"; check "total=false 时不带总数" "$(jq -r 'has("total")' "$T/body")" false
+check "total=false 时第一页照常返回" "$(jq -r '.messages | length' "$T/body")" 20
+req - GET "/api/emails/$PBOX?total=false" -H "X-API-Key: $KEY"; expect "API Key 带 total=false 读列表" 200
+check "API Key 带 total=false 时也不带总数" "$(jq -r 'if has("messages") then has("total") else "ERR" end' "$T/body")" false
+req owner POST "/api/emails/$PBOX/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":0}'; PT=$(jq -r '.token // empty' "$T/body")
+req - GET "/api/shared/$PT/messages"; check "分享链接的列表总数只数收到的" "$(jq -r '.total' "$T/body")" "$RTOTAL"
+check "分享链接的列表翻到底：不重不漏、顺序对" "$(walk - "/api/shared/$PT/messages" received_at)" "2 $RTOTAL $RTOTAL true"
+req - GET "/api/shared/$PT/messages?total=false"; expect "分享链接带 total=false 读列表" 200
+check "分享链接 total=false 时不带总数" "$(jq -r 'if has("messages") then has("total") else "ERR" end' "$T/body")" false
+req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":false,"apiKey":"","roleLimits":{}}'; expect "关回发件服务" 200
+
 echo "-- 清理 Worker 的孤儿扫描"
 ORPHAN="att/00000000-0000-4000-8000-0000000000aa/0"; EXPIRING="att/00000000-0000-4000-8000-0000000000bb/0"
 harness put-orphan "$ORPHAN" >/dev/null; harness put-orphan "$EXPIRING" expiring >/dev/null

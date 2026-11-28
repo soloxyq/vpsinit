@@ -1,6 +1,6 @@
 import { createDb } from "@/lib/db"
 import { emailShares, messages } from "@/lib/schema"
-import { eq, and, lt, or, sql, ne, isNull } from "drizzle-orm"
+import { eq, and, lt, lte, or, sql, ne, isNull } from "drizzle-orm"
 import { NextResponse } from "next/server"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
 import { hasListedAttachments } from "@/lib/attachments"
@@ -62,29 +62,21 @@ export async function GET(
       )
     )
 
-    // 获取消息总数（只统计接收的邮件）
-    const totalResult = await db.select({ count: sql<number>`count(*)` })
-      .from(messages)
-      .where(baseConditions)
-    const totalCount = Number(totalResult[0].count)
-
     const conditions = [baseConditions]
 
     if (cursor) {
       const { timestamp, id } = decodeCursor(cursor)
-      const cursorCondition = or(
-        lt(messages.receivedAt, new Date(timestamp)),
+      const time = new Date(timestamp)
+      // 和 /api/emails/[id] 一样：多写一个 received_at <= T，索引才能直接从游标的位置往下读
+      conditions.push(
         and(
-          eq(messages.receivedAt, new Date(timestamp)),
-          lt(messages.id, id)
+          lte(messages.receivedAt, time),
+          or(lt(messages.receivedAt, time), lt(messages.id, id))
         )
       )
-      if (cursorCondition) {
-        conditions.push(cursorCondition)
-      }
     }
 
-    const results = await db.query.messages.findMany({
+    const page = db.query.messages.findMany({
       // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
       columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, attachments: true },
       where: and(...conditions),
@@ -94,6 +86,10 @@ export async function GET(
       ],
       limit: PAGE_SIZE + 1
     })
+    // 和 /api/emails/[id] 一样：total=false 不数总数（分享页的轮询和翻页这样用），要数就和这一页放进同一个 batch
+    const [results, totalResult] = searchParams.get('total') === 'false'
+      ? [await page, null]
+      : await db.batch([page, db.select({ count: sql<number>`count(*)` }).from(messages).where(baseConditions)])
 
     const hasMore = results.length > PAGE_SIZE
     const nextCursor = hasMore
@@ -115,7 +111,8 @@ export async function GET(
         has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,
-      total: totalCount
+      // 传了 total=false 时没有这个字段
+      total: totalResult ? Number(totalResult[0].count) : undefined
     })
   } catch (error) {
     console.error("Failed to fetch shared messages:", error)

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createDb } from "@/lib/db"
 import { emails, messages } from "@/lib/schema"
-import { eq, and, lt, or, sql, ne, isNull } from "drizzle-orm"
+import { eq, and, lt, lte, or, sql, ne, isNull } from "drizzle-orm"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
@@ -109,30 +109,23 @@ export async function GET(
           )
     )
 
-    const totalResult = await db.select({ count: sql<number>`count(*)` })
-      .from(messages)
-      .where(baseConditions)
-    const totalCount = Number(totalResult[0].count)
-
     const conditions = [baseConditions]
+    const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
 
     if (cursorStr) {
       const { timestamp, id } = decodeCursor(cursorStr)
-      const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
+      const time = new Date(timestamp)
+      // 意思是 time < T 或者（time = T 且 id < I）。前面多写一个 time <= T，索引才能直接从游标的位置往下读；
+      // 只写 OR 的话每一页都要从最新的邮件读起，越往后翻读的行数越多
       conditions.push(
-        or(
-          lt(orderByTime, new Date(timestamp)),
-          and(
-            eq(orderByTime, new Date(timestamp)),
-            lt(messages.id, id)
-          )
+        and(
+          lte(orderByTime, time),
+          or(lt(orderByTime, time), lt(messages.id, id))
         )
       )
     }
 
-    const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
-    
-    const results = await db.query.messages.findMany({
+    const page = db.query.messages.findMany({
       // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
       columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, readAt: true, attachments: true },
       where: and(...conditions),
@@ -142,7 +135,13 @@ export async function GET(
       ],
       limit: PAGE_SIZE + 1
     })
-    
+    // 总数要把这个邮箱里的邮件数一遍，读的行数和邮件数一样多，所以可以用 total=false 跳过：
+    // 网页端每 10 秒的轮询和往下翻页都不数，总数在本地跟着加减。
+    // 要数的话和这一页放进同一个 batch：两条查询之间正好来了新邮件，数字和列表也对得上
+    const [results, totalResult] = searchParams.get('total') === 'false'
+      ? [await page, null]
+      : await db.batch([page, db.select({ count: sql<number>`count(*)` }).from(messages).where(baseConditions)])
+
     const hasMore = results.length > PAGE_SIZE
     const nextCursor = hasMore 
       ? encodeCursor(
@@ -167,7 +166,8 @@ export async function GET(
         has_attachments: hasListedAttachments(msg.attachments)
       })),
       nextCursor,
-      total: totalCount
+      // 传了 total=false 时没有这个字段
+      total: totalResult ? Number(totalResult[0].count) : undefined
     })
   } catch (error) {
     console.error('Failed to fetch messages:', error)

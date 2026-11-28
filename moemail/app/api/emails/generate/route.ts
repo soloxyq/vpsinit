@@ -44,17 +44,24 @@ export async function POST(request: Request) {
       }
     }
 
-    const { name, expiryTime, domain, note } = await request.json<{ 
+    const rawBody: unknown = await request.json().catch(() => null)
+    if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+      return NextResponse.json(
+        { error: "无效的请求体" },
+        { status: 400 }
+      )
+    }
+    const { name, expiryTime, domain, note } = rawBody as { 
       name: string
       expiryTime: number
       domain: string
       note?: unknown
-    }>()
+    }
 
     const parsedNote = normalizeNote(note)
     if (!parsedNote.ok) {
       return NextResponse.json(
-        { error: `备注不能超过 ${EMAIL_CONFIG.MAX_NOTE_LENGTH} 个字符` },
+        { error: parsedNote.error },
         { status: 400 }
       )
     }

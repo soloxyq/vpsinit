@@ -7,6 +7,7 @@
 //   ... put-orphan <key> [expiring]  # 写一个没有对应邮件的附件（expiring：带到期时间）
 //   ... expire <邮箱 ID>     # 把邮箱的到期时间改到过去
 //   ... retime <邮箱 ID> <毫秒>  # 测翻页用：一半改成发出的，时间按 id 每 7 封一组重复（见下面）
+//   ... insert-sent <邮箱 ID> <from> <to> <subject> <html>  # 写入一封发出的邮件（content 为空，正文在 html）
 //   ... sweep               # 立即扫描孤儿附件（不等一小时的保护期）
 // 结果打印成一行 "RESULT <json>"。
 import { readFileSync } from "node:fs"
@@ -80,6 +81,15 @@ async function main() {
       ).bind(Number(base), emailId).run()
       await env.DB.prepare("UPDATE message SET sent_at = received_at WHERE emailId = ?").bind(emailId).run()
       console.log(`RESULT ${JSON.stringify({ ok: true })}`)
+    } else if (mode === "insert-sent") {
+      const [emailId, fromAddress, toAddress, subject, html] = args
+      const id = crypto.randomUUID()
+      const now = Date.now()
+      await env.DB.prepare(
+        `INSERT INTO message (id, emailId, from_address, to_address, subject, content, html, type, received_at, sent_at, read_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, 'sent', ?7, ?7, ?7)`
+      ).bind(id, emailId, fromAddress, toAddress, subject, html, now).run()
+      console.log(`RESULT ${JSON.stringify({ id })}`)
     } else if (mode === "sweep") {
       const deleted = await sweepOrphanAttachments(env.DB, kv, { minAgeMs: 0 })
       console.log(`RESULT ${JSON.stringify({ deleted })}`)

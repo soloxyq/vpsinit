@@ -8,7 +8,6 @@ import { PERMISSIONS } from "@/lib/permissions"
 import { checkBasicSendPermission } from "@/lib/send-permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { attachmentKeysOf, deleteAttachmentKeys, hasListedAttachments } from "@/lib/attachments"
-import { EMAIL_CONFIG } from "@/config/email"
 import { likeContains, likePattern, normalizeNote, parseSearchQuery } from "@/lib/search"
 
 export const runtime = "edge"
@@ -22,17 +21,17 @@ export async function PATCH(
   if (guard.error) return guard.error
   const { userId } = guard
 
-  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null
-  if (!body || !("note" in body)) {
+  const rawBody: unknown = await request.json().catch(() => null)
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody) || !("note" in rawBody)) {
     return NextResponse.json(
       { error: 'Body must include "note" (string or null)' },
       { status: 400 }
     )
   }
-  const parsedNote = normalizeNote(body.note)
+  const parsedNote = normalizeNote((rawBody as Record<string, unknown>).note)
   if (!parsedNote.ok) {
     return NextResponse.json(
-      { error: `备注不能超过 ${EMAIL_CONFIG.MAX_NOTE_LENGTH} 个字符` },
+      { error: parsedNote.error },
       { status: 400 }
     )
   }
@@ -171,7 +170,7 @@ export async function GET(
         ? or(
             likeContains(messages.subject, pattern),
             likeContains(messageType === 'sent' ? messages.toAddress : messages.fromAddress, pattern),
-            likeContains(messages.content, pattern)
+            likeContains(messageType === 'sent' ? messages.html : messages.content, pattern)
           )
         : undefined
     )

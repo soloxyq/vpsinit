@@ -183,31 +183,32 @@ export function ThreeColumnLayout() {
       {showMobile && (
       <div className="lg:hidden h-full min-h-0">
         <div className={cn("h-full", columnClass)}>
-          {mobileView === "list" && (
-            <>
-              <div className={headerClass}>
-                <h2 className={titleClass}>{t("myEmails")}</h2>
-              </div>
-              <div className="flex-1 overflow-auto">
-                <EmailList
-                  onEmailSelect={(email) => {
-                    setSelectedEmail(email)
-                  }}
-                  selectedEmailId={selectedEmail?.id}
-                  unreadCounts={unreadCounts}
-                  updatedNote={noteUpdate}
-                />
-              </div>
-            </>
-          )}
+          {/* 用隐藏代替卸载：打开邮箱或邮件再返回时，保留左栏筛选词、中栏搜索结果与标签页状态 */}
+          <div className={mobileView === "list" ? "h-full flex flex-col" : "hidden"}>
+            <div className={headerClass}>
+              <h2 className={titleClass}>{t("myEmails")}</h2>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <EmailList
+                onEmailSelect={(email) => {
+                  setSelectedEmail(email)
+                  setSelectedMessageId(null)
+                }}
+                selectedEmailId={selectedEmail?.id}
+                unreadCounts={unreadCounts}
+                updatedNote={noteUpdate}
+              />
+            </div>
+          </div>
 
-          {mobileView === "emails" && selectedEmail && (
-            <div className="h-full flex flex-col">
+          {selectedEmail && (
+            <div className={mobileView === "emails" ? "h-full flex flex-col" : "hidden"}>
               <div className={cn(headerClass, "gap-2")}>
                 <button
                   type="button"
                   onClick={() => {
                     setSelectedEmail(null)
+                    setSelectedMessageId(null)
                   }}
                   className={backButtonClass}
                 >

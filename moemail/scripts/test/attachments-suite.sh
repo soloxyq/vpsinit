@@ -363,9 +363,22 @@ deliver alice@alpha.example "$NADDR1" "$T/search1.eml" >/dev/null
 deliver billing@beta.example "$NADDR1" "$T/search2.eml" >/dev/null
 deliver noreply@gamma.example "$NADDR1" "$T/search3.eml" >/dev/null
 
+# 先确认三封测试信都入库、且 HTML 列确实存下了目标标记，防止下面“不搜 HTML”的断言空过
+req owner GET "/api/emails/$NBOX1"
+expect "读取备注邮箱收件列表" 200
+check "三封测试邮件均已入库" "$(jq -r '[.total, (.messages | length)] | join(" ")' "$T/body")" "3 3"
+req owner GET "/api/emails/$NBOX1?q=HTML%20Only%20Mail&total=false"
+check "纯 HTML 测试邮件可按主题搜到" "$(jq -r '.messages | length' "$T/body")" 1
+HTML_ONLY_ID=$(jq -r '.messages[0].id // empty' "$T/body")
+req owner GET "/api/emails/$NBOX1/$HTML_ONLY_ID"
+check "纯 HTML 测试邮件确实存有 HTML 标记且纯文本为空" "$(jq -r '[(.message.html | contains("only_in_html_999")), (.message.content == "")] | join(" ")' "$T/body")" "true true"
+
 req owner GET "/api/emails/$NBOX1?q=50%25_off&total=false"
 expect "按主题含 %_ 搜邮件" 200
 check "搜 50%_off 只命中第 1 封且不带 total" "$(jq -r '[(.messages | length), has("total")] | join(" ")' "$T/body")" "1 false"
+S1_ID=$(jq -r '.messages[0].id // empty' "$T/body")
+req owner GET "/api/emails/$NBOX1/$S1_ID"
+check "第 1 封邮件确实存有仅在 HTML 中的标记" "$(jq -r '.message.html | contains("html_only_secret_marker_1")' "$T/body")" true
 req owner GET "/api/emails/$NBOX1?q=%25&total=false"
 check "邮件搜索 % 不当通配符（只命中 1 封）" "$(jq -r '.messages | length' "$T/body")" 1
 req owner GET "/api/emails/$NBOX1?q=billing@beta&total=false"
@@ -373,9 +386,27 @@ check "按发件人搜邮件只命中 1 封" "$(jq -r '.messages | length' "$T/b
 req owner GET "/api/emails/$NBOX1?q=INV-99881&total=false"
 check "按纯文本正文搜邮件只命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
 req owner GET "/api/emails/$NBOX1?q=html_only_secret_marker_1&total=false"
-check "邮件搜索不扫 HTML 列（有纯文本时）" "$(jq -r '.messages | length' "$T/body")" 0
+check "收件搜索不扫 HTML 列（有纯文本时）" "$(jq -r '.messages | length' "$T/body")" 0
 req owner GET "/api/emails/$NBOX1?q=only_in_html_999&total=false"
-check "邮件搜索不扫 HTML 列（纯 HTML 邮件）" "$(jq -r '.messages | length' "$T/body")" 0
+check "收件搜索不扫 HTML 列（纯 HTML 邮件）" "$(jq -r '.messages | length' "$T/body")" 0
+
+# 发件箱正文存在 html 列（content 为空），验证发件搜索能命中正文并正确转义 LIKE 通配符
+harness insert-sent "$NBOX1" "$NADDR1" "rcpt@delta.example" "Sent Report" "<p>sent_body_marker_77 100%_done</p>" >/dev/null
+harness insert-sent "$NBOX1" "$NADDR1" "other@epsilon.example" "Other Sent" "<p>plain sent text</p>" >/dev/null
+req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":true,"apiKey":"re_local_test","roleLimits":{}}'; expect "临时打开发件服务（测发件搜索）" 200
+req owner GET "/api/emails/$NBOX1?type=sent"
+check "两封发件均已入库" "$(jq -r '.total' "$T/body")" 2
+req owner GET "/api/emails/$NBOX1?type=sent&q=sent_body_marker_77&total=false"
+check "发件搜索按正文（html 列）命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?type=sent&q=100%25_done&total=false"
+check "发件搜索含 %_ 正文命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?type=sent&q=%25&total=false"
+check "发件搜索单个 % 不当通配符（只命中 1 封）" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?type=sent&q=rcpt@delta&total=false"
+check "发件搜索按收件人命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
+req owner GET "/api/emails/$NBOX1?type=sent&q=NoSuchSentWord&total=false"
+check "发件搜索不匹配返回空" "$(jq -r '.messages | length' "$T/body")" 0
+req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":false,"apiKey":"","roleLimits":{}}'; expect "测完发件搜索关回发件服务" 200
 
 req owner DELETE "/api/emails/$NBOX1" -H "Origin: $B" >/dev/null
 req owner DELETE "/api/emails/$NBOX2" -H "Origin: $B" >/dev/null

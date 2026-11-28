@@ -64,13 +64,30 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
     setEmails(value)
   }
   const [loading, setLoading] = useState(true)
+  const loadingRef = useRef(true)
+  const updateLoading = (next: boolean) => {
+    loadingRef.current = next
+    setLoading(next)
+  }
   const [refreshing, setRefreshing] = useState(false)
+  const refreshingRef = useRef(false)
+  const updateRefreshing = (next: boolean) => {
+    refreshingRef.current = next
+    setRefreshing(next)
+  }
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
+  const loadingMoreRef = useRef(false)
+  const updateLoadingMore = (next: boolean) => {
+    loadingMoreRef.current = next
+    setLoadingMore(next)
+  }
   const [total, setTotal] = useState(0)
   const [emailToDelete, setEmailToDelete] = useState<Email | null>(null)
   const [searchInput, setSearchInput] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
+  const debouncedQueryRef = useRef("")
+  debouncedQueryRef.current = debouncedQuery
   const listVersionRef = useRef(0)
   const { toast } = useToast()
 
@@ -85,7 +102,7 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
     return () => clearTimeout(timer)
   }, [searchInput])
 
-  const fetchEmails = async (cursor?: string, query = debouncedQuery, replace = false) => {
+  const fetchEmails = async (cursor?: string, query = debouncedQueryRef.current, replace = false) => {
     const version = listVersionRef.current
     try {
       const url = new URL("/api/emails", window.location.origin)
@@ -124,7 +141,11 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
           return
         }
         const uniqueNewEmails = newEmails.slice(0, lastDuplicateIndex)
-        updateEmails([...uniqueNewEmails, ...oldEmails])
+        const noteById = new Map(newEmails.map(e => [e.id, e.note]))
+        updateEmails([
+          ...uniqueNewEmails,
+          ...oldEmails.map(e => (noteById.has(e.id) ? { ...e, note: noteById.get(e.id) } : e)),
+        ])
         return
       }
       updateEmails(prev => [...prev, ...data.emails])
@@ -132,21 +153,24 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
     } catch (error) {
       console.error("Failed to fetch emails:", error)
     } finally {
-      if (version === listVersionRef.current) setLoading(false)
-      setRefreshing(false)
-      setLoadingMore(false)
+      if (version === listVersionRef.current) updateLoading(false)
+      updateRefreshing(false)
+      updateLoadingMore(false)
     }
   }
 
   const handleRefresh = async () => {
-    setRefreshing(true)
-    await fetchEmails(undefined, debouncedQuery, isSearching)
+    updateRefreshing(true)
+    await fetchEmails(undefined, debouncedQueryRef.current, debouncedQueryRef.current.length > 0)
   }
 
   const handleEmailCreated = () => {
-    // 搜索状态下新建邮箱，清掉搜索词让新邮箱立刻显示在列表中
-    if (searchInput || debouncedQuery) {
+    // 只要输入框里有内容（哪怕全是空格）都清空；但只有当前确实处于搜索过滤态时，
+    // 清空 debouncedQuery 才会触发 effect 重拉列表，否则需要主动刷新一次
+    if (searchInput) {
       setSearchInput("")
+    }
+    if (debouncedQuery) {
       setDebouncedQuery("")
       return
     }
@@ -161,19 +185,32 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
     const remainingScroll = scrollHeight - scrollTop
 
     if (remainingScroll <= threshold && nextCursor) {
-      setLoadingMore(true)
-      fetchEmails(nextCursor, debouncedQuery)
+      updateLoadingMore(true)
+      fetchEmails(nextCursor, debouncedQueryRef.current)
     }
   }, 200)
 
   useEffect(() => {
     if (!userId) return
     listVersionRef.current++
-    setLoading(true)
+    updateLoading(true)
     setNextCursor(null)
     fetchEmails(undefined, debouncedQuery, true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, debouncedQuery])
+
+  // 切回标签页时静默刷新一次，把 CLI、API 或另一台设备新建的邮箱及时拉进来
+  useEffect(() => {
+    if (!userId) return
+    const onVisibilityChange = () => {
+      if (document.hidden) return
+      if (loadingRef.current || refreshingRef.current || loadingMoreRef.current) return
+      fetchEmails(undefined, debouncedQueryRef.current, false)
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
 
   useEffect(() => {
     if (!updatedNote) return
@@ -201,6 +238,9 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
       listVersionRef.current++
       updateEmails(prev => prev.filter(e => e.id !== email.id))
       setTotal(prev => Math.max(0, prev - 1))
+      if (loadingRef.current) {
+        fetchEmails(undefined, debouncedQueryRef.current, true)
+      }
 
       toast({
         title: t("success"),

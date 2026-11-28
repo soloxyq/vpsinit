@@ -63,6 +63,13 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   const tCommon = useTranslations("common.actions")
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(true)
+  const loadingRef = useRef(true)
+  const updateLoading = (next: boolean) => {
+    loadingRef.current = next
+    setLoading(next)
+  }
+  const emailIdRef = useRef(email.id)
+  emailIdRef.current = email.id
   const [refreshing, setRefreshing] = useState(false)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -180,7 +187,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
       console.error("Failed to fetch messages:", error)
     } finally {
       // 作废的请求不结束“加载中”：换邮箱或切搜索以后，最新请求回来才算加载完
-      if (version === listVersionRef.current) setLoading(false)
+      if (version === listVersionRef.current) updateLoading(false)
       setRefreshing(false)
       setLoadingMore(false)
     }
@@ -197,7 +204,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     updateMessages([])
     setTotal(0)
     setNextCursor(null)
-    setLoading(true)
+    updateLoading(true)
     fetchMessages(undefined, true, "")
   }
 
@@ -214,7 +221,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     loadedRef.current = false
     updateMessages([])
     setNextCursor(null)
-    setLoading(true)
+    updateLoading(true)
     fetchMessages(undefined, false, trimmed)
   }
 
@@ -241,8 +248,9 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   }, 200)
 
   const handleDelete = async (message: Message) => {
+    const targetEmailId = email.id
     try {
-      const response = await fetch(`/api/emails/${email.id}/${message.id}${messageType === 'sent' ? '?type=sent' : ''}`, {
+      const response = await fetch(`/api/emails/${targetEmailId}/${message.id}${messageType === 'sent' ? '?type=sent' : ''}`, {
         method: "DELETE"
       })
 
@@ -256,12 +264,26 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         return
       }
 
+      if (emailIdRef.current !== targetEmailId) {
+        if (message.read_at === null) onUnreadChange?.()
+        toast({
+          title: tList("success"),
+          description: tList("deleteSuccess")
+        })
+        return
+      }
+
       listVersionRef.current++
       updateMessages(prev => prev.filter(e => e.id !== message.id))
       if (activeQueryRef.current) {
         totalKnownRef.current = false
       } else {
         setTotal(prev => Math.max(0, prev - 1))
+      }
+      if (loadingRef.current) {
+        // 删除请求尚未返回时用户发起了新的搜索或加载，前面的 listVersionRef++ 会作废该请求；
+        // 立刻按当前条件重发一次，避免搜索态（轮询暂停）一直卡在加载状态
+        fetchMessages(undefined, !activeQueryRef.current, activeQueryRef.current)
       }
       if (message.read_at === null) onUnreadChange?.()
 
@@ -297,7 +319,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
     // 上一个邮箱的列表不留着：新邮箱的请求要是失败了，留着的列表会顶着新邮箱的地址显示出来
     updateMessages([])
     setTotal(0)
-    setLoading(true)
+    updateLoading(true)
     setNextCursor(null)
     fetchMessages(undefined, true, "")
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -322,9 +344,10 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
 
   // 清空当前列表（收到的或发出的）里的全部邮件，附件由接口一起删掉
   const handleClear = async () => {
+    const targetEmailId = email.id
     try {
       const response = await fetch(
-        `/api/emails/${email.id}/messages${messageType === 'sent' ? '?type=sent' : ''}`,
+        `/api/emails/${targetEmailId}/messages${messageType === 'sent' ? '?type=sent' : ''}`,
         { method: "DELETE" }
       )
       if (!response.ok) {
@@ -332,10 +355,16 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         toast({ title: tList("error"), description: data.error || tList("deleteFailed"), variant: "destructive" })
         return
       }
+      if (emailIdRef.current !== targetEmailId) {
+        onUnreadChange?.()
+        toast({ title: tList("success"), description: t("clearSuccess") })
+        return
+      }
       listVersionRef.current++
       updateMessages([])
       setTotal(0)
       setNextCursor(null)
+      updateLoading(false)
       onMessageSelect(null)
       onUnreadChange?.()
       toast({ title: tList("success"), description: t("clearSuccess") })

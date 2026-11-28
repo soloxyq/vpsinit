@@ -4,7 +4,7 @@ import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Crown, Gem, Sword, User2, Loader2, Search, ChevronLeft, ChevronRight, Users, Trash2 } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { useToast } from "@/components/ui/use-toast"
 import { ROLES, Role } from "@/lib/permissions"
 import {
@@ -46,10 +46,12 @@ export function PromotePanel() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
   const [loading, setLoading] = useState(true)
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null)
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null)
   const [userToDelete, setUserToDelete] = useState<UserItem | null>(null)
+  const reqSeqRef = useRef(0)
   const { toast } = useToast()
 
   const roleNames = {
@@ -61,15 +63,27 @@ export function PromotePanel() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  useEffect(() => {
+    const trimmed = search.trim()
+    const timer = setTimeout(() => {
+      setDebouncedSearch((prev) => {
+        if (prev !== trimmed) setPage(1)
+        return trimmed
+      })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
   const fetchUsers = useCallback(async () => {
+    const seq = ++reqSeqRef.current
     setLoading(true)
     try {
       const params = new URLSearchParams({
         page: page.toString(),
         pageSize: PAGE_SIZE.toString(),
       })
-      if (search.trim()) {
-        params.set("search", search.trim())
+      if (debouncedSearch) {
+        params.set("search", debouncedSearch)
       }
       const res = await fetch(`/api/roles/users?${params}`)
       if (!res.ok) throw new Error("Failed to fetch")
@@ -79,25 +93,23 @@ export function PromotePanel() {
         page: number
         pageSize: number
       }
+      if (seq !== reqSeqRef.current) return
       setUsers(data.users)
       setTotal(data.total)
     } catch {
+      if (seq !== reqSeqRef.current) return
       toast({
         title: t("updateFailed"),
         variant: "destructive",
       })
     } finally {
-      setLoading(false)
+      if (seq === reqSeqRef.current) setLoading(false)
     }
-  }, [page, search, t, toast])
+  }, [page, debouncedSearch, t, toast])
 
   useEffect(() => {
     fetchUsers()
   }, [fetchUsers])
-
-  useEffect(() => {
-    setPage(1)
-  }, [search])
 
   const handleRoleChange = async (userId: string, newRole: RoleWithoutEmperor) => {
     setUpdatingUserId(userId)

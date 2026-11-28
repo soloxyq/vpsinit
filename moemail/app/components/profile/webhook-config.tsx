@@ -51,14 +51,14 @@ export function WebhookConfig() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!url) return
+    if (enabled && !url.trim()) return
 
     setLoading(true)
     try {
       const res = await fetch("/api/webhook", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, enabled })
+        body: JSON.stringify({ url: url.trim(), enabled })
       })
 
       if (!res.ok) throw new Error(t("saveFailed"))
@@ -132,16 +132,9 @@ export function WebhookConfig() {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 type="url"
-                required
+                required={enabled}
               />
               <div className="flex gap-2 sm:shrink-0">
-                <Button type="submit" disabled={loading} className="flex-1 sm:flex-none sm:min-w-[4.5rem]">
-                  {loading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    tCommon("save")
-                  )}
-                </Button>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -209,6 +202,13 @@ export function WebhookConfig() {
           </div>
         </div>
       )}
+
+      <div className="flex justify-end border-t border-border/60 pt-4 mt-2">
+        <Button type="submit" disabled={loading || (enabled && !url.trim())} className="w-full sm:w-auto sm:min-w-[7rem] gap-2">
+          {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+          {tCommon("save")}
+        </Button>
+      </div>
     </form>
   )
 } 

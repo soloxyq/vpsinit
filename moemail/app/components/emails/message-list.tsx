@@ -70,6 +70,9 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   }
   const emailIdRef = useRef(email.id)
   emailIdRef.current = email.id
+  const selectedMessageIdRef = useRef(selectedMessageId)
+  selectedMessageIdRef.current = selectedMessageId
+  const prevRefreshTriggerRef = useRef(refreshTrigger)
   const [refreshing, setRefreshing] = useState(false)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -292,7 +295,7 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
         description: tList("deleteSuccess")
       })
 
-      if (selectedMessageId === message.id) {
+      if (selectedMessageIdRef.current === message.id) {
         onMessageSelect(null)
       }
     } catch {
@@ -331,6 +334,8 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
   }, EMAIL_CONFIG.POLL_INTERVAL, !!email.id && !isSearching)
 
   useEffect(() => {
+    if (refreshTrigger === prevRefreshTriggerRef.current) return
+    prevRefreshTriggerRef.current = refreshTrigger
     if (refreshTrigger && refreshTrigger > 0) {
       if (activeQueryRef.current) {
         clearSearch()

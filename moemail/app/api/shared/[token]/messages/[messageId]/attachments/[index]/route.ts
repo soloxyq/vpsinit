@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { createDb } from "@/lib/db"
 import { emailShares, messages } from "@/lib/schema"
-import { and, eq } from "drizzle-orm"
+import { and, eq, isNull, ne, or } from "drizzle-orm"
 import { serveAttachment } from "@/lib/attachments"
 
 export const runtime = "edge"
@@ -31,7 +31,11 @@ export async function GET(
     }
 
     const message = await db.query.messages.findFirst({
-      where: and(eq(messages.id, messageId), eq(messages.emailId, share.email.id))
+      where: and(
+        eq(messages.id, messageId),
+        eq(messages.emailId, share.email.id),
+        or(ne(messages.type, "sent"), isNull(messages.type))
+      )
     })
     if (!message) {
       return NextResponse.json({ error: "Message not found" }, { status: 404 })

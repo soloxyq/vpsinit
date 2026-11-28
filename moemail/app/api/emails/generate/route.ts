@@ -52,10 +52,14 @@ export async function POST(request: Request) {
       )
     }
     const { name, expiryTime, domain, note } = rawBody as { 
-      name: string
-      expiryTime: number
-      domain: string
+      name?: unknown
+      expiryTime?: unknown
+      domain?: unknown
       note?: unknown
+    }
+
+    if (name !== undefined && typeof name !== "string") {
+      return NextResponse.json({ error: "无效的邮箱前缀" }, { status: 400 })
     }
 
     const parsedNote = normalizeNote(note)
@@ -66,7 +70,7 @@ export async function POST(request: Request) {
       )
     }
 
-    if (!EXPIRY_OPTIONS.some(option => option.value === expiryTime)) {
+    if (typeof expiryTime !== "number" || !EXPIRY_OPTIONS.some(option => option.value === expiryTime)) {
       return NextResponse.json(
         { error: "无效的过期时间" },
         { status: 400 }
@@ -74,16 +78,21 @@ export async function POST(request: Request) {
     }
 
     const domainString = await env.SITE_CONFIG.get("EMAIL_DOMAINS")
-    const domains = domainString ? domainString.split(',') : ["moemail.app"]
+    const rawDomains = domainString
+      ? domainString.split(',').map(d => d.trim()).filter(Boolean)
+      : []
+    const domains = rawDomains.length > 0 ? rawDomains : ["moemail.app"]
+    const trimmedDomain = typeof domain === "string" ? domain.trim() : ""
 
-    if (!domains || !domains.includes(domain)) {
+    if (!trimmedDomain || !domains.includes(trimmedDomain)) {
       return NextResponse.json(
         { error: "无效的域名" },
         { status: 400 }
       )
     }
 
-    const address = `${name || nanoid(8)}@${domain}`
+    const trimmedName = typeof name === "string" ? name.trim() : ""
+    const address = `${trimmedName || nanoid(8)}@${trimmedDomain}`
     const existingEmail = await db.query.emails.findFirst({
       where: eq(sql`LOWER(${emails.address})`, address.toLowerCase())
     })
@@ -118,6 +127,12 @@ export async function POST(request: Request) {
       note: result[0].note,
     })
   } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
+      return NextResponse.json(
+        { error: "该邮箱地址已被使用" },
+        { status: 409 }
+      )
+    }
     console.error('Failed to generate email:', error)
     return NextResponse.json(
       { error: "创建邮箱失败" },

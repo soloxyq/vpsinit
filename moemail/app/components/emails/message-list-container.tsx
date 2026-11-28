@@ -5,7 +5,6 @@ import { useTranslations } from "next-intl"
 import { Send, Inbox } from "lucide-react"
 import { Tabs, SlidingTabsList, SlidingTabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { MessageList } from "./message-list"
-import { useSendPermission } from "@/hooks/use-send-permission"
 
 interface MessageListContainerProps {
   email: {
@@ -18,12 +17,13 @@ interface MessageListContainerProps {
   // 这两个只给“收到的”列表用，说明见 MessageList
   unreadCount?: number
   onUnreadChange?: () => void
+  canSend?: boolean
 }
 
-export function MessageListContainer({ email, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount, onUnreadChange }: MessageListContainerProps) {
+export function MessageListContainer({ email, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount, onUnreadChange, canSend = false }: MessageListContainerProps) {
   const t = useTranslations("emails.messages")
   const [activeTab, setActiveTab] = useState<'received' | 'sent'>('received')
-  const { canSend: canSendEmails } = useSendPermission()
+  const canSendEmails = canSend
 
   const handleTabChange = (tabId: string) => {
     setActiveTab(tabId as 'received' | 'sent')

@@ -42,6 +42,8 @@ interface EmailListProps {
   unreadCounts?: Record<string, number>
   // 外部（中栏头部）修改备注后同步更新列表中的对应项
   updatedNote?: { id: string; note: string | null; seq: number } | null
+  // 响应式断点未就绪（null）时暂缓首次请求，避免桌面与手机两套布局同时发 /api/emails
+  ready?: boolean
 }
 
 interface EmailResponse {
@@ -50,8 +52,10 @@ interface EmailResponse {
   total: number
 }
 
-export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, updatedNote }: EmailListProps) {
+export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, updatedNote, ready = true }: EmailListProps) {
   const { data: session } = useSession()
+  const selectedEmailIdRef = useRef(selectedEmailId)
+  selectedEmailIdRef.current = selectedEmailId
   const { config } = useConfig()
   const { role } = useUserRole()
   const t = useTranslations("emails.list")
@@ -191,13 +195,13 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
   }, 200)
 
   useEffect(() => {
-    if (!userId) return
+    if (!userId || !ready) return
     listVersionRef.current++
     updateLoading(true)
     setNextCursor(null)
     fetchEmails(undefined, debouncedQuery, true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, debouncedQuery])
+  }, [userId, debouncedQuery, ready])
 
   // 切回标签页时静默刷新一次，把 CLI、API 或另一台设备新建的邮箱及时拉进来
   useEffect(() => {
@@ -247,7 +251,7 @@ export function EmailList({ onEmailSelect, selectedEmailId, unreadCounts, update
         description: t("deleteSuccess")
       })
       
-      if (selectedEmailId === email.id) {
+      if (selectedEmailIdRef.current === email.id) {
         onEmailSelect(null)
       }
     } catch {

@@ -40,7 +40,11 @@ export async function GET(request: Request) {
     const conditions = [baseConditions]
 
     if (cursor) {
-      const { timestamp, id } = decodeCursor(cursor)
+      const decoded = decodeCursor(cursor)
+      if (!decoded) {
+        return NextResponse.json({ error: "Invalid cursor" }, { status: 400 })
+      }
+      const { timestamp, id } = decoded
       conditions.push(
         or(
           lt(emails.createdAt, new Date(timestamp)),

@@ -8,6 +8,12 @@
     "save": "保存",
     "delete": "删除"
   },
+  "copy": {
+    "successTitle": "成功",
+    "success": "已复制到剪贴板",
+    "errorTitle": "错误",
+    "failed": "复制失败"
+  },
   "nav": {
     "home": "首页",
     "login": "登录",

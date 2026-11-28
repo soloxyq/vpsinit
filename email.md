@@ -382,7 +382,7 @@ fi
 
 ## 相对上游的改动
 
-本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过四次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）；再加了索引 `message_email_id_type_sent_at_idx`（迁移 `drizzle/0021_jittery_oracle.sql`，只建索引）；再给 `email` 表加了 `note` 列（迁移 `drizzle/0022_eager_mandroid.sql`，只加可空列）。合并上游时下面这些要保留：
+本地改动都在 `d172b27`（原样导入上游）之后的提交里，在本仓库的根目录执行 `git log d172b27..HEAD -- moemail` 可以看到全部。数据库结构改过五次：`message` 表加了 `attachments` 列（迁移 `drizzle/0019_steady_ultimatum.sql`）；又加了 `read_at` 列和索引 `message_email_id_read_at_idx`（迁移 `drizzle/0020_clear_secret_warriors.sql`，中间那句把现有邮件标成已读的 `UPDATE` 是手写的，drizzle-kit 只生成表结构的改动）；再加了索引 `message_email_id_type_sent_at_idx`（迁移 `drizzle/0021_jittery_oracle.sql`，只建索引）；再给 `email` 表加了 `note` 列（迁移 `drizzle/0022_eager_mandroid.sql`，只加可空列）；再加了每日用量计数表 `daily_usage` 和部分索引 `message_with_attachments_idx`（迁移 `drizzle/0023_nosy_gertrude_yorkes.sql`）。合并上游时下面这些要保留：
 
 | 改动 | 作用 | 主要位置 |
 | --- | --- | --- |
@@ -396,7 +396,7 @@ fi
 | 收信日志 | 只记发件人、收件地址和附件个数，不记邮件内容和文件名 | `moemail/workers/email-receiver.ts` |
 | 未注册地址转发 | 收信 Worker 找不到邮箱（包括过期还没清理的）时，把整封信原样转发到 `FORWARD_TO`，不解析；信存不进数据库时也转发；转发失败时报错，不吞掉 | `moemail/workers/email-receiver.ts` |
 | 邮件正文的显示方式 | 正文 HTML 放进 `blob:` 地址的独立页面里，再装进 iframe（`sandbox="allow-same-origin allow-popups"`，脚本不运行）。不能改回用 `document.write` 写进空白 iframe：那样 iframe 的地址就是外层页面的地址，在邮箱分享页上是 `/shared/<token>`，邮件里的外链图片或链接加上 `referrerpolicy="unsafe-url"`，就能通过 Referer 头拿到分享 token。深浅色切换直接改已经显示的页面，不重新加载 | `moemail/app/components/emails/email-html-frame.tsx` |
-| 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，不把下载地址写进邮件 HTML（分享页的地址里带 token）。删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的 | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
+| 附件 | 存进 KV（`ATTACHMENTS`），临时邮箱的附件带到期时间。下载接口三个：本人、邮箱分享链接、单封邮件分享链接，各自按读邮件的规则检查权限（含所属邮箱是否已过期）；非位图一律按二进制下载，防止 HTML、SVG 附件在本站域名下执行脚本。每天和总量各有上限，给 KV 的其它用途留出免费额度；每日 KV 写入次数与各账号每日发件数单独记在 D1 的 `daily_usage` 表里，不随删信、清空或临时邮箱到期而回退，带附件邮件的扫描靠部分索引 `message_with_attachments_idx` 避免全表扫。正文里的内嵌图片由页面取回后换成 `blob:` 地址显示，只有真正能经 `<img src="cid:…">` 显示且已保存的位图才从附件栏隐藏；删除邮件、邮箱、账号时一起删，清理 Worker 每小时扫一部分漏删的并顺带清理过期的 `daily_usage` | `moemail/app/lib/attachments.ts`、`moemail/app/api/` 下的 `attachments/[index]/route.ts`、`moemail/workers/` |
 | 轮询和列表接口 | 浏览器标签页在后台时暂停轮询，切回前台马上刷新；邮件列表接口只从 D1 取列表要显示的列，不再返回正文（README 里的接口说明本来就不含正文，命令行工具和 MCP 读正文走单封邮件接口） | `moemail/app/hooks/use-polling.ts`、`moemail/app/api/emails/[id]/route.ts` |
 | 验证码一键复制 | 阅读页头部识别验证码，点一下复制。只认关键词附近的，跳过年份、日期、金额；只有 HTML 正文时用 DOMParser 取文字，不用正则剥标签（邮件 HTML 由发件人决定，正则遇到特制的内容会很慢） | `moemail/app/lib/verification-code.ts` |
 | 修改密码 | 个人中心改密码，要输当前密码，API Key 不能调。会话在登录时记下密码哈希的前 8 个字符，之后每次和数据库比对，对不上（改过密码，或账号被删）就让会话失效；没记过的会话也算对不上，所以这个改动上线后，所有设备都要重新登录一次。接口前缀 `/api/account` 登记在中间件的权限表里 | `moemail/app/api/account/password/route.ts`、`moemail/app/lib/auth.ts`、`moemail/middleware.ts` |

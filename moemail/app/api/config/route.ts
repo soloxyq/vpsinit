@@ -53,6 +53,11 @@ export async function POST(request: Request) {
   const guard = await requireUser(PERMISSIONS.MANAGE_CONFIG)
   if (guard.error) return guard.error
 
+  const rawBody: unknown = await request.json().catch(() => null)
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return Response.json({ error: "无效的请求体" }, { status: 400 })
+  }
+
   const {
     defaultRole,
     emailDomains,
@@ -60,21 +65,37 @@ export async function POST(request: Request) {
     maxEmails,
     allowRegistration,
     turnstile
-  } = await request.json() as { 
-    defaultRole: Exclude<Role, typeof ROLES.EMPEROR>,
-    emailDomains: string,
-    adminContact: string,
-    maxEmails: string,
-    allowRegistration?: boolean,
+  } = rawBody as { 
+    defaultRole?: unknown,
+    emailDomains?: unknown,
+    adminContact?: unknown,
+    maxEmails?: unknown,
+    allowRegistration?: unknown,
     turnstile?: {
-      enabled: boolean,
-      siteKey: string,
-      secretKey: string
+      enabled?: unknown,
+      siteKey?: unknown,
+      secretKey?: unknown
     }
   }
   
-  if (![ROLES.DUKE, ROLES.KNIGHT, ROLES.CIVILIAN].includes(defaultRole)) {
+  if (
+    typeof defaultRole !== "string" ||
+    ![ROLES.DUKE, ROLES.KNIGHT, ROLES.CIVILIAN].includes(defaultRole as Exclude<Role, typeof ROLES.EMPEROR>)
+  ) {
     return Response.json({ error: "无效的角色" }, { status: 400 })
+  }
+
+  if (typeof emailDomains !== "string" || typeof adminContact !== "string" || typeof maxEmails !== "string") {
+    return Response.json({ error: "配置项格式不正确" }, { status: 400 })
+  }
+
+  const normalizedDomains = emailDomains
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .join(",")
+  if (!normalizedDomains) {
+    return Response.json({ error: "至少需要填写一个邮箱域名" }, { status: 400 })
   }
 
   // 不带这一项表示保持原样；带了就必须是布尔值，否则报错，不能静默忽略后照样返回成功
@@ -82,29 +103,34 @@ export async function POST(request: Request) {
     return Response.json({ error: "allowRegistration 必须是布尔值" }, { status: 400 })
   }
 
-  const turnstileConfig = turnstile ?? {
-    enabled: false,
-    siteKey: "",
-    secretKey: ""
+  const turnstileConfig = {
+    enabled: Boolean(turnstile?.enabled),
+    siteKey: typeof turnstile?.siteKey === "string" ? turnstile.siteKey : "",
+    secretKey: typeof turnstile?.secretKey === "string" ? turnstile.secretKey : "",
   }
 
   if (turnstileConfig.enabled && (!turnstileConfig.siteKey || !turnstileConfig.secretKey)) {
     return Response.json({ error: "Turnstile 启用时需要提供 Site Key 和 Secret Key" }, { status: 400 })
   }
 
-  const env = getRequestContext().env
-  await Promise.all([
-    env.SITE_CONFIG.put("DEFAULT_ROLE", defaultRole),
-    env.SITE_CONFIG.put("EMAIL_DOMAINS", emailDomains),
-    env.SITE_CONFIG.put("ADMIN_CONTACT", adminContact),
-    env.SITE_CONFIG.put("MAX_EMAILS", maxEmails),
-    env.SITE_CONFIG.put("TURNSTILE_ENABLED", turnstileConfig.enabled.toString()),
-    env.SITE_CONFIG.put("TURNSTILE_SITE_KEY", turnstileConfig.siteKey),
-    env.SITE_CONFIG.put("TURNSTILE_SECRET_KEY", turnstileConfig.secretKey),
-    // 请求里没带这一项（比如浏览器还缓存着旧版页面）就保持原样，不能顺手把注册重新打开
-    typeof allowRegistration === "boolean" &&
-      env.SITE_CONFIG.put("ALLOW_REGISTRATION", allowRegistration.toString())
-  ])
+  try {
+    const env = getRequestContext().env
+    await Promise.all([
+      env.SITE_CONFIG.put("DEFAULT_ROLE", defaultRole),
+      env.SITE_CONFIG.put("EMAIL_DOMAINS", normalizedDomains),
+      env.SITE_CONFIG.put("ADMIN_CONTACT", adminContact),
+      env.SITE_CONFIG.put("MAX_EMAILS", maxEmails),
+      env.SITE_CONFIG.put("TURNSTILE_ENABLED", turnstileConfig.enabled.toString()),
+      env.SITE_CONFIG.put("TURNSTILE_SITE_KEY", turnstileConfig.siteKey),
+      env.SITE_CONFIG.put("TURNSTILE_SECRET_KEY", turnstileConfig.secretKey),
+      // 请求里没带这一项（比如浏览器还缓存着旧版页面）就保持原样，不能顺手把注册重新打开
+      typeof allowRegistration === "boolean" &&
+        env.SITE_CONFIG.put("ALLOW_REGISTRATION", allowRegistration.toString())
+    ])
 
-  return Response.json({ success: true })
-} 
+    return Response.json({ success: true })
+  } catch (error) {
+    console.error("Failed to save config:", error)
+    return Response.json({ error: "保存配置失败" }, { status: 500 })
+  }
+}

@@ -202,12 +202,30 @@ req owner GET /api/config/email-service; expect FUNC "owner 读发件服务配�
 req owner GET /api/api-keys; expect FUNC "owner 列 API Key" "200"
 req owner GET /api/webhook; expect FUNC "owner 读 webhook" "200"
 req owner POST /api/webhook -H "$J" -H "Origin: $B" -d '{"url":"http://example.com/hook","enabled":true}'; expect SEC "保存 http:// webhook 被拒" "400"
+req owner POST /api/webhook -H "$J" -H "Origin: $B" -d '{"url":"http://example.com/hook","enabled":false}'; expect SEC "关闭态保存 http:// webhook 也被拒" "400"
+req owner POST /api/webhook -H "$J" -H "Origin: $B" -d '{"url":"","enabled":false}'; expect FUNC "关闭 webhook 时允许空 URL" "200"
 req owner POST /api/webhook/test -H "$J" -H "Origin: $B" -d '{"url":"http://example.com/hook"}'; expect SEC "测试 http:// webhook 被拒" "400"
 req owner GET '/api/roles/users?page=1'; expect FUNC "owner 列用户" "200"; present FUNC "用户列表含 civ1" "civ1"
+req owner GET '/api/roles/users?page=abc'; expect FUNC "非法页码返回 400（不是 500）" "400"
+req owner POST /api/config -H "$J" -H "Origin: $B" -d '{"defaultRole":"civilian","emailDomains":" moemail.app , extra.example ","adminContact":"","maxEmails":"30"}'; expect FUNC "保存带空格的多域名配置" "200"
+req owner GET /api/config; present FUNC "保存配置自动去除域名首尾空格" '"emailDomains":"moemail.app,extra.example"'
 req owner POST /api/config -H "$J" -H "Origin: $B" -d '{"defaultRole":"civilian","emailDomains":"moemail.app","adminContact":"","maxEmails":"30"}'; expect FUNC "owner 保存配置" "200"
+req owner POST /api/config -H "$J" -H "Origin: $B" -d '{bad'; expect FUNC "配置接口非 JSON 返回 400" "400"
 req owner POST /api/emails/generate -H "$J" -H "Origin: $B" -d '{"name":"tmpbox","expiryTime":3600000,"domain":"moemail.app"}'; expect FUNC "owner 建临时邮箱" "200"; TMPBOX=$(jq -r '.id // empty' "$T/body")
 req owner POST "/api/emails/$BOX/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":3600000}'; expect FUNC "owner 建分享链接" "200|201"; TOKEN=$(jq -r '.token // empty' "$T/body")
-if [ -n "$TOKEN" ]; then req - GET "/api/shared/$TOKEN"; expect FUNC "匿名通过分享链接读邮箱" "200"; fi
+if [ -n "$TOKEN" ]; then
+  req - GET "/api/shared/$TOKEN"; expect FUNC "匿名通过分享链接读邮箱" "200"
+  req - GET "/api/shared/$TOKEN/messages?cursor=not-valid-base64"; expect FUNC "公开分享列表非法 cursor 返回 400（不是 500）" "400"
+fi
+req owner GET '/api/emails?cursor=not-valid-base64'; expect FUNC "邮箱列表非法 cursor 返回 400" "400"
+req owner GET "/api/emails/$BOX?cursor=eyJ0aW1lc3RhbXAiOiJiYWQifQ=="; expect FUNC "邮件列表缺字段 cursor 返回 400" "400"
+req owner POST /api/api-keys -H "$J" -H "Origin: $B" -d '{"name":"dup-key-test"}'; expect FUNC "创建测试 API Key" "200"; DUPKEYID=$(req owner GET /api/api-keys; jq -r '.apiKeys[] | select(.name=="dup-key-test") | .id' "$T/body" | head -1)
+req owner POST /api/api-keys -H "$J" -H "Origin: $B" -d '{"name":"  dup-key-test  "}'; expect FUNC "同名 API Key 返回 409（不是 500）" "409"
+if [ -n "$DUPKEYID" ]; then
+  req owner PATCH "/api/api-keys/$DUPKEYID" -H "$J" -H "Origin: $B" -d '{}'; expect FUNC "更新 API Key 缺 enabled 返回 400（不是 500）" "400"
+  req owner PATCH "/api/api-keys/$DUPKEYID" -H "$J" -H "Origin: $B" -d '{"enabled":"false"}'; expect FUNC "更新 API Key 非布尔 enabled 返回 400" "400"
+  req owner DELETE "/api/api-keys/$DUPKEYID" -H "Origin: $B"; expect FUNC "删除测试 API Key" "200"
+fi
 req owner DELETE "/api/emails/$TMPBOX" -H "Origin: $B"; expect FUNC "owner 删临时邮箱" "200"
 req kn DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect SEC "骑士清空 owner 的邮箱" "403|404"
 req owner DELETE "/api/emails/$BOX/messages" -H "Origin: $B"; expect FUNC "owner 清空自己的邮箱" "200"
@@ -241,8 +259,8 @@ CIV=$(login civ civ1 "$PW"); [ -n "$CIV" ] && ok "[FUNC] 改回后用原密码�
 register owner1 "$PW"; expect FUNC "重名注册被拒" "409"; present FUNC "重名注册提示用户名已存在" "用户名已存在"
 req - POST /api/auth/register -H "$J" -d "{\"username\":\"bad name!\",\"password\":\"$PW\"}"; expect FUNC "用户名不合规被拒" "400"
 present FUNC "校验失败给出一句提示" "用户名只能包含"; absent SEC "校验失败不返回 zod 的整段 JSON" '\"code\"'
-req - POST /api/auth/register -H "$J" -d '{not json'; expect FUNC "注册请求体不是 JSON" "500"
-present SEC "内部错误只回固定的文字" "注册失败"; absent SEC "内部错误不带解析器的报错原文" "JSON"
+req - POST /api/auth/register -H "$J" -d '{not json'; expect FUNC "注册请求体不是 JSON 返回 400" "400"
+present SEC "畸形 JSON 只回固定的文字" "请求格式不正确"; absent SEC "畸形 JSON 不带解析器的报错原文" "JSON"
 req kn GET /api/emails; expect FUNC "骑士列邮箱" "200"
 req kn GET /api/api-keys; expect FUNC "骑士无 API Key 权限" "403"
 req civ GET /api/roles/init-emperor; expect FUNC "已有皇帝后 init-emperor 拒绝" "400"

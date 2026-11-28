@@ -65,7 +65,11 @@ export async function GET(
     const conditions = [baseConditions]
 
     if (cursor) {
-      const { timestamp, id } = decodeCursor(cursor)
+      const decoded = decodeCursor(cursor)
+      if (!decoded) {
+        return NextResponse.json({ error: "Invalid cursor" }, { status: 400 })
+      }
+      const { timestamp, id } = decoded
       const time = new Date(timestamp)
       // 和 /api/emails/[id] 一样：多写一个 received_at <= T，索引才能直接从游标的位置往下读
       conditions.push(

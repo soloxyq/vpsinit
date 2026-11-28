@@ -8,10 +8,24 @@ import { z } from "zod"
 
 export const runtime = "edge"
 
-const webhookSchema = z.object({
-  url: z.string().url().refine(isHttpsUrl, "Webhook URL must use https://"),
-  enabled: z.boolean()
-})
+const httpsUrlSchema = z.string().url().refine(isHttpsUrl, "Webhook URL must use https://")
+const webhookSchema = z
+  .object({
+    url: z.string(),
+    enabled: z.boolean(),
+  })
+  .superRefine((val, ctx) => {
+    // 关闭 Webhook 时允许 URL 为空；只要填了 URL 或处于开启状态，就必须是合法 https:// 地址
+    if (!val.enabled && val.url.trim() === "") return
+    const check = httpsUrlSchema.safeParse(val.url.trim())
+    if (!check.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: check.error.issues[0]?.message || "Invalid Webhook URL",
+        path: ["url"],
+      })
+    }
+  })
 
 export async function GET() {
   const guard = await requireUser(PERMISSIONS.MANAGE_WEBHOOK)

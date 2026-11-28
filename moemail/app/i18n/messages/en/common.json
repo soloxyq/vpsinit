@@ -8,6 +8,12 @@
     "save": "Save",
     "delete": "Delete"
   },
+  "copy": {
+    "successTitle": "Success",
+    "success": "Copied to clipboard",
+    "errorTitle": "Error",
+    "failed": "Failed to copy"
+  },
   "nav": {
     "home": "Home",
     "login": "Login",

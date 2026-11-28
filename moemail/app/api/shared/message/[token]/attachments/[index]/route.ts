@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { createDb } from "@/lib/db"
-import { messageShares, messages } from "@/lib/schema"
+import { emails, messageShares, messages } from "@/lib/schema"
 import { eq } from "drizzle-orm"
 import { serveAttachment } from "@/lib/attachments"
 
@@ -31,6 +31,14 @@ export async function GET(
     })
     if (!message) {
       return NextResponse.json({ error: "Message not found" }, { status: 404 })
+    }
+
+    const email = await db.query.emails.findFirst({
+      where: eq(emails.id, message.emailId),
+      columns: { expiresAt: true },
+    })
+    if (!email || email.expiresAt < new Date()) {
+      return NextResponse.json({ error: "Email has expired" }, { status: 410 })
     }
 
     return await serveAttachment(getRequestContext().env.ATTACHMENTS, message.id, message.attachments, index)

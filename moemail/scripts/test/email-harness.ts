@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { getPlatformProxy } from "wrangler"
 import worker from "../../workers/email-receiver"
-import { ATTACHMENT_KEY_PREFIX, sweepOrphanAttachments } from "../../app/lib/attachments"
+import { ATTACHMENT_KEY_PREFIX, attachmentBudget, sweepOrphanAttachments } from "../../app/lib/attachments"
 
 async function main() {
   const state = process.env.STATE
@@ -90,6 +90,9 @@ async function main() {
          VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, 'sent', ?7, ?7, ?7)`
       ).bind(id, emailId, fromAddress, toAddress, subject, html, now).run()
       console.log(`RESULT ${JSON.stringify({ id })}`)
+    } else if (mode === "budget") {
+      const b = await attachmentBudget(env.DB)
+      console.log(`RESULT ${JSON.stringify(b)}`)
     } else if (mode === "sweep") {
       const deleted = await sweepOrphanAttachments(env.DB, kv, { minAgeMs: 0 })
       console.log(`RESULT ${JSON.stringify({ deleted })}`)

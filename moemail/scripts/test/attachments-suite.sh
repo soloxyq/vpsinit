@@ -391,7 +391,7 @@ req owner GET "/api/emails/$NBOX1?q=only_in_html_999&total=false"
 check "收件搜索不扫 HTML 列（纯 HTML 邮件）" "$(jq -r '.messages | length' "$T/body")" 0
 
 # 发件箱正文存在 html 列（content 为空），验证发件搜索能命中正文并正确转义 LIKE 通配符
-harness insert-sent "$NBOX1" "$NADDR1" "rcpt@delta.example" "Sent Report" "<p>sent_body_marker_77 100%_done</p>" >/dev/null
+SENT_TEST_ID=$(harness insert-sent "$NBOX1" "$NADDR1" "rcpt@delta.example" "Sent Report" "<p>sent_body_marker_77 100%_done</p>" | jq -r .id)
 harness insert-sent "$NBOX1" "$NADDR1" "other@epsilon.example" "Other Sent" "<p>plain sent text</p>" >/dev/null
 req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":true,"apiKey":"re_local_test","roleLimits":{}}'; expect "临时打开发件服务（测发件搜索）" 200
 req owner GET "/api/emails/$NBOX1?type=sent"
@@ -406,9 +406,55 @@ req owner GET "/api/emails/$NBOX1?type=sent&q=rcpt@delta&total=false"
 check "发件搜索按收件人命中 1 封" "$(jq -r '.messages | length' "$T/body")" 1
 req owner GET "/api/emails/$NBOX1?type=sent&q=NoSuchSentWord&total=false"
 check "发件搜索不匹配返回空" "$(jq -r '.messages | length' "$T/body")" 0
+
+# 验证邮箱分享链接不能读取已发邮件；过期邮箱不能发信、单封分享也返回 410
+req owner POST "/api/emails/$NBOX1/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":0}'; NST=$(jq -r '.token // empty' "$T/body")
+req - GET "/api/shared/$NST/messages/$SENT_TEST_ID"; expect "邮箱分享链接不能读已发邮件" 404
+req owner POST "/api/emails/$NBOX1/messages/$HTML_ONLY_ID/share" -H "$J" -H "Origin: $B" -d '{"expiresIn":0}'; NMT=$(jq -r '.token // empty' "$T/body")
+req - GET "/api/shared/message/$NMT"; expect "未过期邮箱的单封分享正常可读" 200
+
+# 验证非 <img src=cid:> 或非位图的 cid 引用不会被误藏起来，且删邮件不回退当日附件写入额度
+B_BEFORE=$(harness budget | jq -r .remainingWrites)
+cat > "$T/cid-edge.eml" <<'EOF'
+From: edge@alpha.example
+To: notebox1@moemail.app
+Subject: CID Edge Case
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="ce"
+
+--ce
+Content-Type: text/html; charset="utf-8"
+
+<p><a href="cid:doc1@example.com">link</a><img src="cid:vec1@example.com"></p>
+--ce
+Content-Type: application/pdf; name="linked.pdf"
+Content-ID: <doc1@example.com>
+Content-Disposition: inline; filename="linked.pdf"
+
+%PDF-1.4 edge
+--ce
+Content-Type: image/svg+xml; name="vec.svg"
+Content-ID: <vec1@example.com>
+Content-Disposition: inline; filename="vec.svg"
+
+<svg xmlns="http://www.w3.org/2000/svg"/>
+--ce--
+EOF
+deliver edge@alpha.example "$NADDR1" "$T/cid-edge.eml" >/dev/null
+B_AFTER_DELIVER=$(harness budget | jq -r .remainingWrites)
+check "投递 2 个附件后当日剩余写入额度减 2" "$((B_BEFORE - B_AFTER_DELIVER))" 2
+EDGE_ID=$(latest_message owner "$NBOX1" "CID Edge Case")
+req owner GET "/api/emails/$NBOX1/$EDGE_ID"
+check "非 img[src] 或 SVG 的 cid 附件保持 inline=false（不被附件栏隐藏）" "$(jq -r '[.message.attachments[].inline] | any' "$T/body")" false
+
+harness expire "$NBOX1" >/dev/null
+req - GET "/api/shared/message/$NMT"; expect "所属邮箱过期后单封邮件分享返回 410" 410
+req owner POST "/api/emails/$NBOX1/send" -H "$J" -H "Origin: $B" -d '{"to":"a@b.com","subject":"s","content":"c"}'; expect "已过期邮箱发信被拒" 403
 req owner POST /api/config/email-service -H "$J" -H "Origin: $B" -d '{"enabled":false,"apiKey":"","roleLimits":{}}'; expect "测完发件搜索关回发件服务" 200
 
 req owner DELETE "/api/emails/$NBOX1" -H "Origin: $B" >/dev/null
+B_AFTER_DELETE=$(harness budget | jq -r .remainingWrites)
+check "删除邮箱与邮件后当日已消耗的附件 KV 写入额度不回退" "$B_AFTER_DELETE" "$B_AFTER_DELIVER"
 req owner DELETE "/api/emails/$NBOX2" -H "Origin: $B" >/dev/null
 req owner DELETE "/api/emails/$NBOX3" -H "Origin: $B" >/dev/null
 

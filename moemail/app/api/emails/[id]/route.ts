@@ -179,7 +179,11 @@ export async function GET(
     const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
 
     if (cursorStr) {
-      const { timestamp, id } = decodeCursor(cursorStr)
+      const decoded = decodeCursor(cursorStr)
+      if (!decoded) {
+        return NextResponse.json({ error: "Invalid cursor" }, { status: 400 })
+      }
+      const { timestamp, id } = decoded
       const time = new Date(timestamp)
       // 意思是 time < T 或者（time = T 且 id < I）。前面多写一个 time <= T，索引才能直接从游标的位置往下读；
       // 只写 OR 的话每一页都要从最新的邮件读起，越往后翻读的行数越多

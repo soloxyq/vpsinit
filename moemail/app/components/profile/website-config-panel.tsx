@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { EMAIL_CONFIG } from "@/config"
+import { refreshCachedConfig } from "@/hooks/use-config"
 
 export function WebsiteConfigPanel() {
   const t = useTranslations("profile.website")
@@ -67,12 +68,17 @@ export function WebsiteConfigPanel() {
   const handleSave = async () => {
     setLoading(true)
     try {
+      const normalizedDomains = emailDomains
+        .split(",")
+        .map((d) => d.trim())
+        .filter(Boolean)
+        .join(",")
       const res = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           defaultRole, 
-          emailDomains,
+          emailDomains: normalizedDomains,
           adminContact,
           maxEmails: maxEmails || EMAIL_CONFIG.MAX_ACTIVE_EMAILS.toString(),
           allowRegistration,
@@ -84,7 +90,13 @@ export function WebsiteConfigPanel() {
         }),
       })
 
-      if (!res.ok) throw new Error(t("saveFailed"))
+      if (!res.ok) {
+        const errData = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(errData.error || t("saveFailed"))
+      }
+
+      setEmailDomains(normalizedDomains)
+      await refreshCachedConfig()
 
       toast({
         title: t("saveSuccess"),

@@ -1,6 +1,6 @@
 import { createDb } from "@/lib/db"
 import { emailShares, messages } from "@/lib/schema"
-import { eq, and } from "drizzle-orm"
+import { eq, and, or, ne, isNull } from "drizzle-orm"
 import { NextResponse } from "next/server"
 import { publicAttachments } from "@/lib/attachments"
 
@@ -46,11 +46,12 @@ export async function GET(
       )
     }
 
-    // 获取消息详情
+    // 获取消息详情（和列表接口一致，只允许读取收到的邮件）
     const message = await db.query.messages.findFirst({
       where: and(
         eq(messages.id, messageId),
-        eq(messages.emailId, share.email.id)
+        eq(messages.emailId, share.email.id),
+        or(ne(messages.type, "sent"), isNull(messages.type))
       )
     })
 

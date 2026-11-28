@@ -54,6 +54,9 @@ export function MessageView({ emailId, messageId, messageType = 'received', onRe
   const attachmentBaseUrl = `/api/emails/${emailId}/${messageId}/attachments`
 
   useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+
     const fetchMessage = async () => {
       try {
         setLoading(true)
@@ -61,10 +64,12 @@ export function MessageView({ emailId, messageId, messageType = 'received', onRe
         
         const url = `/api/emails/${emailId}/${messageId}${messageType === 'sent' ? '?type=sent' : ''}`;
         
-        const response = await fetch(url)
+        const response = await fetch(url, { signal: controller.signal })
+        if (cancelled) return
         
         if (!response.ok) {
           const errorData = await response.json()
+          if (cancelled) return
           const errorMessage = (errorData as { error?: string }).error || t("loadError")
           setError(errorMessage)
           toast({
@@ -76,12 +81,12 @@ export function MessageView({ emailId, messageId, messageType = 'received', onRe
         }
         
         const data = await response.json() as { message: Message }
+        if (cancelled) return
         setMessage(data.message)
+        setViewMode(data.message.html ? "html" : "text")
         if (data.message.read_at === null) onReadRef.current?.()
-        if (!data.message.html) {
-          setViewMode("text")
-        }
       } catch (error) {
+        if (cancelled) return
         const errorMessage = t("networkError")
         setError(errorMessage)
         toast({
@@ -91,11 +96,15 @@ export function MessageView({ emailId, messageId, messageType = 'received', onRe
         })
         console.error("Failed to fetch message:", error)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     fetchMessage()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
   }, [emailId, messageId, messageType, toast, t, tList])
 
   const verificationCode = useMemo(

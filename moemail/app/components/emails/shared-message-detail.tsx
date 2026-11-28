@@ -52,16 +52,14 @@ export function SharedMessageDetail({
   const [viewMode, setViewMode] = useState<ViewMode>("html")
   const mounted = useMounted()
 
-  // 如果没有HTML内容，默认显示文本
+  // 切换邮件时才重置视图模式（依赖 id 与是否有 html/content，而非每次轮询都会重建的对象引用）
+  const messageId = message?.id
+  const hasHtml = Boolean(message?.html)
+  const hasContent = Boolean(message?.content)
   useEffect(() => {
-    if (message) {
-      if (!message.html && message.content) {
-        setViewMode("text")
-      } else if (message.html) {
-        setViewMode("html")
-      }
-    }
-  }, [message])
+    if (!messageId) return
+    setViewMode(!hasHtml && hasContent ? "text" : "html")
+  }, [messageId, hasHtml, hasContent])
 
   // 挂载后再识别：单封分享页在服务端渲染，那里没有 DOMParser，结果会和浏览器里不一致。
   // 依赖字符串而不是 message 对象：父组件每次渲染都传一个新对象

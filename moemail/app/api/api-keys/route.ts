@@ -4,7 +4,7 @@ import { nanoid } from "nanoid"
 import { NextResponse } from "next/server"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
-import { desc, eq } from "drizzle-orm"
+import { and, desc, eq } from "drizzle-orm"
 
 export const runtime = "edge"
 
@@ -39,19 +39,33 @@ export async function POST(request: Request) {
   if (guard.error) return guard.error
   const { userId } = guard
   try {
-    const { name } = await request.json() as { name: string }
-    if (!name?.trim()) {
+    const rawBody: unknown = await request.json().catch(() => null)
+    if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+      return NextResponse.json({ error: "无效的请求体" }, { status: 400 })
+    }
+    const rawName = (rawBody as { name?: unknown }).name
+    const trimmedName = typeof rawName === "string" ? rawName.trim() : ""
+    if (!trimmedName) {
       return NextResponse.json(
         { error: "名称不能为空" },
         { status: 400 }
       )
     }
 
-    const key = `mk_${nanoid(32)}`
     const db = createDb()
-    
+    const existing = await db.query.apiKeys.findFirst({
+      where: and(eq(apiKeys.userId, userId), eq(apiKeys.name, trimmedName)),
+    })
+    if (existing) {
+      return NextResponse.json(
+        { error: "该名称的 API Key 已存在" },
+        { status: 409 }
+      )
+    }
+
+    const key = `mk_${nanoid(32)}`
     await db.insert(apiKeys).values({
-      name,
+      name: trimmedName,
       key,
       userId: userId,
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year
@@ -59,6 +73,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ key })
   } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
+      return NextResponse.json(
+        { error: "该名称的 API Key 已存在" },
+        { status: 409 }
+      )
+    }
     console.error("Failed to create API key:", error)
     return NextResponse.json(
       { error: "创建 API Key 失败" },

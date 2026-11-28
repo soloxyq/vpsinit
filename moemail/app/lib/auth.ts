@@ -12,7 +12,7 @@ import { hashPassword, comparePassword } from "@/lib/utils"
 import { authSchema, AuthSchema } from "@/lib/validation"
 import { generateAvatarUrl } from "./avatar"
 import { getUserId } from "./apiKey"
-import { verifyTurnstileToken } from "./turnstile"
+import { verifyRegisterPassCookie, verifyTurnstileToken } from "./turnstile"
 import { PublicError } from "./errors"
 
 const ROLE_DESCRIPTIONS: Record<Role, string> = {
@@ -147,7 +147,7 @@ export const {
         username: { label: "用户名", type: "text", placeholder: "请输入用户名" },
         password: { label: "密码", type: "password", placeholder: "请输入密码" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, request) {
         if (!credentials) {
           throw new LoginError("invalid_input")
         }
@@ -162,12 +162,18 @@ export const {
           throw new LoginError("invalid_input")
         }
 
-        const verification = await verifyTurnstileToken(parsedCredentials.turnstileToken)
-        if (!verification.success) {
-          if (verification.reason === "missing-token") {
-            throw new LoginError("turnstile_missing")
+        const regPassed = await verifyRegisterPassCookie(
+          request?.headers?.get("cookie"),
+          parsedCredentials.username
+        )
+        if (!regPassed) {
+          const verification = await verifyTurnstileToken(parsedCredentials.turnstileToken)
+          if (!verification.success) {
+            if (verification.reason === "missing-token") {
+              throw new LoginError("turnstile_missing")
+            }
+            throw new LoginError("turnstile_failed")
           }
-          throw new LoginError("turnstile_failed")
         }
 
         const db = createDb()

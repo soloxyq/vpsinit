@@ -52,7 +52,10 @@ export function ApiKeyPanel() {
   const fetchApiKeys = async () => {
     try {
       const res = await fetch("/api/api-keys")
-      if (!res.ok) throw new Error(t("createFailed"))
+      if (!res.ok) {
+        const errData = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(errData.error || t("createFailed"))
+      }
       const data = await res.json() as { apiKeys: ApiKey[] }
       setApiKeys(data.apiKeys)
     } catch (error) {
@@ -86,7 +89,10 @@ export function ApiKeyPanel() {
         body: JSON.stringify({ name: newKeyName })
       })
 
-      if (!res.ok) throw new Error(t("createFailed"))
+      if (!res.ok) {
+        const errData = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(errData.error || t("createFailed"))
+      }
 
       const data = await res.json() as { key: string }
       setNewKey(data.key)
@@ -117,7 +123,10 @@ export function ApiKeyPanel() {
         body: JSON.stringify({ enabled })
       })
 
-      if (!res.ok) throw new Error(t("createFailed"))
+      if (!res.ok) {
+        const errData = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(errData.error || t("createFailed"))
+      }
 
       setApiKeys(keys =>
         keys.map(key =>
@@ -166,7 +175,13 @@ export function ApiKeyPanel() {
         </div>
         {
           canManageApiKey && (
-            <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+            <Dialog
+              open={createDialogOpen}
+              onOpenChange={(open) => {
+                if (open) setCreateDialogOpen(true)
+                else handleDialogClose()
+              }}
+            >
               <DialogTrigger asChild>
                 <Button className="gap-2 shrink-0" onClick={() => setCreateDialogOpen(true)}>
                   <Plus className="w-4 h-4" />

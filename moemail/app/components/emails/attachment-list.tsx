@@ -2,7 +2,7 @@
 
 import { Paperclip } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { formatSize, type AttachmentInfo } from "@/lib/attachments"
+import { formatSize, isRenderedInline, type AttachmentInfo } from "@/lib/attachments"
 
 interface AttachmentListProps {
   attachments?: AttachmentInfo[]
@@ -13,7 +13,7 @@ interface AttachmentListProps {
 // 邮件头下方的附件栏。正文里用 cid: 引用的内嵌图片在正文中显示，不列在这里
 export function AttachmentList({ attachments, baseUrl }: AttachmentListProps) {
   const t = useTranslations("emails.messageView")
-  const listed = (attachments ?? []).filter((a) => !a.inline)
+  const listed = (attachments ?? []).filter((a) => !isRenderedInline(a))
   if (listed.length === 0) return null
 
   const chip =

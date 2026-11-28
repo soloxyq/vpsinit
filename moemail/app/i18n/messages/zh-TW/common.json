@@ -8,6 +8,12 @@
     "save": "儲存",
     "delete": "刪除"
   },
+  "copy": {
+    "successTitle": "成功",
+    "success": "已複製到剪貼簿",
+    "errorTitle": "錯誤",
+    "failed": "複製失敗"
+  },
   "nav": {
     "home": "首頁",
     "login": "登入",

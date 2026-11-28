@@ -155,22 +155,34 @@ export function SharedEmailPageClient({
     }
   }
 
+  const detailReqIdRef = useRef(0)
+  const detailAbortRef = useRef<AbortController | null>(null)
+
   const fetchMessageDetail = async (messageId: string) => {
+    detailAbortRef.current?.abort()
+    const controller = new AbortController()
+    detailAbortRef.current = controller
+    const reqId = ++detailReqIdRef.current
     try {
       setMessageLoading(true)
 
-      const response = await fetch(`/api/shared/${token}/messages/${messageId}`)
+      const response = await fetch(`/api/shared/${token}/messages/${messageId}`, {
+        signal: controller.signal,
+      })
+      if (reqId !== detailReqIdRef.current) return
 
       if (!response.ok) {
         throw new Error("Failed to load message")
       }
 
       const data = await response.json() as { message: MessageDetail }
+      if (reqId !== detailReqIdRef.current) return
       setSelectedMessage(data.message)
     } catch (err) {
+      if (reqId !== detailReqIdRef.current) return
       console.error("Failed to fetch message:", err)
     } finally {
-      setMessageLoading(false)
+      if (reqId === detailReqIdRef.current) setMessageLoading(false)
     }
   }
 

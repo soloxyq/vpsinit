@@ -59,9 +59,18 @@ export function parseAttachments(value: unknown): StoredAttachment[] {
 export const publicAttachments = (value: unknown): AttachmentInfo[] =>
   parseAttachments(value).map((a, index) => ({ ...a, filename: safeFilename(a.filename), index }))
 
+// 浏览器能直接显示的位图按原类型返回（正文里的 cid: 内嵌图片要用），其余一律按二进制下载：
+// HTML、SVG 这类附件要是在本站域名下被当成网页打开，里面的脚本就能用访问者的登录状态调接口
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"])
+
+// 真正会在 HTML 正文里经 <img src="cid:…"> 显示出来的内嵌位图；
+// 其它类型（PDF、SVG 等）、非 <img src> 引用，或者因超额没存下来的，仍列在附件栏里供下载或提示未保存
+export const isRenderedInline = (a: StoredAttachment) =>
+  Boolean(a.inline && a.stored && IMAGE_TYPES.has(a.mimeType))
+
 // 是否有列在附件栏里的附件（列表里显示回形针）
 export const hasListedAttachments = (value: unknown) =>
-  parseAttachments(value).some((a) => !a.inline)
+  parseAttachments(value).some((a) => !isRenderedInline(a))
 
 // ---- 收信时保存 ----
 
@@ -109,19 +118,38 @@ const cleanContentId = (id?: string) => {
   return cleaned || undefined
 }
 
-// HTML 正文里用 cid: 引用到的内容 ID（小写）
+// HTML 正文里真正用 <img … src="cid:…"> 引用到的内容 ID（小写）：
+// 只有这种引用才会被前端 loadInlineImages 替换显示，CSS 背景或 <a href="cid:…"> 仍应留在附件栏
 function referencedContentIds(html: string) {
   const ids = new Set<string>()
-  for (const match of html.matchAll(/cid:([^"'\s<>()]+)/gi)) {
-    let id = match[1]
+  for (const tag of html.matchAll(/<img\b[^>]*>/gi)) {
+    const srcMatch = tag[0].match(/\bsrc\s*=\s*(?:"cid:([^"]+)"|'cid:([^']+)'|cid:([^\s"'<>]+))/i)
+    const raw = srcMatch?.[1] ?? srcMatch?.[2] ?? srcMatch?.[3]
+    if (!raw) continue
+    let id = raw
     try {
       id = decodeURIComponent(id)
     } catch {
       // 保留原样
     }
-    ids.add(id.toLowerCase())
+    ids.add(id.trim().toLowerCase())
   }
   return ids
+}
+
+export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10)
+const ATTACHMENT_WRITE_SCOPE = "att_writes"
+
+// 记录当天实际发生的 KV 写入次数（不随删信、清空或临时邮箱到期而回退）
+export async function recordAttachmentWrites(db: D1Database, writes: number) {
+  if (writes <= 0) return
+  await db
+    .prepare(
+      `INSERT INTO daily_usage (day, scope, count) VALUES (?1, ?2, ?3)
+       ON CONFLICT(day, scope) DO UPDATE SET count = count + excluded.count`
+    )
+    .bind(utcDay(), ATTACHMENT_WRITE_SCOPE, writes)
+    .run()
 }
 
 export interface AttachmentBudget {
@@ -129,22 +157,30 @@ export interface AttachmentBudget {
   remainingBytes: number
 }
 
-// 今天已经存了多少个附件、目前一共存了多少字节（按数据库里还在的邮件算，近似值）
+// 今天已经存了多少个附件（读 daily_usage 独立计数，兼容旧数据取较大值）、目前一共存了多少字节
 export async function attachmentBudget(db: D1Database): Promise<AttachmentBudget> {
-  const startOfDay = new Date()
+  const now = Date.now()
+  const startOfDay = new Date(now)
   startOfDay.setUTCHours(0, 0, 0, 0)
-  const row = await db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(CASE WHEN m.received_at >= ? THEN 1 ELSE 0 END), 0) AS today,
-         COALESCE(SUM(json_extract(j.value, '$.size')), 0) AS bytes
-       FROM message m, json_each(m.attachments) j
-       WHERE m.attachments IS NOT NULL AND json_extract(j.value, '$.stored') = 1`
-    )
-    .bind(startOfDay.getTime())
-    .first<{ today: number; bytes: number }>()
+  const [usageRes, msgRes] = await db.batch([
+    db
+      .prepare("SELECT count FROM daily_usage WHERE day = ? AND scope = ?")
+      .bind(utcDay(now), ATTACHMENT_WRITE_SCOPE),
+    db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN m.received_at >= ? THEN 1 ELSE 0 END), 0) AS today,
+           COALESCE(SUM(json_extract(j.value, '$.size')), 0) AS bytes
+         FROM message m, json_each(m.attachments) j
+         WHERE m.attachments IS NOT NULL AND json_extract(j.value, '$.stored') = 1`
+      )
+      .bind(startOfDay.getTime()),
+  ])
+  const recordedToday = (usageRes.results[0] as { count?: number } | undefined)?.count ?? 0
+  const row = msgRes.results[0] as { today?: number; bytes?: number } | undefined
+  const usedToday = Math.max(recordedToday, row?.today ?? 0)
   return {
-    remainingWrites: DAILY_ATTACHMENT_WRITES - (row?.today ?? 0),
+    remainingWrites: DAILY_ATTACHMENT_WRITES - usedToday,
     remainingBytes: TOTAL_ATTACHMENT_BYTES - (row?.bytes ?? 0),
   }
 }
@@ -179,7 +215,7 @@ export async function saveAttachments(
       mimeType,
       size: bytes.byteLength,
       ...(contentId ? { contentId } : {}),
-      inline: !!contentId && cids.has(contentId.toLowerCase()),
+      inline: IMAGE_TYPES.has(mimeType) && !!contentId && cids.has(contentId.toLowerCase()),
       stored: false,
     }
     return { index, bytes, item }
@@ -272,10 +308,6 @@ export async function sweepOrphanAttachments(
 }
 
 // ---- 下载 ----
-
-// 浏览器能直接显示的位图按原类型返回（正文里的 cid: 内嵌图片要用），其余一律按二进制下载：
-// HTML、SVG 这类附件要是在本站域名下被当成网页打开，里面的脚本就能用访问者的登录状态调接口
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"])
 
 const encodeRfc5987 = (value: string) =>
   encodeURIComponent(value).replace(

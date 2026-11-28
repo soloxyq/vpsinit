@@ -84,6 +84,18 @@ export const messages = sqliteTable("message", {
   emailIdReadAtIdx: index("message_email_id_read_at_idx").on(table.emailId, table.readAt),
   // 发件列表按 sent_at 排序、按 type 筛选：没有这个索引时，每取一页都要把邮箱里的邮件全读一遍再排序
   emailIdTypeSentAtIdx: index("message_email_id_type_sent_at_idx").on(table.emailId, table.type, table.sentAt),
+  // 附件额度统计与清理扫描只看带附件的邮件，部分索引避免随邮件总数增长而全表扫描
+  withAttachmentsIdx: index("message_with_attachments_idx").on(table.id).where(sql`\`attachments\` IS NOT NULL`),
+}))
+
+// 按 UTC 日期（YYYY-MM-DD）记录每日已用额度（附件 KV 写入次数、各用户发件次数），
+// 不随邮件或邮箱删除而回退；过期日期由清理 Worker 顺带清理
+export const dailyUsage = sqliteTable("daily_usage", {
+  day: text("day").notNull(),
+  scope: text("scope").notNull(),
+  count: integer("count").notNull().default(0),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.day, table.scope] }),
 }))
 
 export const webhooks = sqliteTable('webhook', {

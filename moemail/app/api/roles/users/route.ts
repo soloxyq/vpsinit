@@ -1,8 +1,9 @@
 import { createDb } from "@/lib/db"
 import { users, userRoles, roles } from "@/lib/schema"
-import { eq, like, or, sql } from "drizzle-orm"
+import { eq, or, sql } from "drizzle-orm"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS, ROLES } from "@/lib/permissions"
+import { likeContains, likePattern, parseSearchQuery } from "@/lib/search"
 
 export const runtime = "edge"
 
@@ -11,18 +12,24 @@ export async function GET(request: Request) {
   if (guard.error) return guard.error
 
   const { searchParams } = new URL(request.url)
-  const page = Math.max(1, Number(searchParams.get("page") || "1"))
-  const pageSize = Math.min(50, Math.max(1, Number(searchParams.get("pageSize") || "20")))
-  const search = searchParams.get("search")?.trim()
+  const rawPage = Number(searchParams.get("page") || "1")
+  const rawPageSize = Number(searchParams.get("pageSize") || "20")
+  if (!Number.isFinite(rawPage) || !Number.isFinite(rawPageSize)) {
+    return Response.json({ error: "分页参数不正确" }, { status: 400 })
+  }
+  const page = Math.max(1, Math.floor(rawPage))
+  const pageSize = Math.min(50, Math.max(1, Math.floor(rawPageSize)))
+  const search = parseSearchQuery(searchParams.get("search"))
 
   const db = createDb()
 
   try {
-    const searchCondition = search
+    const pattern = search ? likePattern(search) : null
+    const searchCondition = pattern
       ? or(
-          like(users.username, `%${search}%`),
-          like(users.email, `%${search}%`),
-          like(users.name, `%${search}%`)
+          likeContains(users.username, pattern),
+          likeContains(users.email, pattern),
+          likeContains(users.name, pattern)
         )
       : undefined
 
@@ -81,10 +88,13 @@ export async function POST(request: Request) {
   if (guard.error) return guard.error
 
   try {
-    const json = await request.json()
-    const { searchText } = json as { searchText: string }
+    const rawJson: unknown = await request.json().catch(() => null)
+    if (!rawJson || typeof rawJson !== "object" || Array.isArray(rawJson)) {
+      return Response.json({ error: "无效的请求体" }, { status: 400 })
+    }
+    const { searchText } = rawJson as { searchText?: unknown }
 
-    if (!searchText) {
+    if (typeof searchText !== "string" || !searchText.trim()) {
       return Response.json({ error: "请提供用户名或邮箱地址" }, { status: 400 })
     }
 

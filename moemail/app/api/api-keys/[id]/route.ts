@@ -55,7 +55,19 @@ export async function PATCH(
   try {
     const { id } = await params
 
-    const { enabled } = await request.json() as { enabled: boolean }
+    const rawBody: unknown = await request.json().catch(() => null)
+    if (
+      !rawBody ||
+      typeof rawBody !== "object" ||
+      Array.isArray(rawBody) ||
+      typeof (rawBody as { enabled?: unknown }).enabled !== "boolean"
+    ) {
+      return NextResponse.json(
+        { error: "enabled 必须是布尔值" },
+        { status: 400 }
+      )
+    }
+    const { enabled } = rawBody as { enabled: boolean }
     const db = createDb()
     
     const result = await db.update(apiKeys)

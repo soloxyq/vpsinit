@@ -8,6 +8,12 @@
     "save": "저장",
     "delete": "삭제"
   },
+  "copy": {
+    "successTitle": "성공",
+    "success": "클립보드에 복사되었습니다",
+    "errorTitle": "오류",
+    "failed": "복사에 실패했습니다"
+  },
   "nav": {
     "home": "홈",
     "login": "로그인",

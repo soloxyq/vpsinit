@@ -8,6 +8,12 @@
     "save": "保存",
     "delete": "削除"
   },
+  "copy": {
+    "successTitle": "成功",
+    "success": "クリップボードにコピーしました",
+    "errorTitle": "エラー",
+    "failed": "コピーに失敗しました"
+  },
   "nav": {
     "home": "ホーム",
     "login": "ログイン",

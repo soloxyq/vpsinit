@@ -99,6 +99,7 @@ export function ThreeColumnLayout() {
               selectedEmailId={selectedEmail?.id}
               unreadCounts={unreadCounts}
               updatedNote={noteUpdate}
+              ready={isDesktop !== null}
             />
           </div>
         </div>
@@ -145,6 +146,7 @@ export function ThreeColumnLayout() {
                 refreshTrigger={refreshTrigger}
                 unreadCount={unreadCounts[selectedEmail.id] ?? 0}
                 onUnreadChange={refreshUnread}
+                canSend={canSendEmails}
               />
             </div>
           ) : (
@@ -197,6 +199,7 @@ export function ThreeColumnLayout() {
                 selectedEmailId={selectedEmail?.id}
                 unreadCounts={unreadCounts}
                 updatedNote={noteUpdate}
+                ready={isDesktop !== null}
               />
             </div>
           </div>
@@ -249,6 +252,7 @@ export function ThreeColumnLayout() {
                   refreshTrigger={refreshTrigger}
                   unreadCount={unreadCounts[selectedEmail.id] ?? 0}
                   onUnreadChange={refreshUnread}
+                  canSend={canSendEmails}
                 />
               </div>
             </div>

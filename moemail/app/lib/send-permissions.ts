@@ -1,8 +1,9 @@
 import { createDb } from "@/lib/db"
-import { userRoles, roles, messages, emails } from "@/lib/schema"
-import { eq, and, gte } from "drizzle-orm"
+import { userRoles, roles, messages, emails, dailyUsage } from "@/lib/schema"
+import { eq, and, gte, sql } from "drizzle-orm"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { EMAIL_CONFIG } from "@/config"
+import { utcDay } from "@/lib/attachments"
 
 export interface SendPermissionResult {
   canSend: boolean
@@ -41,24 +42,31 @@ export async function checkSendPermission(
     }
     
     const db = createDb()
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    
-    const sentToday = await db
-      .select()
-      .from(messages)
-      .innerJoin(emails, eq(messages.emailId, emails.id))
-      .where(
-        and(
-          eq(emails.userId, userId),
-          eq(messages.type, "sent"),
-          gte(messages.receivedAt, today)
-        )
-      )
+    const now = Date.now()
+    const today = new Date(now)
+    today.setUTCHours(0, 0, 0, 0)
+    const [usageRows, sentRows] = await db.batch([
+      db
+        .select({ count: dailyUsage.count })
+        .from(dailyUsage)
+        .where(and(eq(dailyUsage.day, utcDay(now)), eq(dailyUsage.scope, `sent:${userId}`))),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(messages)
+        .innerJoin(emails, eq(messages.emailId, emails.id))
+        .where(
+          and(
+            eq(emails.userId, userId),
+            eq(messages.type, "sent"),
+            gte(messages.receivedAt, today)
+          )
+        ),
+    ])
 
-    const remainingEmails = Math.max(0, userDailyLimit - sentToday.length)
+    const usedToday = Math.max(usageRows[0]?.count ?? 0, Number(sentRows[0]?.count ?? 0))
+    const remainingEmails = Math.max(0, userDailyLimit - usedToday)
     
-    if (sentToday.length >= userDailyLimit) {
+    if (usedToday >= userDailyLimit) {
       return {
         canSend: false,
         error: `您今天已达到发件限制 (${userDailyLimit} 封)，请明天再试`,

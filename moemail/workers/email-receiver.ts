@@ -9,6 +9,7 @@ import {
   attachmentBudget,
   attachmentKeysOf,
   deleteAttachmentKeys,
+  recordAttachmentWrites,
   saveAttachments,
   type StoredAttachment,
 } from '../app/lib/attachments'
@@ -59,6 +60,12 @@ const handleEmail = async (message: ForwardableEmailMessage, env: Env) => {
       targetEmail.expiresAt,
       budget
     )
+    const storedWrites = attachments ? attachments.filter((a) => a.stored).length : 0
+    if (storedWrites > 0) {
+      await recordAttachmentWrites(env.DB, storedWrites).catch((error) => {
+        console.error('Failed to record attachment writes:', error)
+      })
+    }
 
     savedMessage = await db.insert(messages).values({
       id: messageId,

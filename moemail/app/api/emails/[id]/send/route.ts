@@ -2,11 +2,12 @@ import { NextResponse } from "next/server"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { createDb } from "@/lib/db"
-import { emails, messages } from "@/lib/schema"
-import { eq } from "drizzle-orm"
+import { emails, messages, dailyUsage } from "@/lib/schema"
+import { eq, sql } from "drizzle-orm"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { checkSendPermission } from "@/lib/send-permissions"
 import { PublicError } from "@/lib/errors"
+import { utcDay } from "@/lib/attachments"
 
 export const runtime = "edge"
 
@@ -69,9 +70,23 @@ export async function POST(
     
     const remainingEmails = permissionResult.remainingEmails
 
-    const { to, subject, content } = await request.json() as SendEmailRequest
+    const rawBody: unknown = await request.json().catch(() => null)
+    if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+      return NextResponse.json(
+        { error: "无效的请求体" },
+        { status: 400 }
+      )
+    }
+    const { to, subject, content } = rawBody as Partial<SendEmailRequest>
 
-    if (!to || !subject || !content) {
+    if (
+      typeof to !== "string" ||
+      typeof subject !== "string" ||
+      typeof content !== "string" ||
+      !to.trim() ||
+      !subject.trim() ||
+      !content.trim()
+    ) {
       return NextResponse.json(
         { error: "收件人、主题和内容都是必填项" },
         { status: 400 }
@@ -96,6 +111,13 @@ export async function POST(
       )
     }
 
+    if (email.expiresAt < new Date()) {
+      return NextResponse.json(
+        { error: "邮箱已过期" },
+        { status: 403 }
+      )
+    }
+
     const env = getRequestContext().env
     const apiKey = await env.SITE_CONFIG.get("RESEND_API_KEY")
 
@@ -106,24 +128,34 @@ export async function POST(
       )
     }
 
-    await sendWithResend(to, subject, content, email.address, { apiKey })
+    await sendWithResend(to.trim(), subject, content, email.address, { apiKey })
 
-    await db.insert(messages).values({
-      emailId: email.id,
-      fromAddress: email.address,
-      toAddress: to,
-      subject,
-      content: '',
-      type: "sent",
-      html: content,
-      // 自己发出的邮件不算未读
-      readAt: new Date()
-    })
+    const now = new Date()
+    await db.batch([
+      db.insert(messages).values({
+        emailId: email.id,
+        fromAddress: email.address,
+        toAddress: to.trim(),
+        subject,
+        content: '',
+        type: "sent",
+        html: content,
+        // 自己发出的邮件不算未读
+        readAt: now,
+      }),
+      db
+        .insert(dailyUsage)
+        .values({ day: utcDay(now.getTime()), scope: `sent:${userId}`, count: 1 })
+        .onConflictDoUpdate({
+          target: [dailyUsage.day, dailyUsage.scope],
+          set: { count: sql`${dailyUsage.count} + 1` },
+        }),
+    ])
 
     return NextResponse.json({ 
       success: true,
       message: "邮件发送成功",
-      remainingEmails
+      remainingEmails: remainingEmails !== undefined ? Math.max(0, remainingEmails - 1) : undefined
     })
   } catch (error) {
     console.error('Failed to send email:', error)

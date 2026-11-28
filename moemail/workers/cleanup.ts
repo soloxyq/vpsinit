@@ -1,4 +1,4 @@
-import { ATTACHMENT_KEY_PREFIX, sweepOrphanAttachments } from '../app/lib/attachments'
+import { ATTACHMENT_KEY_PREFIX, sweepOrphanAttachments, utcDay } from '../app/lib/attachments'
 
 interface Env {
   DB: D1Database
@@ -50,6 +50,15 @@ const main = {
         console.error('Failed to sweep attachments:', error)
         failure ??= error
       }
+    }
+
+    // 清理两天以前的每日计数（如附件写入次数、每日发件数）
+    try {
+      const yesterday = utcDay(now - 86_400_000)
+      await env.DB.prepare('DELETE FROM daily_usage WHERE day < ?').bind(yesterday).run()
+    } catch (error) {
+      console.error('Failed to clean up daily_usage:', error)
+      failure ??= error
     }
 
     if (failure) throw failure

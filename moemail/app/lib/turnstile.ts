@@ -8,14 +8,22 @@ interface TurnstileConfig {
 
 export async function getTurnstileConfig(): Promise<TurnstileConfig> {
   const env = getRequestContext().env
-  const [enabled, siteKey, secretKey] = await Promise.all([
-    env.SITE_CONFIG.get("TURNSTILE_ENABLED"),
+  const enabled = await env.SITE_CONFIG.get("TURNSTILE_ENABLED")
+  if (enabled !== "true") {
+    return {
+      enabled: false,
+      siteKey: "",
+      secretKey: "",
+    }
+  }
+
+  const [siteKey, secretKey] = await Promise.all([
     env.SITE_CONFIG.get("TURNSTILE_SITE_KEY"),
     env.SITE_CONFIG.get("TURNSTILE_SECRET_KEY"),
   ])
 
   return {
-    enabled: enabled === "true",
+    enabled: true,
     siteKey: siteKey || "",
     secretKey: secretKey || "",
   }

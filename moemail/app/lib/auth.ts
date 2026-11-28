@@ -1,19 +1,49 @@
-import NextAuth, { CredentialsSignin } from "next-auth"
+import NextAuth, { CredentialsSignin, type Session } from "next-auth"
 import GitHub from "next-auth/providers/github"
 import Google from "next-auth/providers/google"
 import { DrizzleAdapter } from "@auth/drizzle-adapter"
 import { createDb, Db } from "./db"
-import { accounts, users, roles, userRoles } from "./schema"
-import { eq } from "drizzle-orm"
-import { getRequestContext } from "@cloudflare/next-on-pages"
+import { accounts, apiKeys, users, roles, userRoles } from "./schema"
+import { and, eq, gt } from "drizzle-orm"
+import { getOptionalRequestContext, getRequestContext } from "@cloudflare/next-on-pages"
+import { headers } from "next/headers"
 import { Permission, hasPermission, ROLES, Role } from "./permissions"
 import CredentialsProvider from "next-auth/providers/credentials"
 import { hashPassword, comparePassword } from "@/lib/utils"
 import { authSchema, AuthSchema } from "@/lib/validation"
 import { generateAvatarUrl } from "./avatar"
-import { getUserId } from "./apiKey"
 import { verifyRegisterPassCookie, verifyTurnstileToken } from "./turnstile"
 import { PublicError } from "./errors"
+
+// next-on-pages 为每次 HTTP 请求单独创建 AsyncLocalStorage 存储对象，并在中间件与路由处理函数之间共享；
+// 把当次请求的鉴权与角色快照挂在上面，同一请求内只查一次 D1，跨请求天然隔离（改密码、删号、降权下一请求立即生效）。
+const JWT_SNAPSHOT_SYM = Symbol.for("moemail.jwtSnapshot")
+const REQ_SESSION_SYM = Symbol.for("moemail.reqSession")
+const REQ_AUTH_SYM = Symbol.for("moemail.reqAuth")
+
+interface JwtUserSnapshot {
+  userId: string
+  roles: Role[]
+  providers: string[]
+}
+
+export interface RequestAuthSnapshot {
+  userId: string | null
+  viaApiKey: boolean
+  roles: Role[]
+}
+
+function getReqStore(): Record<symbol, unknown> | null {
+  try {
+    const reqCtx = getOptionalRequestContext()
+    if (reqCtx) {
+      return reqCtx as unknown as Record<symbol, unknown>
+    }
+  } catch {
+    // 非 edge 请求上下文时不缓存
+  }
+  return null
+}
 
 const ROLE_DESCRIPTIONS: Record<Role, string> = {
   [ROLES.EMPEROR]: "皇帝（网站所有者）",
@@ -81,23 +111,35 @@ export async function assignRoleToUser(db: Db, userId: string, roleId: string) {
 }
 
 export async function getUserRole(userId: string) {
+  const store = getReqStore()
+  if (store) {
+    const snap = await resolveRequestAuth()
+    if (snap.userId === userId && snap.roles[0]) {
+      return snap.roles[0]
+    }
+  }
   const db = createDb()
   const userRoleRecords = await db.query.userRoles.findMany({
     where: eq(userRoles.userId, userId),
     with: { role: true },
   })
-  return userRoleRecords[0].role.name
+  return userRoleRecords[0]?.role.name
 }
 
 export async function checkPermission(permission: Permission) {
-  const userId = await getUserId()
-
-  if (!userId) return false
-
-  return userHasPermission(userId, permission)
+  const snap = await resolveRequestAuth()
+  if (!snap.userId) return false
+  return hasPermission(snap.roles, permission)
 }
 
 export async function userHasPermission(userId: string, permission: Permission) {
+  const store = getReqStore()
+  if (store) {
+    const snap = await resolveRequestAuth()
+    if (snap.userId === userId) {
+      return hasPermission(snap.roles, permission)
+    }
+  }
   const db = createDb()
   const userRoleRecords = await db.query.userRoles.findMany({
     where: eq(userRoles.userId, userId),
@@ -118,9 +160,9 @@ class LoginError extends CredentialsSignin {
   }
 }
 
-export const {
+const {
   handlers: { GET, POST },
-  auth,
+  auth: rawAuth,
   signIn,
   signOut
 } = NextAuth(() => ({
@@ -228,16 +270,49 @@ export const {
       }
       // 登录时在会话里记下密码哈希的前 8 个字符，之后每次和数据库比对，对不上就让会话失效（返回 null 会清掉会话）：
       // 改密码之后，其它设备上已经登录的会话也跟着退出；账号被删后，它的会话也马上失效。
-      // 只在登录时记：没记过的会话（这个功能上线前登录的）也算对不上，要重新登录一次
+      // 只在登录时记：没记过的会话（这个功能上线前登录的）也算对不上，要重新登录一次。
+      // 同时在单次 D1 batch 里一并取出角色与第三方账号，挂到当次请求上下文供 session() 直接复用。
       if (typeof token.id === "string") {
-        const row = await createDb().query.users.findFirst({
-          where: eq(users.id, token.id),
-          columns: { password: true },
-        })
-        if (!row) return null
-        const fingerprint = (row.password ?? "").slice(0, 8)
+        const db = createDb()
+        const [userRows, accountRows] = await db.batch([
+          db
+            .select({
+              password: users.password,
+              roleName: roles.name,
+            })
+            .from(users)
+            .leftJoin(userRoles, eq(userRoles.userId, users.id))
+            .leftJoin(roles, eq(roles.id, userRoles.roleId))
+            .where(eq(users.id, token.id)),
+          db
+            .select({ provider: accounts.provider })
+            .from(accounts)
+            .where(eq(accounts.userId, token.id)),
+        ])
+        if (userRows.length === 0) return null
+        const fingerprint = (userRows[0].password ?? "").slice(0, 8)
         if (user) token.pv = fingerprint
         else if (token.pv !== fingerprint) return null
+
+        let roleNames = Array.from(
+          new Set(userRows.map((r) => r.roleName).filter((n): n is string => Boolean(n)))
+        ) as Role[]
+
+        if (!user && roleNames.length === 0) {
+          const defaultRole = await getDefaultRole()
+          const role = await findOrCreateRole(db, defaultRole)
+          await assignRoleToUser(db, token.id, role.id)
+          roleNames = [role.name as Role]
+        }
+
+        const store = getReqStore()
+        if (store) {
+          store[JWT_SNAPSHOT_SYM] = {
+            userId: token.id,
+            roles: roleNames,
+            providers: accountRows.map((a) => a.provider),
+          } satisfies JwtUserSnapshot
+        }
       }
       return token
     },
@@ -247,6 +322,14 @@ export const {
         session.user.name = token.name as string
         session.user.username = token.username as string
         session.user.image = token.image as string
+
+        const store = getReqStore()
+        const snap = store?.[JWT_SNAPSHOT_SYM] as JwtUserSnapshot | undefined
+        if (snap && snap.userId === session.user.id && snap.roles.length > 0) {
+          session.user.roles = snap.roles.map((name) => ({ name }))
+          session.user.providers = snap.providers
+          return session
+        }
 
         const db = createDb()
         let userRoleRecords = await db.query.userRoles.findMany({
@@ -284,6 +367,104 @@ export const {
     strategy: "jwt",
   },
 }))
+
+export { GET, POST, signIn, signOut }
+
+export async function auth(hdrs?: Headers): Promise<Session | null> {
+  const resolvedHeaders = hdrs ?? (await headers())
+  const cookieHeader = resolvedHeaders.get("cookie") ?? ""
+  if (!cookieHeader.includes("session-token")) {
+    return null
+  }
+
+  const store = getReqStore()
+  if (store) {
+    const cache =
+      (store[REQ_SESSION_SYM] as Map<string, Promise<Session | null>> | undefined) ??
+      new Map<string, Promise<Session | null>>()
+    store[REQ_SESSION_SYM] = cache
+    const existing = cache.get(cookieHeader)
+    if (existing) return existing
+    const pending = rawAuth()
+    cache.set(cookieHeader, pending)
+    return pending
+  }
+
+  return rawAuth()
+}
+
+async function computeRequestAuth(
+  apiKey: string | null,
+  resolvedHeaders: Headers
+): Promise<RequestAuthSnapshot> {
+  if (apiKey !== null) {
+    const rows = await createDb()
+      .select({
+        userId: users.id,
+        roleName: roles.name,
+      })
+      .from(apiKeys)
+      .innerJoin(users, eq(apiKeys.userId, users.id))
+      .leftJoin(userRoles, eq(userRoles.userId, users.id))
+      .leftJoin(roles, eq(roles.id, userRoles.roleId))
+      .where(
+        and(
+          eq(apiKeys.key, apiKey),
+          eq(apiKeys.enabled, true),
+          gt(apiKeys.expiresAt, new Date())
+        )
+      )
+
+    if (rows.length === 0) {
+      return { userId: null, viaApiKey: true, roles: [] }
+    }
+
+    const roleNames = Array.from(
+      new Set(rows.map((r) => r.roleName).filter((n): n is string => Boolean(n)))
+    ) as Role[]
+
+    return {
+      userId: rows[0].userId,
+      viaApiKey: true,
+      roles: roleNames,
+    }
+  }
+
+  const session = await auth(resolvedHeaders)
+  const userId = session?.user?.id ?? null
+  if (!userId) {
+    return { userId: null, viaApiKey: false, roles: [] }
+  }
+
+  const roleNames = (session?.user?.roles?.map((r) => r.name as Role) ?? [])
+  return {
+    userId,
+    viaApiKey: false,
+    roles: roleNames,
+  }
+}
+
+export async function resolveRequestAuth(hdrs?: Headers): Promise<RequestAuthSnapshot> {
+  const resolvedHeaders = hdrs ?? (await headers())
+  const rawApiKey = resolvedHeaders.get("X-API-Key")
+  const apiKey = rawApiKey ? rawApiKey : null
+  const cacheKey = apiKey !== null ? `k:${apiKey}` : `c:${resolvedHeaders.get("cookie") ?? ""}`
+
+  const store = getReqStore()
+  if (store) {
+    const cache =
+      (store[REQ_AUTH_SYM] as Map<string, Promise<RequestAuthSnapshot>> | undefined) ??
+      new Map<string, Promise<RequestAuthSnapshot>>()
+    store[REQ_AUTH_SYM] = cache
+    const existing = cache.get(cacheKey)
+    if (existing) return existing
+    const pending = computeRequestAuth(apiKey, resolvedHeaders)
+    cache.set(cacheKey, pending)
+    return pending
+  }
+
+  return computeRequestAuth(apiKey, resolvedHeaders)
+}
 
 export async function register(username: string, password: string) {
   const db = createDb()

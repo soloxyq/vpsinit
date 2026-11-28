@@ -1,12 +1,14 @@
 "use client"
 
+import { useState } from "react"
 import { User } from "next-auth"
 import { useTranslations, useLocale } from "next-intl"
 import Image from "next/image"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { signOut } from "next-auth/react"
-import { Github, Webhook, Crown, Sword, User2, Gem, Mail } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { Github, Webhook, Crown, Sword, User2, Gem, Loader2, Mail } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { WebhookConfig } from "./webhook-config"
 import { PromotePanel } from "./promote-panel"
 import { EmailServiceConfig } from "./email-service-config"
@@ -65,7 +67,7 @@ export function ProfileCard({ user }: ProfileCardProps) {
   const tWebhook = useTranslations("profile.webhook")
   const tNav = useTranslations("common.nav")
   const locale = useLocale()
-  const router = useRouter()
+  const [navigating, setNavigating] = useState(false)
   const { checkPermission } = useRolePermission()
   const canManageWebhook = checkPermission(PERMISSIONS.MANAGE_WEBHOOK)
   const canPromote = checkPermission(PERMISSIONS.PROMOTE_USER)
@@ -156,11 +158,20 @@ export function ProfileCard({ user }: ProfileCardProps) {
 
       <div className="flex flex-col sm:flex-row gap-3">
         <Button
-          onClick={() => router.push(`/${locale}/moe`)}
-          className="gap-2 flex-1"
+          asChild
+          className={cn("gap-2 flex-1", navigating && "pointer-events-none opacity-80")}
         >
-          <Mail className="w-4 h-4" />
-          {tNav("backToMailbox")}
+          <Link
+            href={`/${locale}/moe`}
+            onClick={(e) => {
+              if (!e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+                setNavigating(true)
+              }
+            }}
+          >
+            {navigating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+            {tNav("backToMailbox")}
+          </Link>
         </Button>
         <Button
           variant="ghost"

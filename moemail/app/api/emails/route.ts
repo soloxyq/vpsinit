@@ -32,11 +32,6 @@ export async function GET(request: Request) {
         : undefined
     )
 
-    const totalResult = await db.select({ count: sql<number>`count(*)` })
-      .from(emails)
-      .where(baseConditions)
-    const totalCount = Number(totalResult[0].count)
-
     const conditions = [baseConditions]
 
     if (cursor) {
@@ -56,14 +51,18 @@ export async function GET(request: Request) {
       )
     }
 
-    const results = await db.query.emails.findMany({
-      where: and(...conditions),
-      orderBy: (emails, { desc }) => [
-        desc(emails.createdAt),
-        desc(emails.id)
-      ],
-      limit: PAGE_SIZE + 1
-    })
+    const [totalResult, results] = await db.batch([
+      db.select({ count: sql<number>`count(*)` }).from(emails).where(baseConditions),
+      db.query.emails.findMany({
+        where: and(...conditions),
+        orderBy: (emails, { desc }) => [
+          desc(emails.createdAt),
+          desc(emails.id)
+        ],
+        limit: PAGE_SIZE + 1
+      }),
+    ])
+    const totalCount = Number(totalResult[0].count)
     
     const hasMore = results.length > PAGE_SIZE
     const nextCursor = hasMore 

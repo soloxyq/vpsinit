@@ -14,13 +14,14 @@ interface MessageListContainerProps {
   onMessageSelect: (messageId: string | null, messageType?: 'received' | 'sent') => void
   selectedMessageId?: string | null
   refreshTrigger?: number
-  // 这两个只给“收到的”列表用，说明见 MessageList
+  // 这三个只给“收到的”列表用，说明见 MessageList
   unreadCount?: number
   onUnreadChange?: () => void
+  onUnreadDecrement?: () => void
   canSend?: boolean
 }
 
-export function MessageListContainer({ email, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount, onUnreadChange, canSend = false }: MessageListContainerProps) {
+export function MessageListContainer({ email, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount, onUnreadChange, onUnreadDecrement, canSend = false }: MessageListContainerProps) {
   const t = useTranslations("emails.messages")
   const [activeTab, setActiveTab] = useState<'received' | 'sent'>('received')
   const canSendEmails = canSend
@@ -55,6 +56,7 @@ export function MessageListContainer({ email, onMessageSelect, selectedMessageId
               selectedMessageId={selectedMessageId}
               unreadCount={unreadCount}
               onUnreadChange={onUnreadChange}
+              onUnreadDecrement={onUnreadDecrement}
             />
           </TabsContent>
           
@@ -77,6 +79,7 @@ export function MessageListContainer({ email, onMessageSelect, selectedMessageId
             selectedMessageId={selectedMessageId}
             unreadCount={unreadCount}
             onUnreadChange={onUnreadChange}
+            onUnreadDecrement={onUnreadDecrement}
           />
         </div>
       )}

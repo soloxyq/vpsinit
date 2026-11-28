@@ -7,6 +7,7 @@ import { FloatMenu } from "@/components/float-menu"
 import { ThemeProvider } from "@/components/theme/theme-provider"
 import { Toaster } from "@/components/ui/toaster"
 import { cn } from "@/lib/utils"
+import { auth } from "@/lib/auth"
 import { inter, jetbrainsMono } from "../fonts"
 import "../globals.css"
 import { Providers } from "../providers"
@@ -105,7 +106,10 @@ export default async function LocaleLayout({
     notFound()
   }
 
-  const messages = await getMessages(locale)
+  const [messages, session] = await Promise.all([
+    getMessages(locale),
+    auth(),
+  ])
 
   return (
     <html lang={locale} suppressHydrationWarning>
@@ -133,7 +137,7 @@ export default async function LocaleLayout({
           disableTransitionOnChange={false}
           storageKey="temp-mail-theme"
         >
-          <Providers>
+          <Providers session={session}>
             <NextIntlClientProvider locale={locale} messages={messages}>
               {children}
               <FloatMenu />

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createDb } from "@/lib/db"
 import { emails, messages } from "@/lib/schema"
-import { eq, and, lt, lte, or, sql, ne, isNull } from "drizzle-orm"
+import { eq, and, lt, lte, or, sql, ne, isNull, desc } from "drizzle-orm"
 import { encodeCursor, decodeCursor } from "@/lib/cursor"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
@@ -39,26 +39,20 @@ export async function PATCH(
   try {
     const db = createDb()
     const { id } = await params
-    const email = await db.query.emails.findFirst({
-      where: and(
-        eq(emails.id, id),
-        eq(emails.userId, userId)
-      )
-    })
+    const updated = await db
+      .update(emails)
+      .set({ note: parsedNote.value })
+      .where(and(eq(emails.id, id), eq(emails.userId, userId)))
+      .returning({ id: emails.id })
 
-    if (!email) {
+    if (!updated[0]) {
       return NextResponse.json(
         { error: "邮箱不存在或无权限修改" },
         { status: 403 }
       )
     }
 
-    await db
-      .update(emails)
-      .set({ note: parsedNote.value })
-      .where(and(eq(emails.id, id), eq(emails.userId, userId)))
-
-    return NextResponse.json({ id: email.id, note: parsedNote.value })
+    return NextResponse.json({ id: updated[0].id, note: parsedNote.value })
   } catch (error) {
     console.error("Failed to update email note:", error)
     return NextResponse.json(
@@ -132,9 +126,9 @@ export async function GET(
 
     const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
     if (guard.error) return guard.error
-    const { userId } = guard
+    const { userId, roles } = guard
     if (messageType === 'sent') {
-      const permissionResult = await checkBasicSendPermission(userId)
+      const permissionResult = await checkBasicSendPermission(userId, roles)
       if (!permissionResult.canSend) {
         return NextResponse.json(
           { error: permissionResult.error || "您没有查看发送邮件的权限" },
@@ -143,23 +137,26 @@ export async function GET(
       }
     }
 
-    const email = await db.query.emails.findFirst({
-      where: and(
-        eq(emails.id, id),
-        eq(emails.userId, userId)
-      )
-    })
-
-    if (!email) {
-      return NextResponse.json(
-        { error: "无权限查看" },
-        { status: 403 }
-      )
+    let decodedCursor: ReturnType<typeof decodeCursor> = null
+    if (cursorStr) {
+      decodedCursor = decodeCursor(cursorStr)
+      if (!decodedCursor) {
+        const email = await db.query.emails.findFirst({
+          columns: { id: true },
+          where: and(eq(emails.id, id), eq(emails.userId, userId)),
+        })
+        if (!email) {
+          return NextResponse.json({ error: "无权限查看" }, { status: 403 })
+        }
+        return NextResponse.json({ error: "Invalid cursor" }, { status: 400 })
+      }
     }
 
+    const ownedEmailExists = sql`EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.id} = ${id} AND ${emails.userId} = ${userId})`
     const pattern = query ? likePattern(query) : null
     const baseConditions = and(
       eq(messages.emailId, id),
+      ownedEmailExists,
       messageType === 'sent' 
         ? eq(messages.type, "sent") 
         : or(
@@ -178,39 +175,58 @@ export async function GET(
     const conditions = [baseConditions]
     const orderByTime = messageType === 'sent' ? messages.sentAt : messages.receivedAt
 
-    if (cursorStr) {
-      const decoded = decodeCursor(cursorStr)
-      if (!decoded) {
-        return NextResponse.json({ error: "Invalid cursor" }, { status: 400 })
-      }
-      const { timestamp, id } = decoded
+    if (decodedCursor) {
+      const { timestamp, id: cursorId } = decodedCursor
       const time = new Date(timestamp)
       // 意思是 time < T 或者（time = T 且 id < I）。前面多写一个 time <= T，索引才能直接从游标的位置往下读；
       // 只写 OR 的话每一页都要从最新的邮件读起，越往后翻读的行数越多
       conditions.push(
         and(
           lte(orderByTime, time),
-          or(lt(orderByTime, time), lt(messages.id, id))
+          or(lt(orderByTime, time), lt(messages.id, cursorId))
         )
       )
     }
 
-    const page = db.query.messages.findMany({
-      // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
-      columns: { id: true, fromAddress: true, toAddress: true, subject: true, receivedAt: true, sentAt: true, readAt: true, attachments: true },
-      where: and(...conditions),
-      orderBy: (messages, { desc }) => [
-        desc(orderByTime),
-        desc(messages.id)
-      ],
-      limit: PAGE_SIZE + 1
-    })
+    const emailCheck = db
+      .select({ id: emails.id })
+      .from(emails)
+      .where(and(eq(emails.id, id), eq(emails.userId, userId)))
+      .limit(1)
+
+    const page = db
+      .select({
+        // 列表只取要显示的列：正文（尤其是 HTML）可能很大，读出来再序列化很费 CPU
+        id: messages.id,
+        fromAddress: messages.fromAddress,
+        toAddress: messages.toAddress,
+        subject: messages.subject,
+        receivedAt: messages.receivedAt,
+        sentAt: messages.sentAt,
+        readAt: messages.readAt,
+        attachments: messages.attachments,
+      })
+      .from(messages)
+      .where(and(...conditions))
+      .orderBy(desc(orderByTime), desc(messages.id))
+      .limit(PAGE_SIZE + 1)
     // 总数要把这个邮箱里的邮件数一遍，读的行数和邮件数一样多，所以可以用 total=false 跳过：
     // 网页端每 10 秒的轮询和往下翻页都不数，总数在本地跟着加减。
-    // 要数的话和这一页放进同一个 batch：两条查询之间正好来了新邮件，数字和列表也对得上
-    const [results, totalResult] = searchParams.get('total') === 'false'
-      ? [await page, null]
-      : await db.batch([page, db.select({ count: sql<number>`count(*)` }).from(messages).where(baseConditions)])
+    // 归属校验、列表查询和计数放进同一个 D1 batch：单次网络往返完成，且中间来了新邮件数字也对得上
+    const [emailRows, results, totalResult] = searchParams.get('total') === 'false'
+      ? [...(await db.batch([emailCheck, page])), null]
+      : await db.batch([
+          emailCheck,
+          page,
+          db.select({ count: sql<number>`count(*)` }).from(messages).where(baseConditions),
+        ])
+
+    if (!emailRows[0]) {
+      return NextResponse.json(
+        { error: "无权限查看" },
+        { status: 403 }
+      )
+    }
 
     const hasMore = results.length > PAGE_SIZE
     const nextCursor = hasMore 

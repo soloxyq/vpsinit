@@ -1,7 +1,7 @@
-import { PERMISSIONS, Role, ROLES } from "@/lib/permissions"
+import { hasPermission, PERMISSIONS, Role, ROLES } from "@/lib/permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { EMAIL_CONFIG } from "@/config"
-import { isRegistrationOpen, userHasPermission } from "@/lib/auth"
+import { isRegistrationOpen } from "@/lib/auth"
 import { requireUser } from "@/lib/guard"
 
 export const runtime = "edge"
@@ -13,7 +13,7 @@ export async function GET() {
   const env = getRequestContext().env
   // API Key 只能读公开配置（如可用域名），不返回 Turnstile 密钥块
   const canManageConfig =
-    !guard.viaApiKey && await userHasPermission(guard.userId, PERMISSIONS.MANAGE_CONFIG)
+    !guard.viaApiKey && hasPermission(guard.roles, PERMISSIONS.MANAGE_CONFIG)
 
   const [
     defaultRole,

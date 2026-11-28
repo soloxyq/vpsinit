@@ -29,10 +29,25 @@ export function useUnreadCounts() {
     }
   }, [])
 
+  const decrementLocal = useCallback((emailId: string) => {
+    // 推进序号作废在途的旧轮询响应，避免刚点开未读信时角标又被旧值闪回；随后 MessageView 读完仍会 refresh 对齐
+    latestRef.current++
+    setCounts((prev) => {
+      const current = prev[emailId]
+      if (!current || current >= EMAIL_CONFIG.UNREAD_COUNT_CAP) return prev
+      if (current <= 1) {
+        const rest = { ...prev }
+        delete rest[emailId]
+        return rest
+      }
+      return { ...prev, [emailId]: current - 1 }
+    })
+  }, [])
+
   useEffect(() => {
     refresh()
   }, [refresh])
   usePolling(refresh, EMAIL_CONFIG.UNREAD_POLL_INTERVAL, enabled)
 
-  return { counts, refresh }
+  return { counts, refresh, decrementLocal }
 }

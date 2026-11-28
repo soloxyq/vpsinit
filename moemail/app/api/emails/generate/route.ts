@@ -7,7 +7,6 @@ import { EXPIRY_OPTIONS } from "@/types/email"
 import { EMAIL_CONFIG } from "@/config"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { requireUser } from "@/lib/guard"
-import { getUserRole } from "@/lib/auth"
 import { ROLES, PERMISSIONS } from "@/lib/permissions"
 import { normalizeNote } from "@/lib/search"
 
@@ -16,15 +15,13 @@ export const runtime = "edge"
 export async function POST(request: Request) {
   const guard = await requireUser(PERMISSIONS.MANAGE_EMAIL, { apiKey: true })
   if (guard.error) return guard.error
-  const { userId } = guard
+  const { userId, roles } = guard
 
   const db = createDb()
   const env = getRequestContext().env
 
-  const userRole = await getUserRole(userId)
-
   try {
-    if (userRole !== ROLES.EMPEROR) {
+    if (!roles.includes(ROLES.EMPEROR)) {
       const maxEmails = await env.SITE_CONFIG.get("MAX_EMAILS") || EMAIL_CONFIG.MAX_ACTIVE_EMAILS.toString()
       const activeEmailsCount = await db
         .select({ count: sql<number>`count(*)` })

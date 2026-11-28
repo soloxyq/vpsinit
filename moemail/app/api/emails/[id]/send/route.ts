@@ -74,7 +74,7 @@ export async function POST(
     const { id } = await params
     const db = createDb()
 
-    const permission = await getSendPermissionAndLimit(userId)
+    const permission = await getSendPermissionAndLimit(userId, guard.roles)
     if (!permission.canSend) {
       return NextResponse.json(
         { error: permission.error },

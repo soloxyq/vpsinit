@@ -10,7 +10,7 @@ export async function GET() {
   if (guard.error) return guard.error
 
   try {
-    const result = await checkSendPermission(guard.userId)
+    const result = await checkSendPermission(guard.userId, false, guard.roles)
     
     return NextResponse.json(result)
   } catch (error) {

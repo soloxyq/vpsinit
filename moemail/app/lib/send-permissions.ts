@@ -4,6 +4,7 @@ import { eq, and, gte, sql } from "drizzle-orm"
 import { getRequestContext } from "@cloudflare/next-on-pages"
 import { EMAIL_CONFIG } from "@/config"
 import { utcDay } from "@/lib/attachments"
+import type { Role } from "@/lib/permissions"
 
 export interface SendPermissionResult {
   canSend: boolean
@@ -16,9 +17,15 @@ export type SendLimitCheckResult =
   | { canSend: false; error: string }
 
 // 检查发件服务是否开启及用户的角色每日上限（0 表示不限额，>0 表示每日上限封数）
-export async function getSendPermissionAndLimit(userId: string): Promise<SendLimitCheckResult> {
+export async function getSendPermissionAndLimit(
+  userId: string,
+  knownRoles?: Role[]
+): Promise<SendLimitCheckResult> {
   const env = getRequestContext().env
-  const enabled = await env.SITE_CONFIG.get("EMAIL_SERVICE_ENABLED")
+  const [enabled, roleLimitsStr] = await Promise.all([
+    env.SITE_CONFIG.get("EMAIL_SERVICE_ENABLED"),
+    env.SITE_CONFIG.get("EMAIL_ROLE_LIMITS"),
+  ])
 
   if (enabled !== "true") {
     return {
@@ -27,7 +34,7 @@ export async function getSendPermissionAndLimit(userId: string): Promise<SendLim
     }
   }
 
-  const dailyLimit = await getUserDailyLimit(userId)
+  const dailyLimit = await getUserDailyLimit(userId, knownRoles, roleLimitsStr)
   if (dailyLimit === -1) {
     return {
       canSend: false,
@@ -114,10 +121,11 @@ export async function refundDailySendQuota(
 
 export async function checkSendPermission(
   userId: string,
-  skipDailyLimitCheck = false
+  skipDailyLimitCheck = false,
+  knownRoles?: Role[]
 ): Promise<SendPermissionResult> {
   try {
-    const base = await getSendPermissionAndLimit(userId)
+    const base = await getSendPermissionAndLimit(userId, knownRoles)
     if (!base.canSend) {
       return base
     }
@@ -175,19 +183,29 @@ export async function checkSendPermission(
   }
 }
 
-async function getUserDailyLimit(userId: string): Promise<number> {
-  const db = createDb()
+async function getUserDailyLimit(
+  userId: string,
+  knownRoles?: Role[],
+  preloadedRoleLimitsStr?: string | null
+): Promise<number> {
+  let userRoleNames: string[]
+  if (knownRoles) {
+    userRoleNames = knownRoles
+  } else {
+    const db = createDb()
+    const userRoleData = await db
+      .select({ roleName: roles.name })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .where(eq(userRoles.userId, userId))
 
-  const userRoleData = await db
-    .select({ roleName: roles.name })
-    .from(userRoles)
-    .innerJoin(roles, eq(userRoles.roleId, roles.id))
-    .where(eq(userRoles.userId, userId))
+    userRoleNames = userRoleData.map(r => r.roleName)
+  }
 
-  const userRoleNames = userRoleData.map(r => r.roleName)
-
-  const env = getRequestContext().env
-  const roleLimitsStr = await env.SITE_CONFIG.get("EMAIL_ROLE_LIMITS")
+  const roleLimitsStr =
+    preloadedRoleLimitsStr !== undefined
+      ? preloadedRoleLimitsStr
+      : await getRequestContext().env.SITE_CONFIG.get("EMAIL_ROLE_LIMITS")
 
   let customLimits: { duke?: number; knight?: number } = {}
   if (roleLimitsStr) {
@@ -218,6 +236,9 @@ async function getUserDailyLimit(userId: string): Promise<number> {
   return -1
 }
 
-export async function checkBasicSendPermission(userId: string): Promise<SendPermissionResult> {
-  return checkSendPermission(userId, true)
+export async function checkBasicSendPermission(
+  userId: string,
+  knownRoles?: Role[]
+): Promise<SendPermissionResult> {
+  return checkSendPermission(userId, true, knownRoles)
 } 

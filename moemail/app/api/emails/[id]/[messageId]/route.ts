@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createDb } from "@/lib/db"
 import { messages, emails } from "@/lib/schema"
-import { and, eq, isNull } from "drizzle-orm"
+import { and, eq, isNull, sql } from "drizzle-orm"
 import { requireUser } from "@/lib/guard"
 import { PERMISSIONS } from "@/lib/permissions"
 import { getRequestContext } from "@cloudflare/next-on-pages"
@@ -19,40 +19,36 @@ export async function DELETE(
   try {
     const db = createDb()
     const { id, messageId } = await params
-    const email = await db.query.emails.findFirst({
-      where: and(
-          eq(emails.id, id),
-          eq(emails.userId, userId)
-      )
-    })
+    const ownedEmailExists = sql`EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.id} = ${id} AND ${emails.userId} = ${userId})`
+    const [emailRows, deletedMessages] = await db.batch([
+      db
+        .select({ id: emails.id })
+        .from(emails)
+        .where(and(eq(emails.id, id), eq(emails.userId, userId)))
+        .limit(1),
+      db
+        .delete(messages)
+        .where(and(eq(messages.id, messageId), eq(messages.emailId, id), ownedEmailExists))
+        .returning({ id: messages.id, attachments: messages.attachments }),
+    ])
 
-    if (!email) {
+    if (!emailRows[0]) {
       return NextResponse.json(
           { error: "Email not found or no permission to view" },
           { status: 403 }
       )
     }
 
-    const message = await db.query.messages.findFirst({
-      where: and(
-          eq(messages.emailId, id),
-          eq(messages.id, messageId)
-      )
-    })
-
-    if(!message) {
+    if (!deletedMessages[0]) {
       return NextResponse.json(
           { error: "Message not found or already deleted" },
           { status: 404 }
       )
     }
 
-    await db.delete(messages)
-        .where(eq(messages.id, messageId))
-
     // 附件在 KV 里，邮件删了要一起删，否则会一直占着免费额度。返回响应之后接着删
     const { env, ctx } = getRequestContext()
-    ctx.waitUntil(deleteAttachmentKeys(env.ATTACHMENTS, attachmentKeysOf([message])))
+    ctx.waitUntil(deleteAttachmentKeys(env.ATTACHMENTS, attachmentKeysOf(deletedMessages)))
 
     return NextResponse.json({ success: true })
   } catch (error) {
@@ -72,43 +68,46 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (guard.error) return guard.error
     const { userId } = guard
 
-    const email = await db.query.emails.findFirst({
-      where: and(
-        eq(emails.id, id),
-        eq(emails.userId, userId)
-      )
-    })
+    // 邮箱归属校验、读取邮件内容（拿读取前的 read_at）与标记已读放在同一次 D1 batch 往返内顺序执行：
+    // 既把 3 次跨区串行查询压成 1 次，又保证邮件不属于当前用户时 EXISTS 为假、不会误读或误标已读。
+    const ownedEmailExists = sql`EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.id} = ${id} AND ${emails.userId} = ${userId})`
+    const [emailRows, messageRows] = await db.batch([
+      db
+        .select({ id: emails.id })
+        .from(emails)
+        .where(and(eq(emails.id, id), eq(emails.userId, userId)))
+        .limit(1),
+      db
+        .select()
+        .from(messages)
+        .where(and(eq(messages.id, messageId), eq(messages.emailId, id), ownedEmailExists))
+        .limit(1),
+      db
+        .update(messages)
+        .set({ readAt: new Date() })
+        .where(
+          and(
+            eq(messages.id, messageId),
+            eq(messages.emailId, id),
+            isNull(messages.readAt),
+            ownedEmailExists
+          )
+        ),
+    ])
 
-    if (!email) {
+    if (!emailRows[0]) {
       return NextResponse.json(
         { error: "无权限查看" },
         { status: 403 }
       )
     }
 
-    const message = await db.query.messages.findFirst({
-      where: and(
-        eq(messages.id, messageId),
-        eq(messages.emailId, id)
-      )
-    })
-    
+    const message = messageRows[0]
     if (!message) {
       return NextResponse.json(
         { error: "Message not found" },
         { status: 404 }
       )
-    }
-
-    // 读取就算读过：原来未读的记下已读时间。记不上不影响看信，只打日志
-    if (!message.readAt) {
-      try {
-        await db.update(messages)
-          .set({ readAt: new Date() })
-          .where(and(eq(messages.id, messageId), isNull(messages.readAt)))
-      } catch (error) {
-        console.error('Failed to mark message as read:', error)
-      }
     }
 
     return NextResponse.json({

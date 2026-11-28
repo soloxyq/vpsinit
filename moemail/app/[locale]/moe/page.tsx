@@ -3,8 +3,7 @@ import { ThreeColumnLayout } from "@/components/emails/three-column-layout"
 import { NoPermissionDialog } from "@/components/no-permission-dialog"
 import { auth } from "@/lib/auth"
 import { redirect } from "next/navigation"
-import { checkPermission } from "@/lib/auth"
-import { PERMISSIONS } from "@/lib/permissions"
+import { hasPermission, PERMISSIONS, type Role } from "@/lib/permissions"
 import type { Locale } from "@/i18n/config"
 
 export const runtime = "edge"
@@ -22,7 +21,8 @@ export default async function MoePage({
     redirect(`/${locale}`)
   }
 
-  const hasPermission = await checkPermission(PERMISSIONS.MANAGE_EMAIL)
+  const userRoles = session.user.roles?.map((r) => r.name as Role) ?? []
+  const canManageEmail = hasPermission(userRoles, PERMISSIONS.MANAGE_EMAIL)
 
   return (
     <div className="bg-page h-screen">
@@ -30,7 +30,7 @@ export default async function MoePage({
         <Header />
         <main className="h-full">
           <ThreeColumnLayout />
-          {!hasPermission && <NoPermissionDialog />}
+          {!canManageEmail && <NoPermissionDialog />}
         </main>
       </div>
     </div>

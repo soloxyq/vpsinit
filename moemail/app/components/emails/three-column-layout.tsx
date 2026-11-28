@@ -46,7 +46,7 @@ export function ThreeColumnLayout() {
   }, [isDesktop])
   const showDesktop = isDesktop !== false || shown.desktop
   const showMobile = isDesktop !== true || shown.mobile
-  const { counts: unreadCounts, refresh: refreshUnread } = useUnreadCounts()
+  const { counts: unreadCounts, refresh: refreshUnread, decrementLocal: decrementUnread } = useUnreadCounts()
 
   const columnClass = "border border-border/80 bg-card rounded-xl shadow-sm overflow-hidden flex flex-col"
   const headerClass = "h-11 px-3.5 py-0 border-b border-border/70 bg-muted/30 flex items-center justify-between shrink-0"
@@ -146,6 +146,7 @@ export function ThreeColumnLayout() {
                 refreshTrigger={refreshTrigger}
                 unreadCount={unreadCounts[selectedEmail.id] ?? 0}
                 onUnreadChange={refreshUnread}
+                onUnreadDecrement={() => decrementUnread(selectedEmail.id)}
                 canSend={canSendEmails}
               />
             </div>
@@ -252,6 +253,7 @@ export function ThreeColumnLayout() {
                   refreshTrigger={refreshTrigger}
                   unreadCount={unreadCounts[selectedEmail.id] ?? 0}
                   onUnreadChange={refreshUnread}
+                  onUnreadDecrement={() => decrementUnread(selectedEmail.id)}
                   canSend={canSendEmails}
                 />
               </div>

@@ -19,8 +19,10 @@ export default async function LoginPage({
     redirect(`/${locale}`)
   }
 
-  const turnstile = await getTurnstileConfig()
-  const allowRegistration = await isRegistrationOpen()
+  const [turnstile, allowRegistration] = await Promise.all([
+    getTurnstileConfig(),
+    isRegistrationOpen(),
+  ])
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-start px-4 pt-[12vh] pb-12 sm:pt-[16vh] bg-page bg-hero-glow">

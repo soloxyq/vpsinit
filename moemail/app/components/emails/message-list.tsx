@@ -48,6 +48,8 @@ interface MessageListProps {
   unreadCount?: number
   // 未读数可能变了（来了新邮件、标了已读、删了未读的邮件）：让上层重新取一次
   onUnreadChange?: () => void
+  // 点开一封未读邮件时，先在本地把未读角标减一，不必等接口返回
+  onUnreadDecrement?: () => void
 }
 
 interface MessageResponse {
@@ -57,7 +59,7 @@ interface MessageResponse {
   total?: number
 }
 
-export function MessageList({ email, messageType, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount = 0, onUnreadChange }: MessageListProps) {
+export function MessageList({ email, messageType, onMessageSelect, selectedMessageId, refreshTrigger, unreadCount = 0, onUnreadChange, onUnreadDecrement }: MessageListProps) {
   const t = useTranslations("emails.messages")
   const tList = useTranslations("emails.list")
   const tCommon = useTranslations("common.actions")
@@ -518,7 +520,10 @@ export function MessageList({ email, messageType, onMessageSelect, selectedMessa
                 <div
                   key={message.id}
                   onClick={() => {
-                    if (unread) markRead(message.id)
+                    if (unread) {
+                      markRead(message.id)
+                      onUnreadDecrement?.()
+                    }
                     onMessageSelect(message.id, messageType)
                   }}
                   className={cn(

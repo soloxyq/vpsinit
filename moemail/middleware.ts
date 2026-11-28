@@ -1,10 +1,7 @@
-import { auth } from "@/lib/auth"
+import { resolveRequestAuth } from "@/lib/auth"
 import { NextResponse } from "next/server"
 import { i18n, type Locale } from "@/i18n/config"
-import { PERMISSIONS } from "@/lib/permissions"
-import { checkPermission } from "@/lib/auth"
-import { Permission } from "@/lib/permissions"
-import { getUserId } from "@/lib/apiKey"
+import { hasPermission, PERMISSIONS, type Permission } from "@/lib/permissions"
 
 // 每个 /api 前缀需要的权限，null 表示登录即可。
 // 不在表里的 /api 路径一律拒绝：新增接口要先在这里登记。
@@ -81,35 +78,27 @@ async function handle(request: Request): Promise<NextResponse> {
       return NextResponse.next()
     }
 
-    if (request.headers.get("X-API-Key")) {
+    const hasApiKey = !!request.headers.get("X-API-Key")
+    if (hasApiKey) {
       if (!isApiKeyAllowed(apiPath, request.method)) {
         return NextResponse.json(
           { error: "无权限查看" },
           { status: 403 }
         )
       }
+    } else if (isCrossSiteWrite(request, url)) {
+      return NextResponse.json(
+        { error: "跨站请求被拒绝" },
+        { status: 403 }
+      )
+    }
 
-      if (!await getUserId()) {
-        return NextResponse.json(
-          { error: "无效的 API Key" },
-          { status: 401 }
-        )
-      }
-    } else {
-      if (isCrossSiteWrite(request, url)) {
-        return NextResponse.json(
-          { error: "跨站请求被拒绝" },
-          { status: 403 }
-        )
-      }
-
-      const session = await auth()
-      if (!session?.user?.id) {
-        return NextResponse.json(
-          { error: "未授权" },
-          { status: 401 }
-        )
-      }
+    const snap = await resolveRequestAuth(request.headers)
+    if (!snap.userId) {
+      return NextResponse.json(
+        { error: hasApiKey ? "无效的 API Key" : "未授权" },
+        { status: 401 }
+      )
     }
 
     if (apiPath === '/api/config' && request.method === 'GET') {
@@ -117,7 +106,7 @@ async function handle(request: Request): Promise<NextResponse> {
     }
 
     const rule = API_PERMISSIONS.find(([route]) => isUnder(apiPath, route))
-    const hasAccess = !!rule && (rule[1] === null || await checkPermission(rule[1]))
+    const hasAccess = !!rule && (rule[1] === null || hasPermission(snap.roles, rule[1]))
 
     if (!hasAccess) {
       return NextResponse.json(
